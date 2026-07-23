@@ -1,6 +1,7 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, session } from "electron";
 import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
+import { is } from "@main/utils.js";
 
 // Single-instance lock — only one GUI instance runs at a time.
 const gotLock = app.requestSingleInstanceLock();
@@ -20,6 +21,21 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(() => {
+  // CSP only in production — in dev, Vite injects inline HMR scripts that a
+  // strict CSP would block, leaving the page blank.
+  if (is.prod) {
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          "Content-Security-Policy": [
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:",
+          ],
+        },
+      });
+    });
+  }
+
   registerIpcHandlers();
   createMainWindow();
 

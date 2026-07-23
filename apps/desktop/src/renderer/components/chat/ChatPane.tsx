@@ -4,10 +4,14 @@ import type { Block, ChatMessage } from "@renderer/stores/sessionStore.js";
 import { MessageBlocks } from "./MessageBlocks.js";
 
 /** Center pane: message stream + input box. P1: fully wired to the store. */
+// Module-level constant: a stable empty-array reference so the messages
+// selector never returns a new [] on each render (which would loop Zustand).
+const EMPTY_MESSAGES: ChatMessage[] = [];
+
 export function ChatPane() {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const messages = useSessionStore((s) =>
-    activeSessionId ? s.messagesBySession[activeSessionId] ?? [] : [],
+    activeSessionId ? s.messagesBySession[activeSessionId] ?? EMPTY_MESSAGES : EMPTY_MESSAGES,
   );
   const isRunning = useSessionStore((s) => s.isRunning);
   const sendPrompt = useSessionStore((s) => s.sendPrompt);
