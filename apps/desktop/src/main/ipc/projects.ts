@@ -2,9 +2,8 @@ import type { IpcMain } from "electron";
 import { IPC, CreateProjectSchema } from "@contracts/ipc";
 import type { Project } from "@contracts/session";
 import { uid } from "@main/utils.js";
-
-// In-memory store for P0. P2 swaps this for SQLite persistence.
-const projects = new Map<string, Project>();
+import { projects, sessions } from "@main/store/memoryStore.js";
+import { log } from "@main/lib/logger.js";
 
 export function registerProjectHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.PROJECT_CREATE, (_evt, raw) => {
@@ -18,6 +17,7 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
       updatedAt: now,
     };
     projects.set(project.id, project);
+    log.info(`project created: ${project.name} (${project.path})`);
     return { project };
   });
 
@@ -25,8 +25,8 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     return { projects: [...projects.values()] };
   });
 
-  ipcMain.handle(IPC.PROJECT_SESSIONS, (_evt, _projectId: string) => {
-    // P2 will load real sessions from SQLite.
-    return { sessions: [] };
+  ipcMain.handle(IPC.PROJECT_SESSIONS, (_evt, projectId: string) => {
+    const list = [...sessions.values()].filter((s) => s.projectId === projectId);
+    return { sessions: list };
   });
 }

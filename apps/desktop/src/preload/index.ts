@@ -27,22 +27,37 @@ const api = {
       ipcRenderer.invoke(IPC.PROJECT_SESSIONS, projectId)) as RpcMap["project.sessions"],
   },
 
+  // ── Main-only helpers (not part of the provider/session RPC map) ──
+  /** Open a native folder picker; returns the chosen path or null. */
+  pickFolder: (): Promise<{ path: string | null }> =>
+    ipcRenderer.invoke("dialog:pickFolder"),
+  /** Probe whether claude CLI is installed and resolvable. */
+  claudeHealthCheck: (): Promise<{
+    installed: boolean;
+    source: string | null;
+    command: string | null;
+  }> => ipcRenderer.invoke("claude:healthCheck"),
+
   // ── Push events (main → renderer) ──
   on: {
     /** Subscribe to a main→renderer push channel. Returns an unsubscribe fn. */
-    claudeEvent(handler: (msg: Extract<MainToRendererMessage, { channel: "claude:event" }>) => void) {
+    claudeEvent(handler: (msg: Extract<MainToRendererMessage, { channel: "claude:event" }>) => void): () => void {
       const listener = (_e: unknown, msg: MainToRendererMessage) => {
         if (msg.channel === IPC.CLAUDE_EVENT) handler(msg);
       };
       ipcRenderer.on(IPC.CLAUDE_EVENT, listener);
-      return () => ipcRenderer.off(IPC.CLAUDE_EVENT, listener);
+      return () => {
+        ipcRenderer.off(IPC.CLAUDE_EVENT, listener);
+      };
     },
-    terminalData(handler: (msg: Extract<MainToRendererMessage, { channel: "terminal:data" }>) => void) {
+    terminalData(handler: (msg: Extract<MainToRendererMessage, { channel: "terminal:data" }>) => void): () => void {
       const listener = (_e: unknown, msg: MainToRendererMessage) => {
         if (msg.channel === IPC.TERMINAL_DATA) handler(msg);
       };
       ipcRenderer.on(IPC.TERMINAL_DATA, listener);
-      return () => ipcRenderer.off(IPC.TERMINAL_DATA, listener);
+      return () => {
+        ipcRenderer.off(IPC.TERMINAL_DATA, listener);
+      };
     },
   },
 } as const;

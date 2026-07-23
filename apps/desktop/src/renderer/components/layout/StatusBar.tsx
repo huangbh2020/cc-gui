@@ -1,13 +1,22 @@
-/** Bottom status bar: model, token usage, claude.exe version, auth state.
- * P0 shows static placeholders; P1 wires live token usage from UsageEvent. */
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+
+/** Bottom status bar: claude install status, run state. */
 export function StatusBar() {
+  const isRunning = useSessionStore((s) => s.isRunning);
+  const installed = useSessionStore((s) => s.claudeInstalled);
+
   return (
     <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-pane-border bg-zinc-900 px-3 text-[11px] text-zinc-500">
-      <span className="text-emerald-500">●</span>
-      <span>claude.exe: —</span>
-      <span>tokens: 0</span>
+      <span className={installed === false ? "text-red-500" : "text-emerald-500"}>
+        {installed === false ? "●" : "●"}
+      </span>
+      <span>
+        claude: {installed === false ? "not found" : installed === true ? "ready" : "checking…"}
+      </span>
       <div className="flex-1" />
-      <span>ready</span>
+      <span className={isRunning ? "text-amber-400" : "text-zinc-500"}>
+        {isRunning ? "working…" : "ready"}
+      </span>
     </footer>
   );
 }

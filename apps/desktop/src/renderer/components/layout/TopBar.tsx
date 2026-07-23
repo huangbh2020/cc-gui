@@ -1,36 +1,32 @@
 import { useState } from "react";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { PermissionMode } from "@contracts/runtime";
 
-/** Top bar: project switcher, model selector, plan-mode toggle, settings.
- * P0 renders static placeholders; P2 wires these to the session store. */
+/** Top bar: active project name, model, plan-mode toggle.
+ * P1: shows the active project; plan-mode toggle is display-only for now
+ * (P3 wires it into startSession's permissionMode). */
 export function TopBar() {
-  const [project, setProject] = useState("No project");
-  const [model] = useState("default");
+  const projects = useSessionStore((s) => s.projects);
+  const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const [planMode, setPlanMode] = useState(false);
 
+  const activeProject = projects.find((p) => p.id === activeProjectId);
   const mode: PermissionMode = planMode ? "plan" : "default";
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-3 border-b border-pane-border bg-zinc-900 px-3 text-sm">
-      {/* Project switcher (P2: dropdown of projects) */}
-      <select
-        value={project}
-        onChange={(e) => setProject(e.target.value)}
-        className="rounded bg-zinc-800 px-2 py-1 text-zinc-200 outline-none hover:bg-zinc-700"
-      >
-        <option>No project</option>
-      </select>
+      <span className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-300">
+        {activeProject ? `📁 ${activeProject.name}` : "No project"}
+      </span>
 
       <div className="text-zinc-600">/</div>
 
-      {/* Model indicator (P2: real model list) */}
       <span className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-400">
-        Claude: {model}
+        Claude
       </span>
 
       <div className="flex-1" />
 
-      {/* Plan-mode toggle — maps to claude's --permission-mode plan */}
       <button
         onClick={() => setPlanMode((v) => !v)}
         className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
