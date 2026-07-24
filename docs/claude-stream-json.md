@@ -324,6 +324,18 @@ turn 开始时发出,携带会话的完整能力描述。
 | `Grep` | `{ pattern, path, include }` |
 | `TodoWrite` | `{ todos: [{ content, status, priority }] }` |
 
+> ⚠️ **任务工具的实际形态取决于模型/配置**(实测踩坑):上表 `TodoWrite` 是 Claude Code **默认模型** 的工具。但本机 GUI 跑的是 **MiniMax-M3** 模型,它暴露的任务工具是 **`TaskCreate` / `TaskUpdate`**(不是 TodoWrite),且数据结构完全不同:
+>
+> | `name` | `input` | 说明 |
+> |--------|---------|------|
+> | `TaskCreate` | `{ subject, description, activeForm }` | **单个**任务(input 里无 id;id 由创建顺序隐式决定,tool_result 回 `"Task #N created"`) |
+> | `TaskUpdate` | `{ taskId, status }` | `taskId` 是 1-based 数字,对应 TaskCreate 的创建顺序;`status` 如 `completed` |
+> | `TaskList` / `TaskGet` | — | 列出/查询(本机未触发) |
+>
+> **关键差异**:TodoWrite 是**全量快照**(一次给整个 todos 数组);TaskCreate/TaskUpdate 是**增量**操作(逐个建、逐个改)。所以解析器必须在 turn 内**累积**任务状态(TaskCreate 追加、TaskUpdate 按 taskId 改状态),再 emit 归一化的全量列表给 UI。本仓库 `ClaudeRuntime` 即按此模型实现。
+>
+> **教训**:任务工具的形态随模型/MCP 而变,文档的 TodoWrite 形态不能假设通用。做任务相关 UI 前先 dump 当前模型的实际工具。
+
 > **渲染提示**:`id` 是连接 `tool_use` ↔ `tool_result` 的纽带,UI 用它配对卡片的状态(进行→完成)。
 
 ---
@@ -460,6 +472,67 @@ node "$CLAUDE_ENTRY" -p "read package.json then say what this is in one sentence
 
 # 统计所有 (type, subtype) 组合
 node -e "const l=require('fs').readFileSync('dump.jsonl','utf8').split('\n').filter(Boolean);const s={};for(const x of l){try{const o=JSON.parse(x);const k=o.subtype?\`\${o.type}/\${o.subtype}\`:o.type;s[k]=(s[k]||0)+1;}catch{}}console.log(s);"
+```
+
+> claude 升级后 schema 可能变化。本文档对应 Claude Code **2.1.186**;升级后建议重跑上述命令复核。
+
+---
+
+## 十、工具审批:控制协议在 2.1.186 不可用(P3 踩坑记录)
+
+> ⚠️ **本节是 P3 工具审批功能的调研结论,避免后人重复踩坑。** 以下结论基于本机 Claude Code **2.1.186** 的真实 dump 验证,非推测。
+
+### 结论:无法做"事中交互式审批"
+
+P3 原计划用 claude 的**控制协议**(`control_request` / `control_response`)实现工具执行前的弹审批条。但 4 轮真实 dump 验证证明:**该机制在 2.1.186 的 `-p` 非交互模式下完全不生效**——所有工具一律直接执行,无法事中拦截。
+
+| 测试 | 配置 | 结果 |
+|------|------|------|
+| 双向 stream-json + `--permission-prompt-tool`(指向不存在的工具) | `--permission-mode default` | Bash 直接执行,无 control_request |
+| 纯 default 模式(传统 `-p`) | 无 prompt-tool | PowerShell 直接执行,`permission_denials:[]` |
+| **真实 MCP server 提供 approve 工具 + `--permission-prompt-tool` 指向它** | default 模式,MCP 已 connected | Bash 直接执行,**approve 工具从未被调用** |
+| 危险命令(`rm -rf`)+ approve MCP 工具 | default 模式 | PowerShell Remove-Item **直接执行**,denials=[] |
+
+### 根因
+
+- `--permission-prompt-tool` 这个 flag 在 2.1.186 **存在但不生效**(`--help` 未列出;给不存在的工具名也不报错)。
+- 调研得知:该 flag 的强制生效(`requiresUserInteraction` 机制)是 **v2.1.199+** 才引入的。本机 2.1.186 早于此版本。
+- 在 `-p`(print / 非交互)模式下,claude 对所有工具一律直接执行,根本不触发审批流程。审批**只在 TTY 交互模式**(终端弹 y/n)发生,而 GUI 是 spawn 管道,非 TTY。
+
+### 控制协议的设计意图(供未来 claude 升级后参考)
+
+如果将来 claude ≥ 2.1.199 且该机制启用,交互式审批的设计路径是(来自 Agent SDK 逆向,Anthropic 未官方文档化,issues #24594/#24595):
+
+1. spawn 加 `--permission-prompt-tool <mcp_tool_name>` + `--input-format stream-json`(双向)+ **保持 stdin 开启**。
+2. claude 把审批请求作为对该 MCP 工具的调用,在 stdout 发 `type:"control_request"` 行:
+   ```jsonc
+   { "type":"control_request", "request_id":"<id>",
+     "request":{ "subtype":"can_use_tool", "tool_name":"Bash", "input":{...} } }
+   ```
+3. 决策通过 stdin 写 `control_response`(注意:`keepOpen` —— 不能在发完 prompt 后关 stdin,否则 claude 永远收不到决策而挂起):
+   ```jsonc
+   { "type":"control_response",
+     "response":{ "subtype":"success", "request_id":"<id>",
+       "response":{ "behavior":"allow", "updatedInput":{...} } } }   // 或 "behavior":"deny","message":"..."
+   ```
+
+### P3 的实际落地(基于本机现状)
+
+既然事中审批不可行,P3 改为:
+
+1. **权限模式开关接入**:`--permission-mode default|plan|acceptEdits`(TopBar 的 toggle 真正生效,传给 startSession → spawn)。这是 claude **已支持且生效**的 flag(实测 default 模式确实放行,plan/acceptEdits 会改变工具执行策略)。
+2. **事后展示**:解析 `result` 行的 `permission_denials[]` 字段(见 §六),在工具卡片上标记被拒的工具。
+3. `--permission-mode` 的完整取值(本机实测):`acceptEdits` / `auto` / `bypassPermissions` / `default` / `dontAsk` / `plan`。
+
+### 复现验证方法
+
+```bash
+# 验证 --permission-prompt-tool 是否生效(2.1.186 应观察不到 approve 工具被调用)
+claude -p "run echo hello in bash" --output-format stream-json --verbose \
+  --include-partial-messages --permission-mode default \
+  --mcp-config <提供approve工具的mcp-config.json> \
+  --permission-prompt-tool mcp__mygui__approve
+# 若 stdout 无 control_request 行、MCP server 日志无 tools/call,则该版本不支持。
 ```
 
 > claude 升级后 schema 可能变化。本文档对应 Claude Code **2.1.186**;升级后建议重跑上述命令复核。

@@ -14,6 +14,9 @@
   },
   "dependencies": {
     "@my-claude-gui/contracts": "workspace:*",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "sql.js": "^1.14.1",
     "zod": "^3.24.0",
     "zustand": "^5.0.14"
   },
@@ -21,6 +24,7 @@
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/sql.js": "^1.4.11",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.20",
     "electron": "^33.0.0",

@@ -26,11 +26,28 @@ const api = {
     sessions: ((projectId) =>
       ipcRenderer.invoke(IPC.PROJECT_SESSIONS, projectId)) as RpcMap["project.sessions"],
   },
+  session: {
+    messages: ((input) =>
+      ipcRenderer.invoke(IPC.SESSION_MESSAGES, input)) as RpcMap["session.messages"],
+    saveMessages: ((input) =>
+      ipcRenderer.invoke(IPC.SESSION_SAVE_MESSAGES, input)) as RpcMap["session.saveMessages"],
+  },
+  setting: {
+    get: ((input) =>
+      ipcRenderer.invoke(IPC.SETTING_GET, input)) as RpcMap["setting.get"],
+    set: ((input) =>
+      ipcRenderer.invoke(IPC.SETTING_SET, input)) as RpcMap["setting.set"],
+  },
 
   // ── Main-only helpers (not part of the provider/session RPC map) ──
   /** Open a native folder picker; returns the chosen path or null. */
   pickFolder: (): Promise<{ path: string | null }> =>
     ipcRenderer.invoke("dialog:pickFolder"),
+  /** Open a native file picker (for configuring the claude CLI path). */
+  pickFile: (() => ipcRenderer.invoke(IPC.DIALOG_PICK_FILE)) as RpcMap["dialog.pickFile"],
+  /** Probe a candidate claude path by running `claude --version`. */
+  testClaudePath: ((input: { path: string }) =>
+    ipcRenderer.invoke(IPC.CLAUDE_TEST_PATH, input)) as RpcMap["claude.testPath"],
   /** Probe whether claude CLI is installed and resolvable. */
   claudeHealthCheck: (): Promise<{
     installed: boolean;

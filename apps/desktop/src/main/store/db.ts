@@ -1,0 +1,146 @@
+/**
+ * SQLite persistence layer (sql.js / WASM-compiled-to-asm.js).
+ *
+ * Why sql.js instead of better-sqlite3? better-sqlite3 is a native addon and
+ * its prebuilt binary didn't match Electron's ABI on this machine, with no
+ * MSVC toolchain to rebuild it. sql.js is pure JavaScript (we use the asm.js
+ * build so there's not even a .wasm to load), so it runs anywhere with zero
+ * native compilation — clone and `pnpm dev` works for everyone.
+ *
+ * Trade-off: the database lives in memory and we flush it to a file on writes
+ * (see `persist()`). For our workload (session/message rows, low write rate)
+ * this is instant and the file is always consistent.
+ */
+import { app } from "electron";
+import initSqlJs, { type Database, type SqlJsStatic } from "sql.js/dist/sql-asm.js";
+import { join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { log } from "@main/lib/logger.js";
+
+let SQL: SqlJsStatic | null = null;
+let db: Database | null = null;
+let dbPath: string | null = null;
+/** True once persist() is already scheduled — collapses rapid writes into one flush. */
+let persistPending = false;
+
+/** Initialize (or reuse) the singleton database. Must be awaited after
+ * `app.whenReady()`. Loads the existing file if present, else creates empty. */
+export async function initDb(): Promise<Database> {
+  if (db) return db;
+  SQL = await initSqlJs();
+  dbPath = join(app.getPath("userData"), "claude-gui.db");
+
+  if (existsSync(dbPath)) {
+    db = new SQL.Database(new Uint8Array(readFileSync(dbPath)));
+    log.info(`sqlite opened from existing file: ${dbPath}`);
+  } else {
+    db = new SQL.Database();
+    log.info(`sqlite created new database: ${dbPath}`);
+  }
+  db.run("PRAGMA foreign_keys = ON");
+  migrate(db);
+  return db;
+}
+
+/** Get the initialized connection. Throws if initDb() hasn't resolved yet. */
+export function getDb(): Database {
+  if (!db) throw new Error("getDb() called before initDb() resolved");
+  return db;
+}
+
+/** Create tables if missing. Idempotent — safe on every startup. */
+function migrate(database: Database): void {
+  database.run(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      path        TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id                TEXT PRIMARY KEY,
+      project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      claude_session_id TEXT,
+      title             TEXT NOT NULL,
+      status            TEXT NOT NULL,
+      model             TEXT NOT NULL,
+      effort            TEXT NOT NULL DEFAULT 'default',
+      permission_mode   TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id          TEXT PRIMARY KEY,
+      session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      role        TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+  // Backward-compatible column adds for dbs created before the effort column
+  // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).
+  addColumnIfMissing(database, "sessions", "effort", "TEXT NOT NULL DEFAULT 'default'");
+}
+
+/** Add a column only if it isn't already present. SQLite has no ADD COLUMN IF
+ * NOT EXISTS, so we check pragma_table_info first. */
+function addColumnIfMissing(database: Database, table: string, column: string, def: string): void {
+  const stmt = database.prepare(`SELECT name FROM pragma_table_info(?) WHERE name = ?`);
+  stmt.bind([table, column]);
+  const exists = stmt.step();
+  stmt.free();
+  if (!exists) {
+    database.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+  }
+}
+
+/**
+ * Flush the in-memory database to disk. Coalesced via the microtask queue so a
+ * burst of writes (e.g. a replaceAll inside a transaction) hits the file once.
+ * Call this after any write; readers don't need it.
+ */
+export function persist(): void {
+  if (!db || !dbPath) return;
+  if (persistPending) return;
+  persistPending = true;
+  // Defer to the next microtask so multiple synchronous writes in one tick
+  // share a single export+write.
+  queueMicrotask(() => {
+    persistPending = false;
+    try {
+      const data = db!.export();
+      // Ensure the userData dir exists (it should, but be defensive).
+      const dir = join(dbPath!, "..");
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(dbPath!, data);
+    } catch (err) {
+      log.error(`sqlite persist failed: ${(err as Error).message}`);
+    }
+  });
+}
+
+/** Close the connection on shutdown. Persist first so nothing is lost. */
+export function closeDb(): void {
+  try {
+    if (persistPending) {
+      // Force an immediate flush rather than waiting for the queued microtask,
+      // which may not run before the process exits.
+      persistPending = false;
+      if (db && dbPath) writeFileSync(dbPath, db.export());
+    }
+    db?.close();
+  } catch {
+    /* ignore — shutting down anyway */
+  }
+  db = null;
+}

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, session } from "electron";
 import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
+import { initDb, closeDb } from "@main/store/db.js";
 import { is } from "@main/utils.js";
 
 // Single-instance lock — only one GUI instance runs at a time.
@@ -20,7 +21,12 @@ app.on("second-instance", () => {
   }
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Open SQLite before registering handlers — handlers may be invoked as soon
+  // as they're registered, and the DB must be ready. app.getPath("userData")
+  // is only valid after whenReady. sql.js loads asynchronously, hence await.
+  await initDb();
+
   // CSP only in production — in dev, Vite injects inline HMR scripts that a
   // strict CSP would block, leaving the page blank.
   if (is.prod) {
@@ -48,4 +54,9 @@ app.whenReady().then(() => {
 // Quit when all windows are closed, except on macOS.
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+// Close the DB cleanly on shutdown (best-effort).
+app.on("before-quit", () => {
+  closeDb();
 });

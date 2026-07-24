@@ -3,6 +3,7 @@ import { sendToRenderer } from "@main/window.js";
 import { IPC } from "@contracts/ipc";
 import type { RuntimeEvent } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
+import { SessionRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 
 interface SessionRuntime {
@@ -18,14 +19,38 @@ interface SessionRuntime {
 class RuntimeManager {
   private runtimes = new Map<string, SessionRuntime>();
 
-  /** Wire up the event pipe for a session (called on startSession). */
+  /** Wire up the event pipe for a session (called on startSession, and again
+   * when a persisted session is reactivated via selectSession). */
   bindSession(session: Session): void {
+    // If already bound, keep the existing runtime (it may be mid-turn or hold
+    // a captured claude session id). Only create on first bind.
     if (this.runtimes.has(session.id)) return;
     const emit = (e: RuntimeEvent) => {
-      // Capture the claude session id lazily from any event that carries it.
       sendToRenderer(IPC.CLAUDE_EVENT, { channel: IPC.CLAUDE_EVENT, sessionId: e.sessionId, event: e });
     };
-    this.runtimes.set(session.id, { runtime: new ClaudeRuntime(emit), claudeSessionId: session.claudeSessionId });
+    // Capture claude's own session id from the system/init line and persist it,
+    // so the next turn can --resume and a restarted app keeps the link.
+    const onClaudeSessionId = (claudeSessionId: string) => {
+      this.onClaudeSessionCaptured(session.id, claudeSessionId);
+    };
+    this.runtimes.set(session.id, {
+      runtime: new ClaudeRuntime(emit, onClaudeSessionId),
+      claudeSessionId: session.claudeSessionId,
+    });
+  }
+
+  /** Persist claude's session id (memory + SQLite) so future turns resume. */
+  private onClaudeSessionCaptured(guiSessionId: string, claudeSessionId: string): void {
+    const rt = this.runtimes.get(guiSessionId);
+    if (!rt) return;
+    // Idempotent — skip if unchanged to avoid redundant writes on every turn.
+    if (rt.claudeSessionId === claudeSessionId) return;
+    rt.claudeSessionId = claudeSessionId;
+    try {
+      SessionRepo.updateClaudeSessionId(guiSessionId, claudeSessionId);
+    } catch (err) {
+      log.error(`failed to persist claude session id: ${(err as Error).message}`);
+    }
   }
 
   /** Send a user turn. Captures the claude session id emitted during the run. */
@@ -44,6 +69,7 @@ class RuntimeManager {
       prompt: input.prompt,
       cwd: input.cwd,
       model: session.model !== "default" ? session.model : undefined,
+      effort: session.effort,
       permissionMode: session.permissionMode,
       resumeSessionId: rt.claudeSessionId,
     };
@@ -56,12 +82,6 @@ class RuntimeManager {
 
   interrupt(sessionId: string): void {
     this.runtimes.get(sessionId)?.runtime.interrupt();
-  }
-
-  /** Remember the claude session id once we observe it (for --resume). */
-  rememberClaudeSession(guiSessionId: string, claudeSessionId: string): void {
-    const rt = this.runtimes.get(guiSessionId);
-    if (rt) rt.claudeSessionId = claudeSessionId;
   }
 
   dispose(sessionId: string): void {

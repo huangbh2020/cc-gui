@@ -9,7 +9,9 @@ export default defineConfig({
       lib: { entry: "src/main/index.ts" },
       rollupOptions: {
         // contracts is a workspace source package — bundle it into main.
-        external: ["electron", "zod"],
+        // sql.js (asm.js build) is externalized and required at runtime like
+        // electron/zod — its ~6MB asm.js file is too large to inline cleanly.
+        external: ["electron", "zod", "sql.js", /^sql\.js\//],
       },
     },
     resolve: {

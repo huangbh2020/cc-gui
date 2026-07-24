@@ -7,6 +7,13 @@
 /** Permission modes mirror claude's --permission-mode flag. */
 export type PermissionMode = "default" | "plan" | "acceptEdits";
 
+/**
+ * Effort levels mirror claude's --effort flag (verified on 2.1.186:
+ * low / medium / high / xhigh / max). "default" means don't pass the flag and
+ * let claude pick. Higher effort ≈ more thinking/reasoning.
+ */
+export type EffortLevel = "default" | "low" | "medium" | "high" | "xhigh" | "max";
+
 /** Lifecycle of a single session. */
 export type SessionStatus =
   | "idle"
@@ -113,6 +120,30 @@ export interface TurnDoneEvent {
   reason: TurnDoneReason;
 }
 
+/**
+ * The agent is asking the user a question via the AskUserQuestion tool. claude
+ * emits a tool_use carrying a structured question list. NOTE: this tool's
+ * availability depends on model/version/config (verified absent on 2.1.218 +
+ * proxy + MiniMax; present on 2.1.186). The GUI parses it defensively so the
+ * UI works whenever the tool does surface. In non-interactive mode claude
+ * auto-cancels the result, so the user's answer is sent as the next message.
+ */
+export interface AskUserQuestionOption {
+  label: string;
+  description?: string;
+}
+export interface AskUserQuestionItem {
+  header: string;
+  question: string;
+  multiSelect: boolean;
+  options: AskUserQuestionOption[];
+}
+export interface AskUserQuestionEvent {
+  type: "question.ask";
+  sessionId: string;
+  questions: AskUserQuestionItem[];
+}
+
 /** The union of all runtime events. */
 export type RuntimeEvent =
   | TextDeltaEvent
@@ -122,6 +153,7 @@ export type RuntimeEvent =
   | ToolResultEvent
   | ApprovalRequestEvent
   | TodoUpdateEvent
+  | AskUserQuestionEvent
   | UsageEvent
   | ErrorEvent
   | TurnDoneEvent;

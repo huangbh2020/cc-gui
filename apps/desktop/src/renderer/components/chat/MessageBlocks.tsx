@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import type { Block } from "@renderer/stores/sessionStore.js";
+import { Markdown } from "./Markdown.js";
 
 /** Render the content blocks of a message. */
 export function MessageBlocks({ blocks }: { blocks: Block[] }) {
@@ -16,7 +17,7 @@ export function MessageBlocks({ blocks }: { blocks: Block[] }) {
 function BlockView({ block }: { block: Block }) {
   switch (block.kind) {
     case "text":
-      return <p className="whitespace-pre-wrap break-words leading-relaxed">{block.text}</p>;
+      return <Markdown>{block.text}</Markdown>;
 
     case "thinking":
       return <Collapsible label="Thinking" hint={summarize(block.text)}>{block.text}</Collapsible>;

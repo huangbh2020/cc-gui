@@ -9,6 +9,7 @@ export function LeftBar() {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const addProject = useSessionStore((s) => s.addProjectFromFolder);
   const startSession = useSessionStore((s) => s.startSession);
+  const selectSession = useSessionStore((s) => s.selectSession);
 
   const hasProject = activeProjectId !== null;
 
@@ -82,11 +83,13 @@ export function LeftBar() {
             {sessions.map((s) => (
               <li
                 key={s.id}
-                className={`truncate rounded px-2 py-1 text-xs ${
+                onClick={() => void selectSession(s.id)}
+                className={`cursor-pointer truncate rounded px-2 py-1 text-xs ${
                   s.id === activeSessionId
                     ? "bg-zinc-800 text-zinc-100"
                     : "text-zinc-400 hover:bg-zinc-800/50"
                 }`}
+                title={s.title}
               >
                 💬 {s.title}
               </li>

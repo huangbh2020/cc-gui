@@ -5,6 +5,7 @@ import { StatusBar } from "./components/layout/StatusBar.js";
 import { LeftBar } from "./components/layout/LeftBar.js";
 import { ChatPane } from "./components/chat/ChatPane.js";
 import { RightPanel } from "./components/layout/RightPanel.js";
+import { SettingsModal } from "./components/settings/SettingsModal.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
 import { useSessionStore } from "./stores/sessionStore.js";
 
@@ -28,6 +29,7 @@ export function App() {
         />
       </div>
       <StatusBar />
+      <SettingsModal />
     </div>
   );
 }

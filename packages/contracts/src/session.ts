@@ -1,7 +1,7 @@
 /**
  * Session domain types — projects, sessions, and messages persisted in SQLite.
  */
-import type { PermissionMode, SessionStatus } from "./runtime.js";
+import type { PermissionMode, SessionStatus, EffortLevel } from "./runtime.js";
 
 export interface Project {
   id: string;
@@ -19,7 +19,10 @@ export interface Session {
   claudeSessionId: string | null;
   title: string;
   status: SessionStatus;
+  /** Model alias or full name ("default" = let claude pick). → --model. */
   model: string;
+  /** Reasoning effort ("default" = don't pass --effort). → --effort. */
+  effort: EffortLevel;
   permissionMode: PermissionMode;
   createdAt: number;
   updatedAt: number;
