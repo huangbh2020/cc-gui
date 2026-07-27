@@ -37,7 +37,7 @@ function CopyButton({ text }: { text: string }) {
         });
       }}
       className={cn(
-        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors",
+        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
         "text-content-subtle hover:bg-surface-hover/60 hover:text-content-muted",
       )}
       title="Copy code"
@@ -77,11 +77,11 @@ const components: Components = {
     const raw = extractText(childProps?.children);
     return (
       <pre className="my-2 overflow-hidden rounded-lg border border-edge/60 bg-surface/80">
-        <div className="flex items-center justify-between border-b border-edge/60 bg-surface-muted/40 px-2 py-0.5 text-[10px] text-content-subtle">
+        <div className="flex items-center justify-between border-b border-edge/60 bg-surface-muted/40 px-2 py-0.5 text-content-subtle [font-size:var(--chat-fs-xxs)]">
           <span className="font-mono">{lang}</span>
           <CopyButton text={raw.replace(/\n$/, "")} />
         </div>
-        <code className="block overflow-x-auto px-3 py-2 font-mono text-[12px] leading-relaxed text-content">
+        <code className="block overflow-x-auto px-3 py-2 font-mono leading-relaxed text-content [font-size:var(--chat-fs-xs)]">
           {childProps?.children}
         </code>
       </pre>
@@ -106,7 +106,7 @@ const components: Components = {
   table({ children }) {
     return (
       <div className="my-2 overflow-x-auto">
-        <table className="w-full border-collapse text-xs">{children}</table>
+        <table className="w-full border-collapse [font-size:var(--chat-fs-sm)]">{children}</table>
       </div>
     );
   },
@@ -117,19 +117,19 @@ const components: Components = {
     return <td className="border border-edge px-2 py-1 text-content-muted">{children}</td>;
   },
   h1({ children }) {
-    return <h1 className="mb-2 mt-3 text-base font-bold text-content">{children}</h1>;
+    return <h1 className="mb-2 mt-3 font-bold text-content [font-size:var(--chat-fs-lg)]">{children}</h1>;
   },
   h2({ children }) {
-    return <h2 className="mb-1.5 mt-3 text-sm font-bold text-content">{children}</h2>;
+    return <h2 className="mb-1.5 mt-3 font-bold text-content [font-size:var(--chat-font-size)]">{children}</h2>;
   },
   h3({ children }) {
-    return <h3 className="mb-1 mt-2 text-sm font-semibold text-content">{children}</h3>;
+    return <h3 className="mb-1 mt-2 font-semibold text-content [font-size:var(--chat-font-size)]">{children}</h3>;
   },
 };
 
 export function Markdown({ children }: { children: string }) {
   return (
-    <div className="text-sm leading-relaxed text-content [&>p]:my-1.5 [&:first-child]:mt-0 [&:last-child]:mb-0">
+    <div className="leading-relaxed text-content [font-size:var(--chat-font-size)] [&>p]:my-1.5 [&:first-child]:mt-0 [&:last-child]:mb-0">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {children}
       </ReactMarkdown>

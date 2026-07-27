@@ -1,74 +1,89 @@
-## 方案：左侧用户消息时间线
+## 方案:可配置聊天字体大小 + 用户消息背景色
 
 ### 设计要点(已与用户确认)
-- **圆点垂直对齐到对应消息行**:圆点与该条用户消息处于同一水平高度。
-- **hover 显示带样式卡片**:顶部时间 + 下方消息正文(长内容可滚动)。
+- **字体大小**:设置页用**滑块**控件(12~20px),实时预览。
+- **用户消息背景色**:颜色选择器选色相,**透明度固定 10%**(与当前 `bg-info/10` 风格一致)。
+- 两个设置都走现有 `displayMode` 的成熟管线(renderer store → `setting.set` IPC → SQLite `settings` 表),**零新增 IPC / 零 DB 迁移**。
 
-### 核心实现思路
+### 技术方案:CSS 变量驱动(项目首个运行时 CSS 变量)
 
-圆点对齐到消息行最可靠的做法是——**让时间线圆点和消息列表共用同一个滚动容器**,圆点作为消息列表的兄弟 DOM,这样圆点天然随消息滚动,不需要任何 scroll-sync / 位置映射计算。用户向上下滚动时圆点自动跟着走,且因为时间线和消息共享布局,圆点的 `top` 始终等于对应消息行的 `top`。
+这是本项目第一次在运行时写 CSS 变量(此前全是 `styles.css` 静态定义)。用 CSS 变量而非 inline style,因为:
+- 字体大小需穿透到 `Markdown.tsx` 的嵌套渲染层,inline style 不便传递;CSS 变量天然继承。
+- 背景色要复用 Tailwind 的 `<alpha-value>` 机制(固定 10% 透明度),必须用 `R G B` 三元组格式的变量。
 
-### 改动文件
+### 改动清单(6 个文件,1 个新文件)
 
-**1. 新建 `apps/desktop/src/renderer/components/chat/MessageTimeline.tsx`**(核心组件)
-- 渲染一条左侧竖线 + 每条用户消息一个圆点。
-- 接收 `messages: ChatMessage[]`,过滤出 `role === "user"` 的消息。
-- 每个圆点 hover 显示卡片:时间(`fmtClock`)+ 消息正文(`blocksToText`)。
-- 使用手写浮层(参考现有 `TagPopover` / `ActivityPopover` 的 absolute 定位 + outside-click/ESC 关闭模式)。
-- 卡片定位在圆点右侧(`left-full ml-2`),避免遮挡消息内容。
-- 卡片正文超过一定高度时内部滚动(`max-h-60 overflow-y-auto`)。
-- 圆点用原生 `<span className="rounded-full bg-...">` (与 `StatusCapsule` 中 `h-1.5 w-1.5 rounded-full bg-warning` 的点保持一致风格),hover 时高亮放大。
-
-**2. 修改 `apps/desktop/src/renderer/components/chat/ChatPane.tsx`**
-- 在消息列表容器(`mx-auto max-w-5xl space-y-5 pt-6`,约 line 378)外层增加一个 `relative` 的 wrapper,把时间线作为绝对定位的左侧栏放进去,让两者共享同一滚动上下文。
-
-具体结构调整(在消息列表外层包裹):
-```tsx
-// 滚动容器内
-<div className="relative mx-auto max-w-5xl pt-6">   ← 新增 relative wrapper
-  <MessageTimeline messages={messages} />           ← 左侧绝对定位时间线
-  <div className="space-y-5">                        ← 原消息列表(去掉 mx-auto,移到外层)
-    {messages.map(...)}
-  </div>
-</div>
+#### 1. `packages/contracts/src/ipc.ts` — 新增两个 setting key 常量
+紧跟 `DISPLAY_MODE_SETTING_KEY` 模式:
+```ts
+export const UI_CHAT_FONT_SIZE_SETTING_KEY = "ui.chatFontSize";       // value: "14" (px,字符串)
+export const UI_USER_MSG_COLOR_SETTING_KEY = "ui.userMessageColor";   // value: "124 58 237" (R G B 三元组) 或 "" 表示用默认
 ```
-- `MessageTimeline` 内部用 `absolute left-0 top-0 bottom-0 w-6` 占据左侧 24px 宽度。
-- **关键:圆点定位到对应消息行**。实现方式——给每个用户消息渲染时,在消息行的 DOM 内部(或通过 `data-` 属性 + ref map)记录其相对偏移。最简单可靠的做法:圆点也走 `space-y-5` 相同的流式布局——即时间线内部维护一个与消息列表结构平行的"占位结构",每条用户消息对应一个圆点项,圆点项的高度 = 它在真实消息列表中对应消息之前的所有消息高度之和。
 
-**更简洁可靠的替代定位方案**(采用):既然圆点要对齐用户消息,而用户消息在列表中是按 `space-y-5` 顺序排列的,我让**时间线内部遍历所有 messages(包括 assistant),但只为 user 消息渲染圆点**,其余消息渲染一个等高的"透明占位"。但等高占位无法准确还原 assistant 消息的真实高度(可能含 thinking、tool_use 等可变内容)。
+#### 2. `apps/desktop/src/renderer/styles.css` — 新增 CSS 变量默认值
+在 `:root` 和 `.dark` 各加两行(默认值 = 当前效果):
+```css
+:root {
+  /* ...existing... */
+  --chat-font-size: 14px;          /* 默认 = text-sm */
+  --user-bubble: 124 58 237;       /* 默认 = info 色 (violet-600) */
+}
+.dark {
+  /* ...existing... */
+  --chat-font-size: 14px;
+  --user-bubble: 167 139 250;      /* dark = info 色 (violet-400) */
+}
+```
+三元组格式(R G B)是关键——让 Tailwind 的 `<alpha-value>` 能合成 `bg-userBubble/10`。
 
-**因此采用 ref 测量法**(最准确):
-- 在消息列表渲染时,为每条**用户消息**的行 `div` 挂一个 `ref`,存入一个 `Map<messageId, HTMLElement>`。
-- 用 `ResizeObserver` + scroll 容器的 scroll 监听,周期性读取每个用户消息行的 `offsetTop`,把圆点的 `top` 设为相同的 `offsetTop`。
-- 时间线圆点容器 `absolute left-0 top-0`,每个圆点 `position: absolute; top: {offsetTop}px`,完美对齐。
+#### 3. `apps/desktop/tailwind.config.js` — 新增 userBubble 颜色 token
+```js
+colors: {
+  /* ...existing... */
+  userBubble: "rgb(var(--user-bubble) / <alpha-value>)",
+}
+```
 
-这是工业标准做法(VS Code minimap、Cursor 时间线都类似),对齐精度最高,且能应对消息高度任意变化(流式输出时 assistant 消息不断增高,圆点跟着下移)。
+#### 4. `apps/desktop/src/renderer/stores/sessionStore.ts` — store 字段 + action + init 水合
+- 新增字段(默认值):`chatFontSize: number = 14`、`userMessageColor: string | null = null`(null = 用主题默认)。
+- 新增 action:`setChatFontSize(px)`、`setUserMessageColor(rgbTriplet | null)`,镜像 `setDisplayMode`(乐观本地更新 + `api.setting.set`)。font size 在 action 内 clamp 到 12~20。
+- `init()` 中水合:读 `UI_CHAT_FONT_SIZE_SETTING_KEY` / `UI_USER_MSG_COLOR_SETTING_KEY`,校验后 `set()`。
 
-**测量触发时机**(复用现有 `updateJumpState` 的 scroll listener 模式):
-- 滚动时(虽然 absolute 元素随滚动容器自然滚动,但测量 offsetTop 仍是相对滚动内容,无需 scroll 时重算——`offsetTop` 是相对 offsetParent 的静态布局值,只有布局变化时才变)。
-- 实际只需在 `messages` 变化、以及用 `ResizeObserver` 监听消息列表容器尺寸变化时重新测量。
-- 流式输出期间用 `requestAnimationFrame` 节流,避免高频测量。
+#### 5. `apps/desktop/src/renderer/lib/appearance.ts` — 新建:运行时应用函数
+镜像 `lib/theme.ts` 的 `applyThemeClass()`:
+```ts
+export function applyChatFontSize(px: number) {
+  document.documentElement.style.setProperty("--chat-font-size", `${px}px`);
+}
+export function applyUserBubbleColor(triplet: string | null) {
+  // null = 移除自定义,回退到 styles.css 的 :root/.dark 默认值
+  if (triplet) document.documentElement.style.setProperty("--user-bubble", triplet);
+  else document.documentElement.style.removeProperty("--user-bubble");
+}
+```
+- 在 `MessageTimeline`/`ChatPane` 不需要——改在 **App 根组件**用 `useEffect` 监听 store 变化调用这两个函数(一处生效全局)。
 
-### 复用现有代码
-- `fmtClock(ms)`(ChatPane.tsx line 48)——格式化时间。需从 ChatPane 导出,或在时间线组件内复制(函数很小,倾向复制以避免改动 ChatPane 的导出接口)。
-- `blocksToText(blocks)`(ChatPane.tsx line 626)——提取消息正文。同样复制到时间线组件或提取到 `lib/`。
-- 浮层 outside-click/ESC 关闭模式——参考 `TagPopover.tsx` line 29-49。
-- 圆点样式——参考 `StatusCapsule.tsx` 的 `h-1.5 w-1.5 rounded-full bg-warning`。
-- 卡片样式——参考 `ActivityPopover.tsx`(rounded-xl、border、bg-surface/95、shadow、backdrop-blur)。
+#### 6. `apps/desktop/src/renderer/components/chat/ChatPane.tsx` + `Markdown.tsx` — 替换硬编码类
+- ChatPane line 625:`bg-info/10` → `bg-userBubble/10`;`text-sm` → `[font-size:var(--chat-font-size)]`(用 Tailwind 任意值语法读 CSS 变量)。
+- ChatPane line 626(assistant):`text-sm` → `[font-size:var(--chat-font-size)]`。
+- Markdown.tsx line 132:`text-sm` → `[font-size:var(--chat-font-size)]`(穿透到 markdown 正文)。
 
-### 视觉细节
-- 时间线竖线:1px 宽,`bg-edge`,位于左侧 24px 栏的中央。
-- 圆点:`h-2 w-2 rounded-full bg-info`,hover 时 `bg-info` 变亮 + 放大到 `h-2.5 w-2.5`。
-- 竖线左侧给消息列表留出 padding(消息列表 `pl-7` 或外层 padding-left),避免内容与时间线重叠。
-- 空会话(无消息)时时间线不渲染。
-- 卡片宽度 `w-72`,时间用 `text-content-subtle text-[11px]`,正文 `text-sm text-content`。
+#### 7. 新建 `apps/desktop/src/renderer/components/settings/ChatAppearancePanel.tsx` — 设置面板
+镜像 `DisplayModePanel.tsx` 结构:
+- **字体大小滑块**:`<input type="range" min={12} max={20} step={1}>`,旁边显示当前 `{px}px`;onChange 调 `setChatFontSize` + 本地 pending 状态即时反馈。
+- **用户消息背景色**:`<input type="color">`(HTML 原生取色器,输出 `#rrggbb`),需转成 `R G B` 三元组存 store;加一个"恢复默认"按钮(置 null)。
+- 接入 `SettingsModal.tsx` 的 `appearance` 区块(在 `DisplayModePanel` 后加第三段)。
+
+### 颜色格式转换细节
+- 取色器输出 `#rrggbb`(如 `#7c3aed`)。
+- store 里存为三元组字符串 `"124 58 237"`(供 CSS 变量 + alpha 合成)。
+- 面板里 `#hex ↔ "R G B"` 双向转换(hex→split→parseInt;RGB→pad→`#`)。
+
+### 验证
+- `cd apps/desktop && npx tsc --noEmit -p tsconfig.json`。
+- `pnpm dev`:设置页拖滑块,聊天区字体实时变;取色器选色,用户消息气泡背景变;切深色模式默认色仍正确(自定义优先于 `.dark` 默认);重启后设置保留。
 
 ### 不在本次范围
-- 时间线滚动同步面板(独立 minimap 式滚动条)——用户已确认是"圆点对齐消息行",不需要。
-- 点击圆点跳转到消息——本次不做(hover 已满足需求);若后续需要可加。
-- 时间标尺刻度(每条线标注具体时间)——卡片 hover 已展示时间,竖线保持纯净。
-
-### 风险与验证
-- **流式输出时圆点抖动**:`ResizeObserver` + `requestAnimationFrame` 节流;若仍抖动可降级为仅在 `messages` 数组长度变化时重算(用户消息只在发送时新增,流式只改 assistant)。
-- **长会话性能**:用户消息通常远少于 assistant 消息,Map 只存 user 行,测量成本低。
-- **typecheck**:实现后跑 `cd apps/desktop && npx tsc --noEmit -p tsconfig.json`。
+- 助手消息背景色配置(本次只做用户消息)。
+- 字体族(family)配置。
+- 每会话独立外观(本次全局)。

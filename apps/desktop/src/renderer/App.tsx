@@ -8,6 +8,7 @@ import { SettingsModal } from "./components/settings/SettingsModal.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
 import { useSessionStore } from "./stores/sessionStore.js";
 import { useTheme } from "./lib/theme.js";
+import { useChatAppearance } from "./lib/appearance.js";
 import { cn } from "./lib/cn.js";
 import { isMac } from "./lib/platform.js";
 import { IconLayoutSidebarLeftExpand, IconLayoutSidebarRightExpand } from "./lib/icons.js";
@@ -17,6 +18,9 @@ export function App() {
   useClaudeEvents();
   // Apply + keep in sync the color scheme (.dark on <html>).
   useTheme();
+  // Apply + keep in sync the chat appearance CSS vars (--chat-font-size,
+  // --user-bubble) from the user-configurable settings.
+  useChatAppearance();
 
   const init = useSessionStore((s) => s.init);
   useEffect(() => {
@@ -60,27 +64,26 @@ export function App() {
         <div
           className={cn(
             "flex shrink-0 items-center rounded-tl-lg bg-surface-muted pr-1.5",
-            leftOpen && "w-[280px] border-r border-edge",
+            leftOpen && "w-[280px] rounded-tr-lg border-r border-edge",
             isMac ? "pl-[78px]" : "pl-1.5",
           )}
         >
           <button
             onClick={() => setLeftOpen((v) => !v)}
             className={cn(
-              "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-content-muted transition-colors",
+              "flex items-center justify-center rounded p-1.5 text-content-muted transition-colors",
               "hover:bg-surface-hover hover:text-content",
             )}
             title={leftOpen ? "隐藏左侧面板" : "显示左侧面板"}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           >
             <IconLayoutSidebarLeftExpand
-              size={14}
+              size={18}
               className={cn(
                 "shrink-0 transition-transform",
                 !leftOpen && "scale-x-[-1]",
               )}
             />
-            {leftOpen ? "隐藏" : "显示"}
           </button>
         </div>
 
@@ -102,15 +105,14 @@ export function App() {
           <button
             onClick={() => setRightOpen((v) => !v)}
             className={cn(
-              "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-content-muted transition-colors",
+              "flex items-center justify-center rounded p-1.5 text-content-muted transition-colors",
               "hover:bg-surface-muted hover:text-content",
             )}
             title={rightOpen ? "隐藏右侧面板" : "显示右侧面板"}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           >
-            {rightOpen ? "隐藏" : "显示"}
             <IconLayoutSidebarRightExpand
-              size={14}
+              size={18}
               className={cn(
                 "shrink-0 transition-transform",
                 !rightOpen && "scale-x-[-1]",

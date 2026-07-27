@@ -3,6 +3,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ClaudePathPanel } from "./ClaudePathPanel.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { DisplayModePanel } from "./DisplayModePanel.js";
+import { ChatAppearancePanel } from "./ChatAppearancePanel.js";
 import { ThemePanel } from "./ThemePanel.js";
 
 /**
@@ -111,6 +112,8 @@ export function SettingsModal() {
                 <ThemePanel />
                 <div className="border-t border-edge" />
                 <DisplayModePanel />
+                <div className="border-t border-edge" />
+                <ChatAppearancePanel />
               </div>
             )}
             {active === "about" && (

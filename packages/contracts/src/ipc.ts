@@ -56,6 +56,22 @@ export const DisplayModeSchema = z.enum(["single", "tabs"]);
 export type DisplayMode = z.infer<typeof DisplayModeSchema>;
 
 /**
+ * Setting key under which the user's preferred chat content font size (px)
+ * is persisted. Value is a numeric string like "14". Validated/clamped in
+ * the renderer store action (12–20 px). Mirrors the displayMode pipeline.
+ */
+export const UI_CHAT_FONT_SIZE_SETTING_KEY = "ui.chatFontSize";
+
+/**
+ * Setting key under which the user's custom user-message background color
+ * is persisted. Value is a space-separated "R G B" triplet (e.g.
+ * "124 58 237") so it composes with Tailwind's <alpha-value> placeholder.
+ * An empty string / null means "use the theme default" (the --user-bubble
+ * CSS var defined in styles.css per :root/.dark).
+ */
+export const UI_USER_MSG_COLOR_SETTING_KEY = "ui.userMessageColor";
+
+/**
  * Permission mode literals accepted by the Claude Agent SDK's
  * `permissionMode` option (and the CLI's --permission-mode flag). Kept in
  * lock-step with the `PermissionMode` union in `./runtime.ts`; the renderer's

@@ -16,7 +16,12 @@ import { isValidSnapshot } from "@renderer/lib/contextWindow.js";
 import type { CustomModelPublic } from "@contracts/customModel";
 import { CUSTOM_MODEL_ROLES } from "@contracts/customModel";
 import { api } from "@renderer/lib/api.js";
-import { DISPLAY_MODE_SETTING_KEY, type DisplayMode } from "@contracts/ipc";
+import {
+  DISPLAY_MODE_SETTING_KEY,
+  UI_CHAT_FONT_SIZE_SETTING_KEY,
+  UI_USER_MSG_COLOR_SETTING_KEY,
+  type DisplayMode,
+} from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
 
 /** A single content block within a message (mirrors how claude structures output). */
@@ -109,6 +114,14 @@ interface SessionState {
   openTabs: string[];
   /** How the center pane renders. Persisted in the `settings` table. */
   displayMode: DisplayMode;
+  /** Chat content font size in px (12–20). Persisted in the `settings`
+   *  table. Applied to <html> as the --chat-font-size CSS var by
+   *  lib/appearance.ts so it cascades into the message rows + markdown. */
+  chatFontSize: number;
+  /** Custom user-message background color as an "R G B" triplet string
+   *  (e.g. "124 58 237"), or null to use the theme default. Persisted in
+   *  the `settings` table. Applied to <html> as --user-bubble. */
+  userMessageColor: string | null;
 
   messagesBySession: Record<string, ChatMessage[]>;
   /** Per-session running flag. Keyed by sessionId so a turn running in
@@ -216,6 +229,12 @@ interface SessionState {
   /** Update the center-pane display mode. Persists to the `settings`
    *  table so the choice survives restart. */
   setDisplayMode: (mode: DisplayMode) => Promise<void>;
+  /** Update the chat content font size (clamped to 12–20 px). Persists to
+   *  the `settings` table. */
+  setChatFontSize: (px: number) => Promise<void>;
+  /** Update the user-message background color (R G B triplet, or null =
+   *  theme default). Persists to the `settings` table. */
+  setUserMessageColor: (rgb: string | null) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => void;
   setModel: (model: string) => void;
   setEffort: (effort: EffortLevel) => void;
@@ -305,6 +324,22 @@ export const EMPTY_SUBAGENTS: SubagentSnapshot[] = [];
 /** Stable cleared-plan reference — used both as the initial state and as
  * the "not in plan mode" placeholder returned by selectors. */
 export const EMPTY_PLAN: PlanDraft = { plan: "", phase: "cleared" };
+
+/** Min/max chat content font size (px). The slider in Settings uses the
+ *  same bounds; setChatFontSize clamps to this range defensively. */
+export const CHAT_FONT_SIZE_MIN = 12;
+export const CHAT_FONT_SIZE_MAX = 20;
+
+/** Clamp a font-size value to the allowed slider range. */
+export function clampFontSize(px: number): number {
+  if (!Number.isFinite(px)) return 14;
+  return Math.min(CHAT_FONT_SIZE_MAX, Math.max(CHAT_FONT_SIZE_MIN, Math.round(px)));
+}
+
+/** Matches a well-formed space-separated "R G B" triplet (0–255 each),
+ *  e.g. "124 58 237". Used to validate the user-message color setting
+ *  (which feeds the --user-bubble CSS var). */
+const RGB_TRIPLET_RE = /^\s*(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})\s*$/;
 
 /** Page size for the left-bar thread list. The first page is fetched on
  *  init / project expand; further pages are appended on "加载更多". */
@@ -430,6 +465,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   openTabs: [],
   // Persisted in `settings` table; init() overwrites from the DB.
   displayMode: "single",
+  // Persisted in `settings` table; init() overwrites from the DB. Defaults
+  // mirror the CSS var defaults in styles.css (14px = text-sm).
+  chatFontSize: 14,
+  userMessageColor: null,
   messagesBySession: {},
   runningBySession: {},
   claudeInstalled: null,
@@ -471,6 +510,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       console.error("setting.get(displayMode) failed:", err);
+    }
+
+    // Hydrate the chat-appearance settings (font size + user-message bg
+    // color). Both are optional — missing/invalid values leave the store
+    // defaults in place. lib/appearance.ts picks these up and writes the
+    // corresponding CSS vars on <html> so the first paint uses the right
+    // values (no flash of the default font size / color).
+    try {
+      const [fontRes, colorRes] = await Promise.all([
+        api.setting.get({ key: UI_CHAT_FONT_SIZE_SETTING_KEY }),
+        api.setting.get({ key: UI_USER_MSG_COLOR_SETTING_KEY }),
+      ]);
+      if (fontRes.value != null) {
+        const px = Number(fontRes.value);
+        if (Number.isFinite(px)) set({ chatFontSize: clampFontSize(px) });
+      }
+      // Accept only well-formed "R G B" triplets; anything else (incl.
+      // empty string) is treated as "use theme default" → null.
+      if (colorRes.value && RGB_TRIPLET_RE.test(colorRes.value)) {
+        set({ userMessageColor: colorRes.value });
+      }
+    } catch (err) {
+      console.error("setting.get(chat appearance) failed:", err);
     }
 
     const { projects } = await api.project.list();
@@ -1392,6 +1454,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: DISPLAY_MODE_SETTING_KEY, value: mode });
     } catch (err) {
       console.error("setting.set(displayMode) failed:", err);
+    }
+  },
+
+  setChatFontSize: async (px) => {
+    const clamped = clampFontSize(px);
+    set({ chatFontSize: clamped });
+    try {
+      await api.setting.set({
+        key: UI_CHAT_FONT_SIZE_SETTING_KEY,
+        value: String(clamped),
+      });
+    } catch (err) {
+      console.error("setting.set(chatFontSize) failed:", err);
+    }
+  },
+
+  setUserMessageColor: async (rgb) => {
+    // null or malformed → treat as "use theme default" and clear any stored
+    // value so the default re-asserts cleanly on reload.
+    const safe = rgb && RGB_TRIPLET_RE.test(rgb) ? rgb : null;
+    set({ userMessageColor: safe });
+    try {
+      await api.setting.set({
+        key: UI_USER_MSG_COLOR_SETTING_KEY,
+        value: safe ?? "",
+      });
+    } catch (err) {
+      console.error("setting.set(userMessageColor) failed:", err);
     }
   },
 

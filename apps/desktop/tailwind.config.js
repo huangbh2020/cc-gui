@@ -29,6 +29,12 @@ export default {
         danger: "rgb(var(--danger) / <alpha-value>)",
         warning: "rgb(var(--warning) / <alpha-value>)",
         info: "rgb(var(--info) / <alpha-value>)",
+        // User message bubble background — user-configurable color (default
+        // = info token). Stored as an "R G B" triplet so the same
+        // <alpha-value> mechanism composes bg-userBubble/10 etc. The value
+        // is overridden at runtime via setProperty on <html> when the user
+        // picks a custom color in Settings (see lib/appearance.ts).
+        userBubble: "rgb(var(--user-bubble) / <alpha-value>)",
 
         // Legacy pane tokens — kept as aliases to the new semantic variables
         // so partially-migrated files still follow the theme. New code should

@@ -21,8 +21,8 @@ export function ThreePaneLayout({ left, center, right, leftOpen, rightOpen }: Pr
       {/* Left sidebar — plain rectangle (no corner rounding). The right
          divider lives on the inner scroll container so it spans the panel. */}
       {leftOpen && (
-        <aside className="flex h-full w-[280px] shrink-0 flex-col bg-surface-muted">
-          <div className="min-h-0 flex-1 overflow-y-auto border-r border-edge">{left}</div>
+        <aside className="flex h-full w-[280px] shrink-0 flex-col rounded-r-lg bg-surface-muted">
+          <div className="min-h-0 flex-1 overflow-y-auto">{left}</div>
         </aside>
       )}
 

@@ -622,8 +622,8 @@ function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, registerRo
         <div
           className={
             isUser
-              ? "rounded-lg bg-info/10 px-3 py-2 text-sm text-content"
-              : "text-sm text-content"
+              ? "rounded-lg bg-userBubble/10 px-3 py-2 text-content [font-size:var(--chat-font-size)]"
+              : "text-content [font-size:var(--chat-font-size)]"
           }
         >
           <MessageBlocks blocks={msg.blocks} />

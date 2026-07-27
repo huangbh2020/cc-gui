@@ -128,7 +128,7 @@ function ProceduralGroup({ blocks }: { blocks: ProceduralBlock[] }) {
   }
 
   return (
-    <div className="rounded-md border border-edge bg-surface/40 text-xs">
+    <div className="rounded-md border border-edge bg-surface/40 [font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/40"
@@ -167,7 +167,7 @@ function BlockView({ block, defaultOpen = false }: { block: Block; defaultOpen?:
 
     case "error":
       return (
-        <div className="flex items-start gap-1.5 rounded-md border border-danger bg-danger/30 px-3 py-2 text-xs text-danger">
+        <div className="flex items-start gap-1.5 rounded-md border border-danger bg-danger/30 px-3 py-2 text-danger [font-size:var(--chat-fs-sm)]">
           <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
           <span>{block.message}</span>
         </div>
@@ -238,7 +238,7 @@ function EditToolCard({
   const { adds, dels } = useMemo(() => diffSummary(diff), [diff]);
 
   return (
-    <div className="rounded-md border border-edge bg-surface-muted/60 text-xs">
+    <div className="rounded-md border border-edge bg-surface-muted/60 [font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/50"
@@ -246,7 +246,7 @@ function EditToolCard({
         <StatusIcon status={status} />
         <span className="font-medium text-content-muted">Edit</span>
         <span className="truncate font-mono text-content-subtle">{filePath}</span>
-        <span className="ml-auto flex items-center gap-1.5 text-[10px]">
+        <span className="ml-auto flex items-center gap-1.5 [font-size:var(--chat-fs-xxs)]">
           {adds > 0 && <span className="text-accent">+{adds}</span>}
           {dels > 0 && <span className="text-danger">−{dels}</span>}
           <Chevron open={open} />
@@ -257,8 +257,8 @@ function EditToolCard({
           <DiffView diff={diff} />
           {result !== undefined && (
             <div>
-              <div className="mb-0.5 text-[10px] uppercase text-content-subtle">Result</div>
-              <pre className="max-h-40 overflow-auto rounded bg-surface/60 p-2 text-[11px] text-content-muted">
+              <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">Result</div>
+              <pre className="max-h-40 overflow-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
                 {truncateResult(result)}
               </pre>
             </div>
@@ -275,7 +275,7 @@ function EditToolCard({
 function DiffView({ diff }: { diff: ReturnType<typeof lineDiff> }) {
   if (diff.length === 0) {
     return (
-      <div className="rounded bg-surface/60 p-2 text-[11px] text-content-subtle">
+      <div className="rounded bg-surface/60 p-2 text-content-subtle [font-size:var(--chat-fs-xs)]">
         (no changes)
       </div>
     );
@@ -287,7 +287,7 @@ function DiffView({ diff }: { diff: ReturnType<typeof lineDiff> }) {
   const rows = annotateDiffWithLineNumbers(diff);
 
   return (
-    <div className="overflow-x-auto rounded bg-surface/60 font-mono text-[11px] leading-relaxed">
+    <div className="overflow-x-auto rounded bg-surface/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]">
       {rows.map((d, i) => {
         const opBg =
           d.op === "delete"
@@ -350,7 +350,7 @@ function WriteToolCard({
   const lineCount = content ? content.split("\n").length : 0;
 
   return (
-    <div className="rounded-md border border-edge bg-surface-muted/60 text-xs">
+    <div className="rounded-md border border-edge bg-surface-muted/60 [font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/50"
@@ -358,7 +358,7 @@ function WriteToolCard({
         <StatusIcon status={status} />
         <span className="font-medium text-content-muted">Write</span>
         <span className="truncate font-mono text-content-subtle">{filePath}</span>
-        <span className="ml-auto flex items-center gap-1.5 text-[10px] text-content-subtle">
+        <span className="ml-auto flex items-center gap-1.5 text-content-subtle [font-size:var(--chat-fs-xxs)]">
           {lineCount} 行
           <Chevron open={open} />
         </span>
@@ -366,15 +366,15 @@ function WriteToolCard({
       {open && (
         <div className="space-y-2 border-t border-edge px-3 py-2">
           <div>
-            <div className="mb-0.5 text-[10px] uppercase text-content-subtle">New file content</div>
-            <pre className="max-h-80 overflow-auto rounded bg-surface/60 p-2 text-[11px] text-content-muted">
+            <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">New file content</div>
+            <pre className="max-h-80 overflow-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
               {content || "(empty)"}
             </pre>
           </div>
           {result !== undefined && (
             <div>
-              <div className="mb-0.5 text-[10px] uppercase text-content-subtle">Result</div>
-              <pre className="max-h-40 overflow-auto rounded bg-surface/60 p-2 text-[11px] text-content-muted">
+              <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">Result</div>
+              <pre className="max-h-40 overflow-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
                 {truncateResult(result)}
               </pre>
             </div>
@@ -396,7 +396,7 @@ function GenericToolCard({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div className="rounded-md border border-edge bg-surface-muted/60 text-xs">
+    <div className="rounded-md border border-edge bg-surface-muted/60 [font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/50"
@@ -409,15 +409,15 @@ function GenericToolCard({
       {open && (
         <div className="space-y-2 border-t border-edge px-3 py-2">
           <div>
-            <div className="mb-0.5 text-[10px] uppercase text-content-subtle">Input</div>
-            <pre className="overflow-x-auto rounded bg-surface/60 p-2 text-[11px] text-content-muted">
+            <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">Input</div>
+            <pre className="overflow-x-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
               {safeStringify(block.input)}
             </pre>
           </div>
           {block.result !== undefined && (
             <div>
-              <div className="mb-0.5 text-[10px] uppercase text-content-subtle">Result</div>
-              <pre className="max-h-60 overflow-auto rounded bg-surface/60 p-2 text-[11px] text-content-muted">
+              <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">Result</div>
+              <pre className="max-h-60 overflow-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
                 {truncateResult(block.result)}
               </pre>
             </div>
@@ -442,7 +442,7 @@ function Collapsible({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-md border border-edge bg-surface/40 text-xs">
+    <div className="rounded-md border border-edge bg-surface/40 [font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-content-muted hover:bg-surface-muted/40"
