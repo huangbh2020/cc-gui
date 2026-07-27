@@ -45,6 +45,13 @@ export function createMainWindow(): BrowserWindow {
     // are set once here and kept in sync by updateTitleBarOverlay().
     titleBarStyle: "hidden",
     titleBarOverlay: overlayColors(),
+    // macOS only: pin the traffic-light buttons (close/min/zoom) so they sit
+    // vertically centered in our 40px (h-10) custom titlebar. Without this,
+    // macOS uses its default Y (~14px from the top), which is tuned for the
+    // standard ~28px titlebar and leaves the buttons sitting too high in our
+    // taller bar. The 12px-diameter circles are vertically centered when the
+    // group origin is at y = (40 - 14) / 2 ≈ 13. Ignored on Windows/Linux.
+    trafficLightPosition: { x: 20, y: 13 },
     webPreferences: {
       preload: join(__dirname, "../preload/index.mjs"),
       contextIsolation: true,

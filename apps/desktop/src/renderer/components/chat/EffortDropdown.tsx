@@ -1,6 +1,6 @@
 import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
-import { IconCheck, IconBolt } from "@renderer/lib/icons.js";
+import { IconCheck, IconBolt, IconChevronDown } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { EffortLevel } from "@contracts/runtime";
 
@@ -40,21 +40,19 @@ const EFFORT_LABEL: Record<EffortLevel, string> = {
 export function EffortDropdown() {
   const effort = useSessionStore((s) => s.effort);
   const setEffort = useSessionStore((s) => s.setEffort);
-  const isNonDefault = effort !== "default";
 
   return (
     <Menu.Root>
       <Menu.Trigger
         className={cn(
           "flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors",
-          isNonDefault
-            ? "bg-surface-hover/80 text-content"
-            : "text-content-subtle hover:bg-surface-muted hover:text-content-muted",
+          "text-content-muted hover:bg-surface-muted",
         )}
         title="Reasoning effort for the next session"
       >
-        <IconBolt size={11} className="opacity-80" />
+        <IconBolt size={11} className="shrink-0 opacity-80" />
         <span>{EFFORT_LABEL[effort] ?? effort}</span>
+        <IconChevronDown size={9} className="shrink-0 opacity-60" />
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="top" align="start">

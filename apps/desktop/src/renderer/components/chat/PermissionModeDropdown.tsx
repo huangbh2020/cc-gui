@@ -2,10 +2,11 @@ import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconCheck,
-  IconPlayerPlay,
-  IconEdit,
-  IconBolt,
-  IconPlayerSkipForward,
+  IconShield,
+  IconShieldCheck,
+  IconShieldHalfFilled,
+  IconShieldLock,
+  IconChevronDown,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { PermissionMode } from "@contracts/runtime";
@@ -25,17 +26,53 @@ import type { PermissionMode } from "@contracts/runtime";
  * and positioning, with a compact chip-style trigger.
  */
 
-/** The 4 modes shown in the menu, in Claude Code's canonical order. */
-const UI_MODES: ReadonlyArray<{
+/** The 4 modes shown in the menu, in Claude Code's canonical order.
+ *
+ *  Each mode carries a shield-style icon and a semantic color token that
+ *  reflects its privilege/risk level: riskier modes get warmer colors so
+ *  the chip telegraphs risk at a glance.
+ *    default            → (muted)  baseline, rules-based approval
+ *    plan               → info     read-only / constrained exploration
+ *    acceptEdits        → warning  auto-accepts file edits (medium risk)
+ *    bypassPermissions  → danger   skips ALL checks (highest risk)
+ */
+type ModeMeta = {
   value: PermissionMode;
   label: string;
   icon: React.ReactNode;
+  color: string; // Tailwind text-color class applied to BOTH icon and label
   hint: string;
-}> = [
-  { value: "default", label: "Default", icon: <IconPlayerPlay size={11} />, hint: "标准行为,工具按规则触发审批" },
-  { value: "acceptEdits", label: "Edit Auto", icon: <IconEdit size={11} />, hint: "工作目录内的文件编辑自动放行" },
-  { value: "plan", label: "Plan", icon: <IconBolt size={11} />, hint: "只读探索,所有写操作都需审批" },
-  { value: "bypassPermissions", label: "Bypass", icon: <IconPlayerSkipForward size={11} />, hint: "跳过所有权限检查(慎用)" },
+};
+
+const UI_MODES: ReadonlyArray<ModeMeta> = [
+  {
+    value: "default",
+    label: "Default",
+    icon: <IconShield size={11} />,
+    color: "",
+    hint: "标准行为,工具按规则触发审批",
+  },
+  {
+    value: "acceptEdits",
+    label: "Edit Auto",
+    icon: <IconShieldCheck size={11} />,
+    color: "text-warning",
+    hint: "工作目录内的文件编辑自动放行",
+  },
+  {
+    value: "plan",
+    label: "Plan",
+    icon: <IconShieldHalfFilled size={11} />,
+    color: "text-info",
+    hint: "只读探索,所有写操作都需审批",
+  },
+  {
+    value: "bypassPermissions",
+    label: "Bypass",
+    icon: <IconShieldLock size={11} />,
+    color: "text-danger",
+    hint: "跳过所有权限检查(慎用)",
+  },
 ];
 
 /** Lookup used by both the chip and the StatusBar. */
@@ -50,14 +87,27 @@ export const PERMISSION_MODE_LABEL: Record<PermissionMode, string> = {
   auto: "Auto",
 };
 
-const PERMISSION_MODE_ICON: Record<PermissionMode, React.ReactNode> = {
-  default: <IconPlayerPlay size={11} />,
-  acceptEdits: <IconEdit size={11} />,
-  plan: <IconBolt size={11} />,
-  bypassPermissions: <IconPlayerSkipForward size={11} />,
-  dontAsk: <span>?</span>,
-  auto: <span>◐</span>,
-};
+/** Shared per-mode metadata (icon + risk color) used by both the composer
+ *  chip and the StatusBar, so the two displays always agree. The "color" is
+ *  an empty string for the baseline `default` mode so it inherits neutral
+ *  muted text; riskier modes carry an explicit semantic token. */
+export const PERMISSION_MODE_META: Record<PermissionMode, ModeMeta> = (() => {
+  const byValue = new Map(UI_MODES.map((m) => [m.value, m]));
+  const fallback: ModeMeta = {
+    value: "default",
+    label: "",
+    icon: <IconShield size={11} />,
+    color: "",
+    hint: "",
+  };
+  const out = {} as Record<PermissionMode, ModeMeta>;
+  (["default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto"] as PermissionMode[]).forEach(
+    (v) => {
+      out[v] = byValue.get(v) ?? { ...fallback, value: v };
+    },
+  );
+  return out;
+})();
 
 export function PermissionModeDropdown() {
   const permissionMode = useSessionStore((s) => s.permissionMode);
@@ -65,22 +115,25 @@ export function PermissionModeDropdown() {
 
   // Chip text falls back to the raw value for non-UI modes (dontAsk/auto).
   const chipLabel = PERMISSION_MODE_LABEL[permissionMode] ?? permissionMode;
-  const chipIcon = PERMISSION_MODE_ICON[permissionMode] ?? <span>·</span>;
-  const isNonDefault = permissionMode !== "default";
+  const chipMeta = PERMISSION_MODE_META[permissionMode];
+  const chipIcon = chipMeta.icon;
+  // Mode-specific color (info / warning / danger); empty for the baseline
+  // "default" mode so it inherits the chip's neutral muted text.
+  const modeColor = chipMeta.color;
 
   return (
     <Menu.Root>
       <Menu.Trigger
         className={cn(
           "flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors",
-          isNonDefault
-            ? "bg-surface-hover/80 text-content"
-            : "text-content-subtle hover:bg-surface-muted hover:text-content-muted",
+          "text-content-muted hover:bg-surface-muted",
+          modeColor,
         )}
         title="Permission mode for the next session"
       >
-        <span className="opacity-80">{chipIcon}</span>
+        <span className="shrink-0 opacity-90">{chipIcon}</span>
         <span>{chipLabel}</span>
+        <IconChevronDown size={9} className="shrink-0 opacity-60" />
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="top" align="start">
@@ -109,9 +162,9 @@ export function PermissionModeDropdown() {
                     setPermissionMode(m.value);
                   }}
                 >
-                  <span className="flex min-w-0 items-baseline gap-2">
-                    <span className="shrink-0 opacity-80">{m.icon}</span>
-                    <span className="font-medium">{m.label}</span>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className={cn("shrink-0 opacity-90", active ? "" : m.color)}>{m.icon}</span>
+                    <span className={cn("font-medium", active ? "" : m.color)}>{m.label}</span>
                     <span className="truncate text-[10px] text-content-subtle">{m.hint}</span>
                   </span>
                   {active && <IconCheck size={12} className="shrink-0" />}

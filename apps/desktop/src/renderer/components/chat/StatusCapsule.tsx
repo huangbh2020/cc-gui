@@ -53,10 +53,10 @@ export function StatusCapsule({
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium backdrop-blur transition-all",
+          "flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium shadow-md transition-all",
           open
-            ? "border-accent/40 bg-accent/10 text-accent"
-            : "border-edge/50 bg-surface/80 text-content-muted hover:border-edge hover:bg-surface-hover/80",
+            ? "border-accent/50 bg-accent/15 text-accent"
+            : "border-content-subtle/40 bg-surface-hover text-content hover:brightness-95 dark:hover:brightness-110",
         )}
         title="查看活动详情（任务 / 子代理 / 上下文）"
       >
@@ -73,7 +73,7 @@ export function StatusCapsule({
               {runningAgents > 0 && (
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
               )}
-              <IconRobot size={13} className={runningAgents > 0 ? "text-warning" : "opacity-80"} />
+              <IconRobot size={13} className={runningAgents > 0 ? "text-warning" : "opacity-90"} />
               <span>{runningAgents > 0 ? runningAgents : subagents.length}</span>
             </span>
             {hasTodos && <Divider />}
@@ -83,7 +83,7 @@ export function StatusCapsule({
         {/* Tasks segment — completed / total. */}
         {hasTodos && (
           <span className="flex items-center gap-1 tabular-nums">
-            <IconListDetails size={13} className="opacity-80" />
+            <IconListDetails size={13} className="opacity-90" />
             <span>{todoDone}/{todos.length}</span>
           </span>
         )}

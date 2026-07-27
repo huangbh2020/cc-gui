@@ -3,7 +3,7 @@ import { cn } from "@renderer/lib/cn.js";
 import {
   IconCheck,
   IconChevronDown,
-  IconPrompt,
+  IconChevronRight,
   IconPlus,
   IconSettings,
 } from "@renderer/lib/icons.js";
@@ -45,12 +45,13 @@ export function ModelDropdown() {
   const model = useSessionStore((s) => s.model);
   const customModelId = useSessionStore((s) => s.customModelId);
   const customModels = useSessionStore((s) => s.customModels);
-  const setModel = useSessionStore((s) => s.setModel);
   const setCustomModel = useSessionStore((s) => s.setCustomModel);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
 
   const [open, setOpen] = useState(false);
+  const [hoveredCfgId, setHoveredCfgId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Close on outside click / ESC.
   useEffect(() => {
@@ -69,6 +70,11 @@ export function ModelDropdown() {
     };
   }, [open]);
 
+  // Reset hover state when the dropdown closes.
+  useEffect(() => {
+    if (!open) setHoveredCfgId(null);
+  }, [open]);
+
   // Chip label: show the active role's display name (or role label),
   // qualified by its config name when custom.
   const activeCustom = customModels.find((m) => m.id === customModelId);
@@ -82,15 +88,33 @@ export function ModelDropdown() {
       (activeRoleBinding ? CUSTOM_MODEL_ROLE_LABELS[model as CustomModelRoleKey] : model))
     : builtin?.label ?? model;
 
-  const pickBuiltin = (id: string) => {
-    setModel(id);
-    setCustomModel(null);
-    setOpen(false);
-  };
   const pickCustomRole = (cfgId: string, roleKey: CustomModelRoleKey) => {
     setCustomModel(cfgId, roleKey);
     setOpen(false);
   };
+
+  // Bound roles for a config, in canonical order (only roles with a requestModel).
+  const boundRolesOf = (cfgId: string): CustomModelRoleKey[] => {
+    const cfg = customModels.find((m) => m.id === cfgId);
+    if (!cfg) return [];
+    return CUSTOM_MODEL_ROLES.filter((r) => cfg.roles[r]?.requestModel?.trim());
+  };
+
+  // Hover handlers with a small grace delay so users can cross the gap
+  // between a config row and its submenu without losing focus.
+  const enterConfig = (cfgId: string) => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    setHoveredCfgId(cfgId);
+  };
+  const leaveConfig = () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(() => setHoveredCfgId(null), 120);
+  };
+
+  const hoveredRoles = hoveredCfgId ? boundRolesOf(hoveredCfgId) : [];
 
   return (
     <div className="relative" ref={rootRef}>
@@ -102,11 +126,8 @@ export function ModelDropdown() {
         )}
         title="选择模型"
       >
-        <IconPrompt size={11} className="shrink-0 opacity-80" />
         <span className="max-w-[180px] truncate">
-          {activeCustom
-            ? `${activeCustom.name} / ${chipLabel}`
-            : chipLabel}
+          {chipLabel}
         </span>
         <IconChevronDown size={9} className="shrink-0 opacity-60" />
       </button>
@@ -114,87 +135,100 @@ export function ModelDropdown() {
       {open && (
         <div
           className={cn(
-            "absolute bottom-full left-0 z-50 mb-1 max-h-[60vh] min-w-[240px] overflow-y-auto",
+            "absolute bottom-full left-0 z-50 mb-1 min-w-[240px]",
             "rounded-md border border-edge bg-surface py-1 shadow-2xl",
           )}
+          onMouseLeave={leaveConfig}
         >
-          <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-content-subtle">
-            内置模型
-          </div>
-          {BUILTIN_MODELS.map((b) => {
-            const active = !customModelId && model === b.id;
-            return (
-              <button
-                key={b.id}
-                onClick={() => pickBuiltin(b.id)}
-                className={cn(
-                  "flex w-full items-center justify-between px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-surface-muted",
-                  active ? "text-accent" : "text-content-muted",
-                )}
-              >
-                <span>
-                  <span className="font-medium">{b.label}</span>
-                  <span className="ml-2 text-[10px] text-content-subtle">{b.hint}</span>
-                </span>
-                {active && <IconCheck size={12} className="shrink-0" />}
-              </button>
-            );
-          })}
-
-          <div className="my-1 border-t border-edge" />
+          {/* Built-in models are hidden per the simplified model picker. Only
+              custom-model configs are surfaced, with their concrete models on
+              a hover-revealed submenu to the right. */}
 
           <div className="flex items-center justify-between px-2 py-1">
-            <span className="text-[10px] uppercase tracking-wide text-content-subtle">自定义模型</span>
+            <span className="text-[10px] uppercase tracking-wide text-content-subtle">模型列表</span>
             <span className="text-[10px] text-content-subtle">{customModels.length}</span>
           </div>
           {customModels.length === 0 ? (
             <div className="px-3 py-1.5 text-[11px] text-content-subtle">尚未添加自定义模型</div>
           ) : (
             customModels.map((m) => {
-              // A config is "active" when the session is bound to it; within
-              // it, exactly one role is the current selection.
+              // A config is "active" when the session is bound to it.
               const cfgActive = customModelId === m.id;
-              // Bound roles in canonical order — only roles with a requestModel.
-              const boundRoles = CUSTOM_MODEL_ROLES.filter((r) =>
-                m.roles[r]?.requestModel?.trim(),
-              );
+              const cfgHovered = hoveredCfgId === m.id;
+              const hasRoles = boundRolesOf(m.id).length > 0;
               return (
-                <div key={m.id} className="py-0.5">
-                  {/* Config group header — name + host, non-interactive. */}
-                  <div
-                    className="flex items-center justify-between px-3 pt-1 text-[10px] text-content-subtle"
+                <div
+                  key={m.id}
+                  className="relative py-0.5"
+                  onMouseEnter={() => hasRoles && enterConfig(m.id)}
+                >
+                  {/* One row per config — name + host. Hover reveals the
+                      concrete-model submenu to the right. */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // No submenu to open: keep the row non-committal so the
+                      // hover submenu stays the primary selection path.
+                      if (!hasRoles) return;
+                      enterConfig(m.id);
+                    }}
+                    className={cn(
+                      "flex w-full items-center justify-between px-3 py-1.5 text-left text-[11px] transition-colors",
+                      cfgHovered
+                        ? "bg-surface-muted text-content"
+                        : "text-content-muted hover:bg-surface-muted hover:text-content",
+                      cfgActive && "text-accent",
+                    )}
                     title={`${m.baseUrl}\ntoken: ${m.authTokenMasked} (${m.authMode === "api_key" ? "x-api-key" : "Bearer"})`}
                   >
-                    <span className="truncate font-medium uppercase tracking-wide">{m.name}</span>
-                    <span className="ml-2 shrink-0 truncate">{hostOf(m.baseUrl)}</span>
-                  </div>
-                  {/* One selectable row per bound role under this config. */}
-                  {boundRoles.map((roleKey) => {
-                    const binding = m.roles[roleKey]!;
-                    const active = cfgActive && model === roleKey;
-                    const label = binding.displayName?.trim() || CUSTOM_MODEL_ROLE_LABELS[roleKey];
-                    return (
-                      <button
-                        key={roleKey}
-                        onClick={() => pickCustomRole(m.id, roleKey)}
-                        className={cn(
-                          "flex w-full items-center justify-between pl-6 pr-3 py-1 text-left text-[11px] transition-colors hover:bg-surface-muted",
-                          active ? "text-accent" : "text-content-muted",
-                        )}
-                      >
-                        <span className="flex min-w-0 items-baseline gap-2">
-                          <span className="shrink-0 text-[9px] uppercase tracking-wide text-content-subtle">
-                            {CUSTOM_MODEL_ROLE_LABELS[roleKey]}
-                          </span>
-                          <span className="truncate">{label}</span>
-                          {binding.supports1m && (
-                            <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] text-accent">1M</span>
-                          )}
-                        </span>
-                        {active && <IconCheck size={12} className="shrink-0" />}
-                      </button>
-                    );
-                  })}
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate font-medium">{m.name}</span>
+                      {cfgActive && <IconCheck size={12} className="shrink-0" />}
+                    </span>
+                    <span className="ml-2 flex shrink-0 items-center gap-1">
+                      <span className="truncate text-[10px] text-content-subtle">{hostOf(m.baseUrl)}</span>
+                      {hasRoles && <IconChevronRight size={10} className="opacity-60" />}
+                    </span>
+                  </button>
+
+                  {/* Submenu: concrete models for this config. Rendered to the
+                      right edge of the root so long config names don't push it
+                      off-screen. */}
+                  {cfgHovered && hasRoles && (
+                    <div
+                      className={cn(
+                        "absolute bottom-0 left-full z-50 ml-1 min-w-[200px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
+                      )}
+                      onMouseEnter={enterConfig.bind(null, m.id)}
+                    >
+                      {hoveredRoles.map((roleKey) => {
+                        const binding = m.roles[roleKey]!;
+                        const active = cfgActive && model === roleKey;
+                        const label = binding.displayName?.trim() || CUSTOM_MODEL_ROLE_LABELS[roleKey];
+                        return (
+                          <button
+                            key={roleKey}
+                            onClick={() => pickCustomRole(m.id, roleKey)}
+                            className={cn(
+                              "flex w-full items-center justify-between px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-surface-muted",
+                              active ? "text-accent" : "text-content-muted",
+                            )}
+                          >
+                            <span className="flex min-w-0 items-baseline gap-2">
+                              <span className="shrink-0 text-[9px] uppercase tracking-wide text-content-subtle">
+                                {CUSTOM_MODEL_ROLE_LABELS[roleKey]}
+                              </span>
+                              <span className="truncate">{label}</span>
+                              {binding.supports1m && (
+                                <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] text-accent">1M</span>
+                              )}
+                            </span>
+                            {active && <IconCheck size={12} className="shrink-0" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })

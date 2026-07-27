@@ -1,6 +1,9 @@
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { PERMISSION_MODE_LABEL } from "@renderer/components/chat/PermissionModeDropdown.js";
-import type { PermissionMode } from "@contracts/runtime";
+import { cn } from "@renderer/lib/cn.js";
+import {
+  PERMISSION_MODE_LABEL,
+  PERMISSION_MODE_META,
+} from "@renderer/components/chat/PermissionModeDropdown.js";
 
 /** Bottom status bar: claude status, active model/effort/mode, run state.
  * Mirrors the per-session settings chosen in the composer so they're always
@@ -10,17 +13,6 @@ const MODEL_LABEL: Record<string, string> = {
   fable: "Fable",
   opus: "Opus",
   sonnet: "Sonnet",
-};
-/** Per-mode accent for the status bar. `bypassPermissions` is the only
- *  truly dangerous one — it skips every permission check — so it gets the
- *  danger color. The rest are warning-tinted to show "non-default". */
-const MODE_COLOR: Record<PermissionMode, string> = {
-  default: "text-content-muted",
-  acceptEdits: "text-warning",
-  plan: "text-warning",
-  bypassPermissions: "text-danger",
-  dontAsk: "text-warning",
-  auto: "text-warning",
 };
 
 export function StatusBar() {
@@ -57,7 +49,13 @@ export function StatusBar() {
       <span className="text-content-muted">{modelLabel}</span>
       {effort !== "default" && <span className="text-info">{effort}</span>}
       <span className="text-content-subtle">·</span>
-      <span className={MODE_COLOR[permissionMode] ?? "text-content-muted"}>
+      <span
+        className={cn(
+          "inline-flex items-center gap-1",
+          PERMISSION_MODE_META[permissionMode].color || "text-content-muted",
+        )}
+      >
+        <span className="shrink-0 opacity-90">{PERMISSION_MODE_META[permissionMode].icon}</span>
         {PERMISSION_MODE_LABEL[permissionMode] ?? permissionMode}
       </span>
 

@@ -121,6 +121,11 @@ export {
   IconCpu,
   // Theme picker icons
   IconDeviceDesktop,
+  // Permission / security
+  IconShield,
+  IconShieldCheck,
+  IconShieldLock,
+  IconShieldHalfFilled,
 } from "@tabler/icons-react";
 
 /* ───────── Shorthand aliases (commonly used) ───────── */

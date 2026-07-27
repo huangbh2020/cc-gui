@@ -30,6 +30,7 @@ import { ContentTagChip } from "./ContentTagChip.js";
 import { TurnFilesCard } from "./TurnFilesCard.js";
 import { TagPopover } from "./TagPopover.js";
 import { StatusCapsule } from "./StatusCapsule.js";
+import { MessageTimeline, type RowRefMap } from "./MessageTimeline.js";
 
 /**
  * Center pane: message stream + input box for a SINGLE session.
@@ -118,31 +119,32 @@ function EmptyCenterPane() {
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   return (
     <div className="flex h-full items-center justify-center">
-      <div className="max-w-md text-center text-sm text-content-muted">
+      <div className="max-w-md text-center">
         {claudeInstalled === false ? (
           <div className="space-y-3">
-            <div className="flex items-center justify-center gap-1.5 text-warning">
-              <IconAlertTriangle size={16} />
-              <span>Claude Code CLI not detected</span>
+            <div className="flex items-center justify-center gap-1.5 text-base font-semibold text-warning">
+              <IconAlertTriangle size={18} />
+              <span>未检测到 Claude Code CLI</span>
             </div>
-            <p className="text-xs text-content-subtle">
-              Install it (<code className="rounded bg-surface-muted px-1">npm i -g @anthropic-ai/claude-code</code>),
-              or point the app at an existing install:
+            <p className="text-sm text-content-muted">
+              请先安装（
+              <code className="rounded bg-surface-muted px-1 text-content">npm i -g @anthropic-ai/claude-code</code>
+              ），或指定已有的安装路径：
             </p>
             <button
               onClick={() => setSettingsOpen(true)}
               className={cn(
-                "inline-flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-xs font-medium text-surface",
+                "inline-flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-sm font-medium text-surface",
                 "hover:brightness-110",
               )}
             >
-              <IconSettings size={12} />
-              Configure CLI path
-              <IconArrowRight size={12} />
+              <IconSettings size={14} />
+              配置 CLI 路径
+              <IconArrowRight size={14} />
             </button>
           </div>
         ) : (
-          <p>Open a project and start a session to begin.</p>
+          <p className="text-base font-medium text-content">打开一个项目并开始会话以继续</p>
         )}
       </div>
     </div>
@@ -225,6 +227,15 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   const [tags, setTags] = useState<ContentTag[]>([]);
   // Which tag's preview popover is open (by id); null = none.
   const [openTagId, setOpenTagId] = useState<string | null>(null);
+  // Map of user messageId → its row DOM element. The MessageTimeline reads
+  // each row's offsetTop to (a) highlight the dash whose message is in view
+  // and (b) scroll to that row on dash click. Stored in a ref (not state)
+  // because the timeline reads it inside its own scroll listener.
+  const userRowRefs = useRef<RowRefMap>(new Map());
+  const registerUserRow = (id: string) => (el: HTMLDivElement | null) => {
+    if (el) userRowRefs.current.set(id, el);
+    else userRowRefs.current.delete(id);
+  };
 
   // Auto-resize the textarea to fit its content. Resets height to "auto"
   // first so scrollHeight measures the full content, then sets an explicit
@@ -280,20 +291,34 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // Track whether the user is near the bottom, so we only auto-scroll on new
   // messages when they're already following along (don't yank them down while
   // they're reading older history). Also drives the "jump to bottom" button.
-  useEffect(() => {
+  const updateJumpState = () => {
     const el = scrollRef.current;
     if (!el) return;
     // Show the button as soon as the user scrolls up at all from the latest
     // content. The 120px threshold (rather than 10px) prevents flicker when
     // a new line is appended — the auto-scroll lands within a few pixels of
     // the bottom and shouldn't pop the button in and out for that.
-    const onScroll = () => {
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     setShowJumpBottom(!nearBottom);
-    };
-    el.addEventListener("scroll", onScroll);
-    return () => el.removeEventListener("scroll", onScroll);
+  };
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener("scroll", updateJumpState);
+    // Sync once on mount so a session resumed with history taller than the
+    // viewport shows the button immediately, without waiting for a scroll.
+    updateJumpState();
+    return () => el.removeEventListener("scroll", updateJumpState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-evaluate after messages change: when the list grows the scroll height
+  // changes, so a position that was "near the bottom" may no longer be.
+  useEffect(() => {
+    updateJumpState();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
 
   // Auto-scroll to bottom as messages grow — but only if already at the bottom.
   useEffect(() => {
@@ -333,13 +358,28 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="relative flex h-full flex-col">
+      {/* Message stream — wrapped so overlays (jump-to-bottom) can sit above
+          the scroll area but below the input box. When the session is empty
+          the wrapper collapses (contents hidden) so the input-box wrapper
+          below can take the full height and center vertically. */}
+      <div className={cn("relative flex min-h-0", empty ? "h-0" : "flex-1")}>
+      {/* Left-edge timeline of user messages — fixed cluster anchored to the
+          chat area's left-middle, does NOT scroll with content. Lives in the
+          overlay wrapper (outside the scroll container) so it stays put. */}
+      {!empty && (
+        <MessageTimeline
+          messages={messages}
+          rowRefs={userRowRefs.current}
+          scrollRef={scrollRef}
+        />
+      )}
       {/* Message stream — scroll container, hidden when empty so the input
           box can take the full height and center vertically. No border or
           gap between the scroll area and the input box below. */}
       <div
         ref={scrollRef}
         className={cn(
-          "relative overflow-y-auto px-4",
+          "relative w-full overflow-y-auto px-8",
           empty ? "hidden" : "min-h-0 flex-1",
         )}
       >
@@ -355,7 +395,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 />
               </div>
             )}
-            <div className="mx-auto max-w-5xl space-y-5">
+            <div className="mx-auto max-w-5xl space-y-5 pt-6">
               {messages.map((m, i) => {
                 const isStreamingTail =
                   isRunning &&
@@ -371,26 +411,38 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                     msg={m}
                     isStreamingTail={isStreamingTail}
                     isLastCompletedAssistant={isLastCompletedAssistant}
+                    // User rows register their DOM element so the timeline
+                    // can locate them for highlight + jump. Assistant rows
+                    // pass nothing.
+                    registerRow={m.role === "user" ? registerUserRow(m.id) : undefined}
                   />
                 );
               })}
             </div>
-            {/* Jump-to-bottom button */}
-            {showJumpBottom && (
-              <button
-                onClick={jumpToBottom}
-                className={cn(
-                  "absolute right-4 z-20 rounded-full border border-edge/50",
-                  "bg-surface/80 p-1.5 shadow-lg backdrop-blur transition-colors",
-                  "hover:bg-surface-hover/80",
-                )}
-                title="回到底部"
-              >
-                <IconArrowDown size={14} className="text-content-muted" />
-              </button>
-            )}
           </>
         )}
+      </div>
+
+      {/* Jump-to-bottom button — centered horizontally over the scroll area
+          (NOT the input box below), so it never covers the composer. Lives in
+          the wrapper that wraps only the scroll region, hence bottom-2 here
+          sits at the bottom of the message stream. Pointer events disabled on
+          the spacer so it never blocks scroll/click on underlying content. */}
+      {showJumpBottom && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-2 z-30 flex justify-center">
+          <button
+            onClick={jumpToBottom}
+            className={cn(
+              "pointer-events-auto flex items-center gap-1 rounded-full",
+              "border border-content-subtle/40 bg-surface-hover px-2.5 py-1.5 shadow-md transition-all",
+              "hover:brightness-95 dark:hover:brightness-110",
+            )}
+            title="回到底部"
+          >
+            <IconArrowDown size={14} className="text-content" />
+          </button>
+        </div>
+      )}
       </div>
 
       {/* Input box — fixed at the bottom (outside the scroll container) so
@@ -398,7 +450,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           the box sits flush against the message area. When the session is
           empty the wrapper takes flex-1 and centers the box vertically. */}
       <div className={cn(
-        "px-4",
+        "px-8",
         empty
           ? "flex flex-1 items-center justify-center"
           : "shrink-0 pb-3",
@@ -472,25 +524,25 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               {isRunning ? (
                 <button
                   onClick={() => void interrupt()}
+                  title="停止生成"
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-md bg-danger px-3 py-1 text-xs font-medium text-surface",
+                    "inline-flex items-center justify-center rounded-md bg-danger p-1.5 text-surface",
                     "hover:brightness-110",
                   )}
                 >
-                  <IconPlayerStop size={12} />
-                  Stop
+                  <IconPlayerStop size={14} />
                 </button>
               ) : (
                 <button
                   onClick={handleSend}
                   disabled={!value.trim() && tags.length === 0}
+                  title="发送"
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-md bg-accent px-3 py-1 text-xs font-medium text-surface transition-all",
+                    "inline-flex items-center justify-center rounded-md bg-accent p-1.5 text-surface transition-all",
                     "hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle",
                   )}
                 >
-                  <IconSend2 size={12} />
-                  Send
+                  <IconSend2 size={14} />
                 </button>
               )}
             </div>
@@ -545,7 +597,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
  *  "开始 HH:MM:SS · 用时 12.3s" stat row ABOVE the content. The streaming
  *  tail (the last assistant message while a turn is running) shows a
  *  spinning loader at the bottom of the content. */
-function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant }: { msg: ChatMessage; isStreamingTail?: boolean; isLastCompletedAssistant?: boolean }) {
+function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, registerRow }: { msg: ChatMessage; isStreamingTail?: boolean; isLastCompletedAssistant?: boolean; registerRow?: (el: HTMLDivElement | null) => void }) {
   const isUser = msg.role === "user";
   const copyText = useMemo(() => blocksToText(msg.blocks), [msg.blocks]);
   // Only show the copy button on messages with real text content — i.e. the
@@ -562,7 +614,7 @@ function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant }: { msg: C
     ? hasTextContent && !!copyText
     : hasTextContent && !!copyText && isLastCompletedAssistant;
   return (
-    <div className={cn("group", isUser ? "flex justify-end" : "")}>
+    <div ref={registerRow} className={cn("group", isUser ? "flex justify-end" : "")}>
       <div className={isUser ? "max-w-[85%]" : "w-full"}>
         {/* Per-turn stat row — only on the first assistant message of a
             turn (the one carrying turnMeta). Sits above the content. */}
