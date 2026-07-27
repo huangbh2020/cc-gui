@@ -55,6 +55,7 @@ function migrate(database: Database): void {
       id          TEXT PRIMARY KEY,
       name        TEXT NOT NULL,
       path        TEXT NOT NULL,
+      archived    INTEGER NOT NULL DEFAULT 0,
       created_at  INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL
     );
@@ -62,12 +63,15 @@ function migrate(database: Database): void {
     CREATE TABLE IF NOT EXISTS sessions (
       id                TEXT PRIMARY KEY,
       project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      provider_id       TEXT NOT NULL DEFAULT 'claude-sdk',
       claude_session_id TEXT,
       title             TEXT NOT NULL,
       status            TEXT NOT NULL,
       model             TEXT NOT NULL,
       effort            TEXT NOT NULL DEFAULT 'default',
       permission_mode   TEXT NOT NULL,
+      custom_model_id   TEXT,
+      archived          INTEGER NOT NULL DEFAULT 0,
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL
     );
@@ -87,9 +91,20 @@ function migrate(database: Database): void {
       value TEXT NOT NULL
     );
   `);
-  // Backward-compatible column adds for dbs created before the effort column
+  // Backward-compatible column adds for dbs created before these columns
   // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).
   addColumnIfMissing(database, "sessions", "effort", "TEXT NOT NULL DEFAULT 'default'");
+  addColumnIfMissing(database, "sessions", "provider_id", "TEXT NOT NULL DEFAULT 'claude-sdk'");
+  addColumnIfMissing(database, "sessions", "context_snapshot", "TEXT");
+  // Capsule state (todos / subagents / plan draft) persisted so the
+  // top-right status capsule reloads on session reopen. JSON-serialized,
+  // nullable — same shape as context_snapshot.
+  addColumnIfMissing(database, "sessions", "todos", "TEXT");
+  addColumnIfMissing(database, "sessions", "subagents", "TEXT");
+  addColumnIfMissing(database, "sessions", "plan_draft", "TEXT");
+  addColumnIfMissing(database, "sessions", "custom_model_id", "TEXT");
+  addColumnIfMissing(database, "sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(database, "projects", "archived", "INTEGER NOT NULL DEFAULT 0");
 }
 
 /** Add a column only if it isn't already present. SQLite has no ADD COLUMN IF

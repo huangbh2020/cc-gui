@@ -1,97 +1,40 @@
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import type { PermissionMode, EffortLevel } from "@contracts/runtime";
+import { ModelDropdown } from "./ModelDropdown.js";
+import { EffortDropdown } from "./EffortDropdown.js";
+import { PermissionModeDropdown } from "./PermissionModeDropdown.js";
+import { ContextRing } from "./ContextRing.js";
 
 /**
  * In-composer option chips (Codex-style). Renders as a row meant to sit at the
  * *bottom* of the composer box, left-aligned, sharing a line with the send
- * button. Each chip cycles through values on click. Compact + muted so the
- * textarea stays the focal point.
+ * button. Compact + muted so the textarea stays the focal point.
+ *
+ * - Model: dropdown (built-in + custom configs).
+ * - Effort: dropdown (Auto → Max), same base-ui Menu style as Permission.
+ * - Permission mode: dropdown showing the 4 user-facing modes.
+ * - Context ring: occupancy indicator for the active session, pinned at the
+ *   right end of the chip row (after Permission). Sits inline rather than
+ *   overlapping the textarea, so it never covers typed text.
  */
-
-const MODELS = ["default", "fable", "opus", "sonnet"] as const;
-const MODEL_LABEL: Record<string, string> = {
-  default: "Auto",
-  fable: "Fable",
-  opus: "Opus",
-  sonnet: "Sonnet",
-};
-
-const EFFORTS: EffortLevel[] = ["default", "low", "medium", "high", "xhigh", "max"];
-const EFFORT_LABEL: Record<EffortLevel, string> = {
-  default: "Auto",
-  low: "Low",
-  medium: "Med",
-  high: "High",
-  xhigh: "XHigh",
-  max: "Max",
-};
-
-const MODE_ORDER: PermissionMode[] = ["default", "plan", "acceptEdits"];
-const MODE_LABEL: Record<PermissionMode, string> = { default: "Default", plan: "Plan", acceptEdits: "Edits" };
-const MODE_ICON: Record<PermissionMode, string> = { default: "▸", plan: "⚡", acceptEdits: "✎" };
-
-function Chip({
-  icon,
-  label,
-  active = false,
-  title,
-  onClick,
-}: {
-  icon: string;
-  label: string;
-  active?: boolean;
-  title: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors ${
-        active ? "bg-zinc-700/80 text-zinc-100" : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-      }`}
-      title={title}
-    >
-      <span className="opacity-80">{icon}</span>
-      <span>{label}</span>
-    </button>
-  );
-}
-
 export function ComposerToolbar() {
-  const model = useSessionStore((s) => s.model);
-  const setModel = useSessionStore((s) => s.setModel);
-  const effort = useSessionStore((s) => s.effort);
-  const setEffort = useSessionStore((s) => s.setEffort);
-  const permissionMode = useSessionStore((s) => s.permissionMode);
-  const setPermissionMode = useSessionStore((s) => s.setPermissionMode);
-
-  const cycle = <T,>(arr: readonly T[], cur: T, set: (v: T) => void) => {
-    const i = arr.indexOf(cur);
-    set(arr[(i + 1) % arr.length]);
-  };
+  // Context-window snapshot for the active session. Drives the ring at the
+  // end of the chip row. Undefined until the first token-usage.updated event
+  // arrives (or a persisted snapshot is hydrated from the session row).
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const contextSnapshot = useSessionStore((s) =>
+    activeSessionId ? s.contextSnapshotBySession[activeSessionId] : undefined,
+  );
 
   return (
     <div className="flex items-center gap-0.5">
-      <Chip
-        icon="◆"
-        label={MODEL_LABEL[model] ?? model}
-        title="Model for the next session (click to cycle)"
-        onClick={() => cycle(MODELS, model, setModel)}
-      />
-      <Chip
-        icon="✦"
-        label={EFFORT_LABEL[effort]}
-        active={effort !== "default"}
-        title="Reasoning effort for the next session (click to cycle)"
-        onClick={() => cycle(EFFORTS, effort, setEffort)}
-      />
-      <Chip
-        icon={MODE_ICON[permissionMode]}
-        label={MODE_LABEL[permissionMode]}
-        active={permissionMode !== "default"}
-        title="Permission mode for the next session (click to cycle)"
-        onClick={() => cycle(MODE_ORDER, permissionMode, setPermissionMode)}
-      />
+      <ModelDropdown />
+      <EffortDropdown />
+      <PermissionModeDropdown />
+      {contextSnapshot && (
+        <span className="ml-1 inline-flex items-center border-l border-edge/60 pl-1.5">
+          <ContextRing snapshot={contextSnapshot} />
+        </span>
+      )}
     </div>
   );
 }

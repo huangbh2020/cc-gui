@@ -2,6 +2,7 @@ import { app, BrowserWindow, session } from "electron";
 import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
 import { initDb, closeDb } from "@main/store/db.js";
+import { initTheme } from "@main/lib/theme.js";
 import { is } from "@main/utils.js";
 
 // Single-instance lock — only one GUI instance runs at a time.
@@ -41,6 +42,11 @@ app.whenReady().then(async () => {
       });
     });
   }
+
+  // Apply the persisted theme preference BEFORE creating the window, so the
+  // first frame's backgroundColor and the renderer's initial .dark class
+  // match — no flash of the wrong theme.
+  initTheme();
 
   registerIpcHandlers();
   createMainWindow();

@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { cn } from "@renderer/lib/cn.js";
+import { IconCheck, IconCopy } from "@renderer/lib/icons.js";
 import type { Components } from "react-markdown";
 
 /**
@@ -34,10 +36,17 @@ function CopyButton({ text }: { text: string }) {
           setTimeout(() => setCopied(false), 1200);
         });
       }}
-      className="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700/60 hover:text-zinc-300"
+      className={cn(
+        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors",
+        "text-content-subtle hover:bg-surface-hover/60 hover:text-content-muted",
+      )}
       title="Copy code"
     >
-      {copied ? "✓ copied" : "copy"}
+      {copied ? (
+        <><IconCheck size={10} /> copied</>
+      ) : (
+        <><IconCopy size={10} /> copy</>
+      )}
     </button>
   );
 }
@@ -49,7 +58,7 @@ const components: Components = {
     const isInline = !/language-/.test(className || "");
     if (isInline) {
       return (
-        <code className="rounded bg-zinc-800/80 px-1 py-0.5 font-mono text-[0.85em] text-emerald-300">
+        <code className="rounded bg-surface-muted/80 px-1 py-0.5 font-mono text-[0.85em] text-accent">
           {children}
         </code>
       );
@@ -67,12 +76,12 @@ const components: Components = {
     const lang = match?.[1] ?? "text";
     const raw = extractText(childProps?.children);
     return (
-      <pre className="my-2 overflow-hidden rounded-lg border border-zinc-700/60 bg-zinc-950/80">
-        <div className="flex items-center justify-between border-b border-zinc-700/60 bg-zinc-800/40 px-2 py-0.5 text-[10px] text-zinc-500">
+      <pre className="my-2 overflow-hidden rounded-lg border border-edge/60 bg-surface/80">
+        <div className="flex items-center justify-between border-b border-edge/60 bg-surface-muted/40 px-2 py-0.5 text-[10px] text-content-subtle">
           <span className="font-mono">{lang}</span>
           <CopyButton text={raw.replace(/\n$/, "")} />
         </div>
-        <code className="block overflow-x-auto px-3 py-2 font-mono text-[12px] leading-relaxed text-zinc-200">
+        <code className="block overflow-x-auto px-3 py-2 font-mono text-[12px] leading-relaxed text-content">
           {childProps?.children}
         </code>
       </pre>
@@ -80,19 +89,19 @@ const components: Components = {
   },
   a({ children, href }) {
     return (
-      <a href={href} target="_blank" rel="noreferrer" className="text-sky-400 underline hover:text-sky-300">
+      <a href={href} target="_blank" rel="noreferrer" className="text-info underline hover:text-info">
         {children}
       </a>
     );
   },
   ul({ children }) {
-    return <ul className="my-1.5 list-disc space-y-1 pl-5 marker:text-zinc-600">{children}</ul>;
+    return <ul className="my-1.5 list-disc space-y-1 pl-5 marker:text-content-subtle">{children}</ul>;
   },
   ol({ children }) {
-    return <ol className="my-1.5 list-decimal space-y-1 pl-5 marker:text-zinc-600">{children}</ol>;
+    return <ol className="my-1.5 list-decimal space-y-1 pl-5 marker:text-content-subtle">{children}</ol>;
   },
   blockquote({ children }) {
-    return <blockquote className="my-2 border-l-2 border-zinc-700 pl-3 text-zinc-400">{children}</blockquote>;
+    return <blockquote className="my-2 border-l-2 border-edge pl-3 text-content-muted">{children}</blockquote>;
   },
   table({ children }) {
     return (
@@ -102,25 +111,25 @@ const components: Components = {
     );
   },
   th({ children }) {
-    return <th className="border border-zinc-700 bg-zinc-800/50 px-2 py-1 text-left font-semibold text-zinc-300">{children}</th>;
+    return <th className="border border-edge bg-surface-muted/50 px-2 py-1 text-left font-semibold text-content-muted">{children}</th>;
   },
   td({ children }) {
-    return <td className="border border-zinc-700 px-2 py-1 text-zinc-300">{children}</td>;
+    return <td className="border border-edge px-2 py-1 text-content-muted">{children}</td>;
   },
   h1({ children }) {
-    return <h1 className="mb-2 mt-3 text-base font-bold text-zinc-100">{children}</h1>;
+    return <h1 className="mb-2 mt-3 text-base font-bold text-content">{children}</h1>;
   },
   h2({ children }) {
-    return <h2 className="mb-1.5 mt-3 text-sm font-bold text-zinc-100">{children}</h2>;
+    return <h2 className="mb-1.5 mt-3 text-sm font-bold text-content">{children}</h2>;
   },
   h3({ children }) {
-    return <h3 className="mb-1 mt-2 text-sm font-semibold text-zinc-200">{children}</h3>;
+    return <h3 className="mb-1 mt-2 text-sm font-semibold text-content">{children}</h3>;
   },
 };
 
 export function Markdown({ children }: { children: string }) {
   return (
-    <div className="text-sm leading-relaxed text-zinc-200 [&>p]:my-1.5 [&:first-child]:mt-0 [&:last-child]:mb-0">
+    <div className="text-sm leading-relaxed text-content [&>p]:my-1.5 [&:first-child]:mt-0 [&:last-child]:mb-0">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {children}
       </ReactMarkdown>

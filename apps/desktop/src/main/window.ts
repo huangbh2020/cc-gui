@@ -1,8 +1,15 @@
 import { BrowserWindow, shell } from "electron";
 import { join } from "node:path";
 import { is } from "@main/utils.js";
+import { getEffectiveTheme } from "@main/lib/theme.js";
 
 let mainWindow: BrowserWindow | null = null;
+
+/** Background color matching the effective theme, so the first frame (before
+ *  React mounts) doesn't flash the wrong color. Mirrors --surface in CSS. */
+function bgColor(): string {
+  return getEffectiveTheme() === "dark" ? "#18181b" : "#ffffff";
+}
 
 /** Create the primary three-pane window. */
 export function createMainWindow(): BrowserWindow {
@@ -14,7 +21,7 @@ export function createMainWindow(): BrowserWindow {
     show: false,
     autoHideMenuBar: true,
     title: "Claude GUI",
-    backgroundColor: "#1e1e1e",
+    backgroundColor: bgColor(),
     webPreferences: {
       preload: join(__dirname, "../preload/index.mjs"),
       contextIsolation: true,

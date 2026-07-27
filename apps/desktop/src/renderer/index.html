@@ -4,8 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Claude GUI</title>
+    <!--
+      FOUC guard: set the initial .dark class on <html> BEFORE React mounts,
+      so the first painted frame matches the effective theme. We can't reach
+      the persisted SQLite preference here (preload/IPC aren't ready yet), so
+      we use the OS preference as a best-effort initial guess — which matches
+      the default "system" theme. The renderer's useTheme() hook corrects this
+      the moment it loads the real preference. Uses classList (no framework).
+    -->
+    <script>
+      (function () {
+        try {
+          var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          if (prefersDark) document.documentElement.classList.add("dark");
+        } catch (e) {
+          /* matchMedia unavailable — leave default (light); useTheme() will fix up. */
+        }
+      })();
+    </script>
   </head>
-  <body class="bg-zinc-950 text-zinc-100">
+  <body class="bg-surface text-content">
     <div id="root"></div>
     <script type="module" src="./main.tsx"></script>
   </body>

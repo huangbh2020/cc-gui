@@ -1,6 +1,6 @@
 # 技术栈文档
 
-> my-claude-gui — 基于 `claude` CLI stream-json 协议的桌面端 GUI
+> my-claude-gui — 基于 Claude Agent SDK 的桌面端 GUI
 >
 > 本文档记录项目**实际使用**的技术栈与依赖,以及关键的技术决策与踩坑记录。所有版本号来自 `package.json`,与实际安装一致。
 
@@ -11,9 +11,10 @@
 | 维度 | 选型 |
 |------|------|
 | 应用形态 | Electron 桌面应用(三栏 IDE 布局) |
-| 核心理念 | **不重新实现 agent,只做 claude 的交互界面**。claude 作为黑盒子进程,经官方 stream-json 协议驱动 |
-| 与 Claude Code 的关系 | 本应用**不打包** `claude.exe`,只调用用户系统已装的 Claude Code;项目自身 MIT,可独立开源 |
+| 核心理念 | **不重新实现 agent,只做 Claude 的交互界面**。通过 Agent SDK(封装了 claude 原生的 agent loop)驱动,本项目提供会话管理、流式渲染、工具审批、IDE 能力 |
+| 与 Claude 的关系 | 使用 `@anthropic-ai/claude-agent-sdk` 驱动(内部仍 spawn 打包的二进制,由 SDK 管理);项目自身 MIT,可独立开源 |
 | 架构参考 | [Synara](https://github.com/Emanuele-web04/synara) 的分层设计(provider adapter、归一化 runtime 事件、IPC 边界),但用**主流 TS**重写(无 effect-ts、无 bun) |
+| 扩展性 | 内置 `AgentProvider` 抽象层 + `ProviderRegistry`,后续扩展其他 agent 平台(OpenAI Codex、Gemini CLI 等)只需实现接口并注册
 
 ---
 
@@ -32,14 +33,18 @@
 │  只暴露白名单 RPC 句柄,所有消息经 zod 校验                  │
 ├─────────────────────────────────────────────────────────────┤
 │  Main 进程 (Node.js)                                        │
-│  ┌───────────────┬────────────────┬─────────────────────┐   │
-│  │ ClaudeRuntime │ SessionManager │  IDE Services        │   │
-│  │ (spawn 二进制)│ (会话生命周期) │  terminal/git/diff   │   │
-│  └───────┬───────┴────────────────┴─────────────────────┘   │
-│          │ child_process.spawn(claude, stream-json)          │
+│  ┌──────────────┬────────────────┬─────────────────────┐   │
+│  │RuntimeManager│ SessionManager │  IDE Services        │   │
+│  │(持ProviderReg│ (SQLite 持久化)│  terminal/git/diff   │   │
+│  │ istry)       │                │                      │   │
+│  ├──────────────┴────────────────┴─────────────────────┤   │
+│  │ AgentProvider (claude-sdk / codex / gemini / ...)   │   │
+│  │ ClaudeAgentSdkProvider: query() → stream → emit     │   │
+│  └─────────────────────────────────────────────────────┘   │
+│          │ @anthropic-ai/claude-agent-sdk (query)           │
 └──────────┼──────────────────────────────────────────────────┘
            ▼
-      claude CLI(用户系统已装)
+      SDK 内打包的 claude 原生二进制
 ```
 
 **为什么三进程而非像 Synara 那样再拆出独立 server 进程**:Synara 拆独立 server 是为了支持 9 个 provider 和多客户端。本项目只需 claude 一个 provider,Electron 主进程内直接持有 `ClaudeRuntime` 即可——少一层进程边界 = 少一层 WebSocket = 更简单更快。架构上预留了"可拆出独立 server"的接口,但默认不拆。
@@ -76,8 +81,13 @@
 | **@vitejs/plugin-react** | ^4.3 | Vite 的 React 支持(Fast Refresh) |
 | **Tailwind CSS** | ^3.4 | 原子化 CSS |
 | **autoprefixer** / **postcss** | ^10.4 / ^8.4 | Tailwind 配套 |
+| **@base-ui/react** | ^1.5 | 无头 UI 组件库(Radix UI 继任者) |
+| **@tabler/icons-react** | ^3.44 | 主图标库(Tabler Icons) |
+| **react-icons** | ^5.6 | 辅助图标库(Phosphor/Remix/VS Code/SI 等) |
+| **class-variance-authority** | ^0.7 | `cva()` variant 管理 |
+| **tailwind-merge** / **clsx** | ^3.6 / ^2.1 | 合并 Tailwind class 的 `cn()` 工具 |
 
-> **TanStack Router / Query、Lexical、Monaco、xterm、react-markdown** 等在总体方案中规划,但**当前(P0–P1)尚未安装**。按阶段引入:P2(TanStack)、P4(xterm/Monaco)、P5(浏览器)。文档会随安装更新。
+> **TanStack Router / Query、Lexical、Monaco、xterm、react-markdown** 等在总体方案中规划,但**当前尚未安装**。按阶段引入:P4(xterm/Monaco)、P5(浏览器)。组件库(`@base-ui/react`)和图标库(`@tabler/icons-react`)已安装可用。
 
 ### 3.4 共享契约(packages/contracts)
 
@@ -102,9 +112,10 @@ my-claude-gui/
 ├── packages/
 │   └── contracts/            # 共享类型 + zod schema(无运行时逻辑)
 │       └── src/
-│           ├── runtime.ts    # RuntimeEvent 联合(claude 流事件归一化)
+│           ├── runtime.ts    # RuntimeEvent 联合(provider 中立,claude 流事件归一化)
 │           ├── session.ts    # Project / Session / Message 领域类型
 │           ├── ipc.ts        # zod schema + IPC 通道常量 + RPC 类型表
+│           ├── provider.ts   # AgentProvider 接口 / ProviderContext / TurnHandle
 │           └── index.ts
 └── apps/
     └── desktop/
@@ -116,16 +127,21 @@ my-claude-gui/
             │   ├── index.ts          # app 生命周期 + 单实例锁 + CSP(prod)
             │   ├── window.ts         # 窗口创建 + 控制台转发
             │   ├── utils.ts          # is.dev / uid()
-            │   ├── lib/logger.ts     # 文件+stderr 日志
-            │   ├── claude/
-            │   │   ├── ClaudePathResolver.ts   # 跨平台定位 claude 入口
-            │   │   ├── ClaudeRuntime.ts        # spawn + NDJSON 解析
-            │   │   └── RuntimeManager.ts       # 会话↔runtime 映射
-            │   ├── ipc/
-            │   │   ├── index.ts      # 注册所有 handler
-            │   │   ├── claude.ts     # 会话/turn/interrupt + healthCheck
-            │   │   └── projects.ts   # 项目 CRUD
-            │   └── store/memoryStore.ts  # 内存存储(P2 换 SQLite)
+│   ├── lib/logger.ts     # 文件+stderr 日志
+│   ├── claude/
+│   │   ├── RuntimeManager.ts       # 会话↔provider 映射
+│   │   └── ApprovalBridge.ts       # 工具审批/AskUserQuestion IPC 桥接
+│   ├── providers/
+│   │   ├── registry.ts             # ProviderRegistry 单例
+│   │   └── claude-sdk/
+	            │   │       ├── ClaudeAgentSdkProvider.ts  # AgentProvider 实现(query 包装)
+	            │   │       ├── SdkMessageAdapter.ts       # SDKMessage → RuntimeEvent 归一化
+	            │   │       └── index.ts
+	            │   ├── ipc/
+	            │   │   ├── index.ts      # 注册所有 handler
+	            │   │   ├── claude.ts     # 会话/turn/interrupt/approve/healthCheck/provider.list
+	            │   │   └── projects.ts   # 项目 CRUD
+	            │   └── store/            # SQLite 持久化(sql.js, repositories)
             ├── preload/
             │   └── index.ts          # contextBridge 白名单 API
             └── renderer/             # 前端(React)
@@ -142,16 +158,19 @@ my-claude-gui/
 
 ## 五、关键技术决策
 
-### 5.1 为什么 spawn 二进制而非用 Agent SDK?
+### 5.1 为什么从 spawn CLI 迁移到 Agent SDK
 
-| 维度 | spawn claude.exe | Agent SDK |
-|------|------------------|-----------|
-| 出活速度 | ⚡ 最快 | 中 |
-| 能改 agent 行为 | ✗ 黑盒 | ✅ 完全控制 |
-| 能用 Max 订阅 | ✅ **能**(走订阅不按 token 付费) | ✗ 走 API key |
-| 维护成本 | 🔴 高(追 CLI 变动) | 🟡 中 |
+| 维度 | spawn claude.exe (旧) | Agent SDK (新) |
+|------|----------------------|---------------|
+| 审批(canUseTool) | ✗ CLI `-p` 非交互模式下形同虚设 | ✅ **原生 async 回调**,可事中拦截 |
+| 流协议稳定性 | 🔴 NDJSON 不稳定,需自己 try/catch + 兜底 | ✅ 类型化 `SDKMessage`,无裸 JSON 解析 |
+| 进程管理 | 🔴 跨平台找 exe(.cmd/.cjs/.exe)、ENOENT、PATH 解析 | ✅ SDK 自带二进制,`pathToClaudeCodeExecutable` |
+| turn 结束判定 | 🔴 看 `result` 行 + `close` 事件兜底 | ✅ generator 自然结束 + `ResultMessage` |
+| 计费 | ✅ **能用 Max/Pro 订阅**(不按 token 付费) | ❌ 走 `ANTHROPIC_API_KEY`(按 API key 计费) |
+| 安装包大小 | ✅ 0(不打包 claude) | 🔴 SDK + 原生二进制增大安装包 |
+| 维护成本 | 🔴 高(追 CLI 版本变动) | 🟡 中(SDK 封装,但底层二进制仍随版本变) |
 
-本项目优先**出活快 + 能用现有订阅**,选 spawn。代价是 stream-json schema 不稳定,故解析层做了容错(见 `ClaudeRuntime`)。
+**迁移决定**:在审批、解析脆弱性、进程管理三大硬伤 vs Max 订阅损失的 trade-off 中,选 SDK。原 spawn 方式的 `ClaudeRuntime.ts` 和 `ClaudePathResolver.ts` 逻辑已迁入 `providers/claude-sdk/` 目录并删除。
 
 ### 5.2 为什么不用 Synara 的 effect-ts?
 
@@ -203,6 +222,141 @@ Synara 拆独立 server 后用 WebSocket 通信(为多客户端/多 provider)。
 - **Zustand v5** 的 `create` API 与 v4 一致,但选择器必须返回稳定引用(见 6.4)。
 - **React 19** 的 `react-dom/client` `createRoot` + StrictMode;注意 StrictMode 下 effect 执行两次,订阅需保证幂等。
 - **Tailwind v3** 而非 v4(v4 配置语法不同,本项目用 `tailwind.config.js` + postcss,属 v3 范式)。
+- **@base-ui/react** 是 Radix UI 继任者,本项目用它封装 `components/ui/` 下的可复用组件。新组件使用 `cva()` + `cn()` 管理样式变体,**禁止**手写 template literal 拼接 className。
+- **图标**使用 `@tabler/icons-react`(主) + `react-icons`(辅)。统一从 `@renderer/lib/icons.js` 导入,以 `<IconX size={16} />` 形式使用,**禁止**Unicode 字符替代图标。
+
+---
+
+## 七.5、上下文用量统计(token / context-window)
+
+> 实现:[`docs/claude-context-usage-tracking.md`](claude-context-usage-tracking.md) §2-§5。
+
+### 数据流
+
+```
+SdkMessageAdapter (路径 A/C)
+  │  normalizeClaudeTokenUsage() + decideClaudeContextUsageWarnings()
+  ▼  ContextUsageEvent (type: "token-usage.updated", snapshot: ContextSnapshot)
+RuntimeManager.emit()
+  ├──→ IPC.CLAUDE_EVENT → sessionStore.ingestEvent → latestSnapshot
+  │     → StatusBar chip(used / max (pct), 按警告级别染色)
+  └──→ SessionRepo.updateSnapshot(sessions.context_snapshot JSON 列)
+        └── 会话重载时 sessionStore.selectSession 直接还原快照(无需重算)
+```
+
+归一化数学下沉到 adapter,**下游 provider-neutral**:renderer / 持久化只存 `ContextSnapshot`,不碰原始 token 字段。
+
+### 两条 emit 路径
+
+| 路径 | 时机 | 数据源 | 用途 |
+|------|------|--------|------|
+| **A** | 每次 assistant 响应 | `message.message.usage` | 中途窗口读数,Status bar 在 turn 完成前就更新 |
+| **C** | turn 结束 | `result.usage` + `modelUsage`(聚合 fallback + 取 `contextWindow`) | 合并快照,`usedTokens` = max(本次, 路径A);`totalProcessedTokens` 用累积值 |
+
+**路径 B**(`getContextUsage()` 控制信道)在 Agent SDK 的 stream-json 表面不可用 → `usedPercent` 退化为 `usedTokens / maxTokens`,`near-window` 阈值用 `maxTokens * 0.8`(文档 §7.2 列为预期退化)。
+
+### token 数学(`claudeTokenUsage.ts`)
+
+- **usedTokens(窗口占用)** = `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`,clamp 到 `maxTokens`。缓存读取计费低,但**在窗口占用上按相同权重算**(模型仍需读这些 token,文档 §3)。
+- **totalProcessedTokens** = `input + output + cache_read + cache_creation`(吞吐量,可超 maxTokens)。
+- **maxTokens** 优先取 SDK `modelUsage[model].contextWindow`,回退启发式(Opus→1M,否则 200k);`Math.max(reported, lastKnown)` **永不降级**(1M 模型可能瞬时报 200k,文档 §4)。
+- `totalProcessedTokens <= 0`(全 0 / 缺失)时不 emit,避免代理/网关返回 0 时的误导显示。
+
+### 三类警告(doc §5,折叠进 `snapshot.warnings`)
+
+| kind | 触发 | 含义 |
+|------|------|------|
+| `uncached-ingestion` | 未缓存输入 > 50k,**或** prompt > 20k 且缓存读取比 < 20% | 快速消耗额度(新会话 / resume / 大 context 首轮) |
+| `near-window` | prompt > maxTokens * 0.8 | 接近窗口上限 |
+| `large-prompt` | prompt > 200k | 大上下文加速额度消耗 |
+
+`warning`(ok / near-window / critical)按 `pct`(>=90 critical / >=70 near-window)派生,驱动 StatusBar 染色。
+
+### 自定义模型:角色绑定 + 1M 声明(`customModel.ts` / `customEnv.ts`)
+
+自定义模型配置 = 一个端点(baseUrl + token + authMode)+ **5 个角色的绑定表**。每个角色可绑定到网关侧真实模型,会话选择的是**角色**(如 Sonnet)而非模型名。
+
+| 角色 | 注入的 env var | 备注 |
+|------|---------------|------|
+| haiku    | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | 模型别名 |
+| sonnet   | `ANTHROPIC_DEFAULT_SONNET_MODEL` | 模型别名 |
+| opus     | `ANTHROPIC_DEFAULT_OPUS_MODEL` | 模型别名 |
+| fable    | `ANTHROPIC_DEFAULT_FABLE_MODEL` | 模型别名(v0.3.218 起一等 tier) |
+| subagent | `CLAUDE_CODE_SUBAGENT_MODEL` | **不是别名** — 内置 Task 工具调用的模型 |
+
+`buildCustomEnv` 把每个角色的 `requestModel` 写进对应 env var,会话选中角色的 `requestModel` 同时作为 `ANTHROPIC_MODEL`。
+
+**未绑定角色的自动回填**(关键):Claude Code 在后台会发**每个** tier 的请求(haiku 用于标题/快速检查、sonnet 用于编码、opus 用于复杂推理…)。如果某个 tier 没绑定,Claude Code 会回退到内置的 `claude-*` 默认模型名 → 第三方网关不认 → 404 → 报 `"There's an issue with the selected model … may not exist"`。所以 `buildCustomEnv` **自动用会话选中角色的 `requestModel` 回填所有未显式绑定的 tier** —— 用户只填一个角色也能跑通;想要 tier 级差异化路由,显式绑定会覆盖自动回填。同时把 `ANTHROPIC_SMALL_FAST_MODEL`(legacy haiku 名,v0.3.218 仍有 37 处引用)镜像到 haiku 值,兼容老版本读取路径。
+
+**1M 上下文**:不是 env var,是 SDK 的 `options.betas = ['context-1m-2025-08-07']`(`sdk.d.ts:1488`,`SdkBeta` 类型)。按角色声明(`RoleBinding.supports1m`):选中该角色时由 `ClaudeAgentSdkProvider` 注入 betas。启用后 SDK 会在 `modelUsage` 报 `contextWindow:1000000`,上面的 token 数学自动正确。
+
+**迁移**:旧配置(`models[] + alias{haiku,sonnet,opus}`)在 `secretStore.readMeta` 时由 `migrateMeta` 合成 `roles`(`models[0]→sonnet`、`alias.*→对应角色`),用户下次保存落盘为新格式。`configured?: "1m"` 钩子(`claudeTokenUsage.ts`)仍保留未启用,可作为后续"强制声明"开关。
+
+### 文件索引
+
+| 文件 | 作用 |
+|------|------|
+| `packages/contracts/src/runtime.ts` | `ContextSnapshot` / `ContextUsageEvent` / `ContextWarning` / `ContextWarningKind` |
+| `apps/desktop/src/main/providers/claude-sdk/claudeTokenUsage.ts` | 归一化/窗口/警告的唯一来源 |
+| `apps/desktop/src/main/providers/claude-sdk/SdkMessageAdapter.ts` | 路径 A / C emit 点;会话级 `lastKnownTokenUsage` 状态 |
+| `apps/desktop/src/main/claude/RuntimeManager.ts` | 拦截 `token-usage.updated` → 持久化 snapshot |
+| `apps/desktop/src/renderer/lib/contextWindow.ts` | `fmtTokens` / `warningColor`(类型 re-export) |
+| `apps/desktop/src/renderer/stores/sessionStore.ts` | `latestSnapshot` 接收与还原 |
+| `apps/desktop/src/renderer/components/layout/StatusBar.tsx` | chip 显示 |
+
+### 不做(超出 §2-§5 范围)
+
+- **§6 持久化/聚合**:不新增 activities 表,不按天聚合 24h/7d/30d。只保留 `sessions.context_snapshot` 列(存归一化快照)。
+- **路径 B `getContextUsage()`**:Agent SDK 不暴露控制信道,按 §7.2 退化。
+- **账号级 OAuth 配额面板**:与单会话 context 无关,见 §一末注。
+
+---
+
+## 七.6、中间面板 Tab 多开模式(P3.5)
+
+> 实现:`apps/desktop/src/renderer/components/layout/SessionTabs.tsx`、`stores/sessionStore.ts` 扩展字段、`components/settings/DisplayModePanel.tsx`。
+
+### 目标
+
+默认仍是"单会话替换"模式(`displayMode: "single"`);新增 `"tabs"` 模式:
+
+- 点击左栏线程 → 在中间面板顶部追加一个 tab,中间面板显示该线程
+- 多个 tab 并列,点击切换显示,**互不干扰**(切走 tab 后 Claude 仍可继续 stream)
+- 关闭 tab → tab 消失,**后台 turn 继续运行**(事件照常按 sessionId 入桶,重新打开 tab 可看到最新状态)
+- 设置 → 外观 → "中间面板显示模式" 切换,选择持久化
+
+### 数据层改造
+
+| 字段 | 形态 | 原因 |
+|------|------|------|
+| `openTabs: string[]` | **始终写**,不论模式 | 模式切换不丢已开线程 |
+| `displayMode: "single" \| "tabs"` | 持久化到 `settings.ui.displayMode` | `init()` 启动时 `setting.get` 拉取 |
+| `pendingQuestionBySession: Record<sid, {questions}>` | 替代原 `pendingQuestion` 单 slot | 多 tab 同时弹 question 互不覆盖 |
+| `turnFilesBySession: Record<sid, TurnFileEntry[]>` | 替代原 `turnFiles` 单 slot | 各自 session 的"本轮文件"卡片独立 |
+| `pendingApprovals: ApprovalRequestEvent[]` | **保持不变**(本就是数组) | UI 渲染时按 `sessionId` 过滤取 head |
+
+> `runningBySession` / `messagesBySession` / `todosBySession` / `planBySession` / `subagentsBySession` 早就是 per-session 桶,无须改。
+
+### 新增 action
+
+- `openTab(sessionId)` — LeftBar 调它:已开 → 激活;未开 → push + 激活。同 `selectSession` 一样同步 model / effort / permissionMode / customModelId 到全局槽。
+- `closeTab(sessionId)` — 从 `openTabs` 移除,**不取消运行 turn**。若关的是当前 active,自动切到前一个(或新尾);空列表则置 `activeSessionId = null`。
+- `setDisplayMode(mode)` — 立即更新 store + `setting.set` 持久化。
+
+### 渲染层路由
+
+`App.tsx` 引入 `CenterPane` 组件,按 `displayMode` 选渲染策略:
+
+- `single` → `<ChatPane key={activeSessionId ?? "empty"} sessionId={activeSessionId} />`(等价于旧行为,仅签名多一个 `null` 空态分支)
+- `tabs` → `<SessionTabs />` + `<ChatPane key={activeSessionId} sessionId={activeSessionId} />`,只挂载前台 tab,key 变化重挂载(清空本地 useState 草稿/滚动位置)
+
+> 只挂载前台 tab 而不是 `display: none` 全部挂载:tab 多时省订阅;切换重挂载是简单可靠策略;草稿本来就不持久化,UX 上可接受。
+
+### 关键设计权衡
+
+1. **关闭 tab 不取消 turn**:`RuntimeManager.sessions` Map / SDK 子进程 / per-turn `AbortController` 全都天然按 sessionId 隔离,删 UI tab 不影响底层运行。这正是 "用户切走 tab 后 Claude 仍在后台 streaming" 的基础。
+2. **不把 4 个 config 槽(model/effort/permissionMode/customModelId)按 sessionId 分桶**:改造成本大;实际语义就是"前台 tab 的配置",`syncConfigFromSession` 切活动时自动同步,符合 tab 模式心智模型。Composer 行为不变。
+3. **新会话 (`startSession`) 自动 push 进 `openTabs`**:不论模式,store 总是写完整列表,渲染层决定是否显示 tab 条。
 
 ---
 
@@ -212,8 +366,9 @@ Synara 拆独立 server 后用 WebSocket 通信(为多客户端/多 provider)。
 |------|-----------|------|
 | P0 脚手架 | Electron / React / TS / Tailwind / Vite / Turbo / pnpm | ✅ 完成 |
 | P1 端到端 | Zustand / zod IPC | ✅ 完成 |
-| P2 会话持久化 | better-sqlite3 | ⬜ 待开始 |
-| P3 工具审批 | (复用现有 zod) | ⬜ |
+| P2 会话持久化 | sql.js(纯 JS SQLite) | ✅ 完成 |
+| P2.5 SDK 迁移 | @anthropic-ai/claude-agent-sdk / AgentProvider 抽象层 / ProviderRegistry / ApprovalBridge | ✅ 完成 |
+| P3 工具审批 | canUseTool 回调 → approval.request/approve IPC 桥(后端已通,前端审批 UI 待 P5 打磨) | ✅ 基础完成 |
 | P4 IDE 右栏 | xterm.js + node-pty / isomorphic-git / Monaco | ⬜ |
-| P5 体验打磨 | react-markdown + remark / KaTeX / Cmd+K | ⬜ |
+| P5 体验打磨 | react-markdown + remark / KaTeX / Cmd+K / 审批 UI 完善 | ⬜ |
 | P6 发布 | electron-builder / electron-updater / Vitest / Playwright | ⬜ |

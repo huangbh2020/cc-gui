@@ -11,14 +11,14 @@ export function TopBar() {
   const activeProject = projects.find((p) => p.id === activeProjectId);
 
   return (
-    <header className="flex h-11 shrink-0 items-center gap-3 border-b border-pane-border bg-zinc-900 px-3 text-sm">
-      <span className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-300">
+    <header className="flex h-11 shrink-0 items-center gap-3 border-b border-edge bg-surface px-3 text-sm">
+      <span className="rounded bg-surface-muted px-2 py-1 text-xs text-content-muted">
         {activeProject ? `📁 ${activeProject.name}` : "No project"}
       </span>
 
-      <div className="text-zinc-600">/</div>
+      <div className="text-content-subtle">/</div>
 
-      <span className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-400">
+      <span className="rounded bg-surface-muted px-2 py-1 text-xs text-content-muted">
         Claude
       </span>
 
@@ -26,7 +26,7 @@ export function TopBar() {
 
       <button
         onClick={() => setSettingsOpen(true)}
-        className="rounded px-2 py-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+        className="rounded px-2 py-1 text-content-subtle hover:bg-surface-muted hover:text-content-muted"
         title="Settings"
       >
         ⚙

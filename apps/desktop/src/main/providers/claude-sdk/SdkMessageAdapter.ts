@@ -1,0 +1,961 @@
+/**
+ * SDKMessage → RuntimeEvent normalization engine.
+ *
+ * Ported from the ClaudeRuntime's NDJSON handlers (handleSystem, handleStreamEvent,
+ * handleAssistant, handleUser, handleResult). The input is now a structured
+ * SDKMessage object instead of a raw JSON string. Output is the same RuntimeEvent
+ * union — the frontend / IPC / persistence contract is unchanged.
+ */
+import { randomUUID } from "node:crypto";
+import type {
+  RuntimeEvent,
+  TextDeltaEvent,
+  ThinkingEvent,
+  ToolUseEvent,
+  ToolResultEvent,
+  ContextUsageEvent,
+  ContextSnapshot,
+  TurnDoneEvent,
+  TurnFilesEvent,
+  ErrorEvent,
+  TodoUpdateEvent,
+  AskUserQuestionEvent,
+  AskUserQuestionItem,
+  ModeChangeEvent,
+  PlanUpdateEvent,
+  SubagentUpdateEvent,
+  SubagentSnapshot,
+} from "@contracts/runtime";
+import type { ProviderContext } from "@contracts/provider";
+import { FileSnapshot } from "@main/lib/fileSnapshot.js";
+import type {
+  SDKMessage,
+  SDKSystemMessage,
+  SDKAssistantMessage,
+  SDKUserMessage,
+  SDKResultMessage,
+  SDKPartialAssistantMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+
+/** Minimal envelope for SDKTaskStartedMessage. The full SDK type is rich
+ *  (uuid, session_id, workflow_name, prompt, …); we only forward the bits
+ *  the renderer needs. Avoids pulling a large union into this file. */
+interface TaskStartedEnvelope {
+  type: "system";
+  subtype: "task_started";
+  task_id: string;
+  tool_use_id?: string;
+  description?: string;
+  subagent_type?: string;
+}
+
+interface TaskProgressEnvelope {
+  type: "system";
+  subtype: "task_progress";
+  task_id: string;
+  tool_use_id?: string;
+  description?: string;
+  subagent_type?: string;
+  usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
+  last_tool_name?: string;
+  summary?: string;
+}
+
+interface TaskUpdatedEnvelope {
+  type: "system";
+  subtype: "task_updated";
+  task_id: string;
+  patch?: {
+    status?: "pending" | "running" | "completed" | "failed" | "killed" | "paused";
+    description?: string;
+    end_time?: number;
+    total_paused_ms?: number;
+    error?: string;
+    is_backgrounded?: boolean;
+  };
+}
+import {
+  normalizeClaudeTokenUsage,
+  mergeClaudeTokenUsageSnapshot,
+  resolveEffectiveContextWindow,
+  type RawClaudeUsage,
+  type ClaudeContextWindowTag,
+} from "./claudeTokenUsage.js";
+
+/* ─── helpers ─── */
+
+function readStr(v: unknown): string {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+function safeJsonParse<T>(s: string): T | undefined {
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+/* ─── AskUserQuestion sentinel fallback ───────────────────────────────
+ * When the environment lacks a native AskUserQuestion tool, we inject a
+ * system prompt (see ClaudeAgentSdkProvider) teaching the model to emit
+ * sentinel-delimited JSON. This scanner intercepts it from text deltas.
+ *
+ * This is a simplified copy of the original QuestionSentinelScanner from
+ * the legacy ClaudeRuntime. When AskUserQuestion tool is available
+ * (capabilities.supportsAskUserQuestion), this scanner is not created.
+ */
+
+const ASK_BEGIN = "<<<ASK_USER_QUESTION>>>";
+const ASK_END = "<<<END_ASK_USER_QUESTION>>>";
+
+/** Extract balanced JSON end position, or 0 if incomplete. */
+function findJsonEnd(buf: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < buf.length; i++) {
+    const ch = buf[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") { depth++; continue; }
+    if (ch === "}") { depth--; if (depth === 0) return i + 1; continue; }
+  }
+  return 0;
+}
+
+/** Quick check: does this JSON parse as a question payload? */
+function isQuestionPayload(json: string): boolean {
+  try {
+    const obj = JSON.parse(json);
+    if (!obj || typeof obj !== "object") return false;
+    const questions = (obj as { questions?: unknown }).questions;
+    if (Array.isArray(questions)) return questions.length > 0;
+    if (questions && typeof questions === "object") {
+      return Array.isArray((questions as { item?: unknown }).item);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+class SentinelScanner {
+  private buf = "";
+  private flushed = 0;
+  private completedQuestions: string[] = [];
+
+  push(chunk: string): string {
+    this.buf += chunk;
+    let safe = "";
+
+    while (true) {
+      const remaining = this.buf.slice(this.flushed);
+      if (!remaining) break;
+
+      const beginIdx = remaining.indexOf(ASK_BEGIN);
+      if (beginIdx >= 0) {
+        safe += remaining.slice(0, beginIdx);
+        this.flushed += beginIdx;
+        const afterBegin = this.buf.slice(this.flushed);
+        const endRel = afterBegin.indexOf(ASK_END);
+        if (endRel >= 0) {
+          const json = this.buf.slice(this.flushed + ASK_BEGIN.length, this.flushed + endRel).trim();
+          if (json) this.completedQuestions.push(json);
+          this.flushed += endRel + ASK_END.length;
+          continue;
+        }
+        break;
+      }
+
+      // Bare JSON fallback (only at message start)
+      const bareIdx = remaining.search(/\{\s*"questions"\s*:/);
+      if (bareIdx >= 0 && /^\s*$/.test(remaining.slice(0, bareIdx))) {
+        safe += remaining.slice(0, bareIdx);
+        const jsonStart = this.flushed + bareIdx;
+        const jsonEnd = findJsonEnd(this.buf, jsonStart);
+        if (jsonEnd > jsonStart) {
+          const json = this.buf.slice(jsonStart, jsonEnd).trim();
+          if (isQuestionPayload(json)) {
+            this.completedQuestions.push(json);
+            this.flushed = jsonEnd;
+            continue;
+          }
+        }
+        this.flushed += bareIdx;
+        break;
+      }
+
+      const withhold = ASK_BEGIN.length - 1;
+      const tail = remaining.length > withhold ? remaining.slice(0, remaining.length - withhold) : "";
+      safe += tail;
+      this.flushed += tail.length;
+      break;
+    }
+    return safe;
+  }
+
+  takeQuestions(): string[] {
+    const q = this.completedQuestions;
+    this.completedQuestions = [];
+    return q;
+  }
+
+  flush(): string {
+    const remaining = this.buf.slice(this.flushed);
+    this.flushed = this.buf.length;
+    return remaining;
+  }
+}
+
+/** Parse questions from tool input or sentinel JSON. (Ported from ClaudeRuntime).
+ * Exported so ClaudeAgentSdkProvider can reuse it in canUseTool to interpret
+ * AskUserQuestion tool input. */
+export function parseQuestions(input: unknown): AskUserQuestionItem[] {
+  if (!input || typeof input !== "object") return [];
+  const raw = (input as { questions?: unknown }).questions;
+  let arr: unknown[] | null = null;
+  if (Array.isArray(raw)) {
+    arr = raw;
+  } else if (raw && typeof raw === "object" && "item" in raw) {
+    const inner = (raw as Record<string, unknown>).item;
+    arr = Array.isArray(inner) ? inner : null;
+  }
+  if (!arr) return [];
+  const out: AskUserQuestionItem[] = [];
+  for (const item of arr) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const question = readStr(obj.question);
+    const header = readStr(obj.header) || question.slice(0, 24);
+    const multiSelect = obj.multiSelect === true || obj.multiSelect === "true";
+    const rawOpts = obj.options;
+    let optsArr: unknown[] | null = null;
+    if (Array.isArray(rawOpts)) {
+      optsArr = rawOpts;
+    } else if (rawOpts && typeof rawOpts === "object" && "item" in rawOpts) {
+      optsArr = (rawOpts as Record<string, unknown>).item as unknown[];
+    }
+    const options = (optsArr ?? [])
+      .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
+      .map((o) => ({ label: readStr(o.label), description: readStr(o.description) || undefined }))
+      .filter((o) => o.label);
+    if (question) out.push({ header, question, multiSelect, options });
+  }
+  return out;
+}
+
+/* ─── adapter state ────────────────────────────────────────────────── */
+
+interface AdapterState {
+  blockMessageIds: Map<number, string>;
+  emittedToolUse: Set<string>;
+  resultSeen: boolean;
+  tasks: TodoUpdateEvent["todos"];
+  /** Per-message sentinel scanners — only created when AskUserQuestion tool is unavailable. */
+  textScanners: Map<string, SentinelScanner>;
+  /** Most recent normalized context snapshot (from path A mid-turn or path C
+   *  turn-end). Feeds the never-downgrade window rule + path-C merge. */
+  lastKnownTokenUsage?: ContextSnapshot;
+  /** Last resolved context-window ceiling for this session. Used by
+   *  `resolveEffectiveContextWindow` to refuse transient downgrades. */
+  lastKnownContextWindow: number;
+  /** Live subagent roster. Keyed by SDK task_id. Mutated by task_started /
+   *  task_progress / task_updated edge events, then flushed as a single
+   *  `subagent.update` event (REPLACE semantics). */
+  subagents: Map<string, SubagentSnapshot>;
+  /** Whether the model is currently in plan mode. Set true on EnterPlanMode,
+   *  false on the matching ExitPlanMode or when a `mode.change` to default
+   *  arrives (covers rejection / interruption). Drives `plan.update` emit. */
+  inPlanMode: boolean;
+}
+
+/* ─── public export ────────────────────────────────────────────────── */
+
+export class SdkMessageAdapter {
+  private state: AdapterState;
+
+  constructor(
+    private ctx: ProviderContext,
+    private sessionId: string,
+    /** Whether the provider's native AskUserQuestion tool is available. If false,
+     * a SentinelScanner intercepts sentinel JSON from text deltas. */
+    private askUserQuestionAvailable: boolean,
+    /** Cwd passed to the SDK. Used to resolve relative `file_path`s from
+     *  Edit/Write tool_use when snapshotting for the rewind feature. */
+    private cwd: string,
+    /** Per-turn file snapshot. The adapter records pre-turn content for
+     *  every file Edit/Write touches; at turn end it emits a `turn.files`
+     *  event so the renderer can show the "本轮文件" card. The same
+     *  instance lives across the turn (clear() is called by the runtime
+     *  at the *next* turn's start, not here). */
+    private snapshots: FileSnapshot,
+  ) {
+    this.state = {
+      blockMessageIds: new Map(),
+      emittedToolUse: new Set(),
+      resultSeen: false,
+      tasks: [],
+      textScanners: new Map(),
+      lastKnownContextWindow: 0,
+      subagents: new Map(),
+      inPlanMode: false,
+    };
+  }
+
+  /** Feed one SDKMessage through the normalization pipeline. */
+  dispatch(m: SDKMessage): void {
+    const type = m.type;
+    if (type === "system") {
+      // Task lifecycle events share the `system` envelope — dispatch on
+      // subtype alongside `init`. Unknown subtypes are silently ignored
+      // (forward-compatible).
+      const sys = m as SDKSystemMessage;
+      const subtype = (sys as { subtype?: string }).subtype;
+      if (subtype === "init") {
+        this.handleSystem(sys);
+      } else if (subtype === "task_started") {
+        this.handleTaskStarted(sys as unknown as TaskStartedEnvelope);
+      } else if (subtype === "task_progress") {
+        this.handleTaskProgress(sys as unknown as TaskProgressEnvelope);
+      } else if (subtype === "task_updated") {
+        this.handleTaskUpdated(sys as unknown as TaskUpdatedEnvelope);
+      }
+    } else if (type === "stream_event") {
+      this.handleStreamEvent(m as SDKPartialAssistantMessage);
+    } else if (type === "assistant") {
+      this.handleAssistant(m as SDKAssistantMessage);
+    } else if (type === "user") {
+      this.handleUser(m as SDKUserMessage);
+    } else if (type === "result") {
+      this.handleResult(m as SDKResultMessage);
+    }
+    // Unknown message types are silently ignored (forward-compatible).
+  }
+
+  /** Call once the generator completes (or after a catch). Emits a fallback
+   * turn.done if none was already emitted, plus a `turn.files` event
+   * listing every file Edit/Write touched in this turn (so the renderer
+   * can show the "本轮文件" card with a rewind button). */
+  flushFinal(): void {
+    // Freeze and emit the snapshot list regardless of whether result
+    // arrived. After freeze(), the snapshot is "frozen" — late
+    // tool_use events for this adapter instance (shouldn't happen,
+    // but defensively) will be ignored by recordPre.
+    const files = this.snapshots.freeze();
+    if (files.length > 0) {
+      this.ctx.emit({
+        type: "turn.files",
+        sessionId: this.sessionId,
+        files,
+      } satisfies TurnFilesEvent);
+    }
+    // End-of-turn safety net: if the model was still in plan mode (deny,
+    // interrupt, or generator aborted before ExitPlanMode finalized), make
+    // sure the renderer's plan section collapses instead of getting stuck
+    // on a stale "草拟中" badge.
+    if (this.state.inPlanMode) {
+      this.state.inPlanMode = false;
+      this.ctx.emit({
+        type: "plan.update",
+        sessionId: this.sessionId,
+        plan: "",
+        phase: "cleared",
+      } satisfies PlanUpdateEvent);
+    }
+    // End-of-turn safety net: any subagent still in "running" is finished
+    // (the parent turn is over). Mark them as completed so the capsule
+    // stops animating. We only auto-complete — real task_updated events
+    // arriving earlier may have set failed/killed, which we preserve.
+    let subagentsChanged = false;
+    for (const [id, s] of this.state.subagents) {
+      if (s.status === "running") {
+        this.state.subagents.set(id, { ...s, status: "completed", endedAt: s.endedAt ?? Date.now() });
+        subagentsChanged = true;
+      }
+    }
+    if (subagentsChanged) this.flushSubagents();
+    if (!this.state.resultSeen) {
+      this.ctx.emit({
+        type: "turn.done",
+        sessionId: this.sessionId,
+        reason: "interrupted",
+      });
+    }
+  }
+
+  /* ──────────────── per-message-type handlers ──────────────── */
+
+  private handleSystem(m: SDKSystemMessage): void {
+    if (m.subtype === "init") {
+      this.ctx.onProviderSessionId?.(m.session_id);
+      this.ctx.log.info(
+        `claude SDK init: session=${m.session_id}, model=${m.model}, permissionMode=${m.permissionMode}`,
+      );
+    }
+  }
+
+  /* ──────────────── subagent task lifecycle (SDK level-signal pattern) ────────────────
+   * The SDK emits three edge events for background / foreground subagent
+   * tasks. We maintain a `Map<taskId, SubagentSnapshot>` and flush a single
+   * `subagent.update` after each change so the renderer can REPLACE its
+   * roster (no client-side merge). Field shapes are documented in the
+   * SDK's sdk.d.ts SDKTask*Message types — we keep our own minimal envelope
+   * types here to avoid dragging those deep generics into this file. */
+
+  private handleTaskStarted(m: TaskStartedEnvelope): void {
+    const snapshot: SubagentSnapshot = {
+      taskId: m.task_id,
+      toolUseId: m.tool_use_id,
+      description: m.description ?? "",
+      subagentType: m.subagent_type,
+      status: "running",
+    };
+    this.state.subagents.set(m.task_id, snapshot);
+    this.flushSubagents();
+  }
+
+  private handleTaskProgress(m: TaskProgressEnvelope): void {
+    const cur = this.state.subagents.get(m.task_id);
+    if (!cur) {
+      // Progress without a prior start — synthesize a minimal snapshot so
+      // the roster stays consistent. Defensive: SDK normally pairs these.
+      this.state.subagents.set(m.task_id, {
+        taskId: m.task_id,
+        toolUseId: m.tool_use_id,
+        description: m.description ?? "",
+        subagentType: m.subagent_type,
+        status: "running",
+        totalTokens: m.usage?.total_tokens,
+        toolUses: m.usage?.tool_uses,
+        durationMs: m.usage?.duration_ms,
+        lastToolName: m.last_tool_name,
+        summary: m.summary,
+      });
+    } else {
+      this.state.subagents.set(m.task_id, {
+        ...cur,
+        // description can be refined by progress (e.g. updated task brief);
+        // preserve it if the progress payload omits one.
+        description: m.description || cur.description,
+        subagentType: m.subagent_type ?? cur.subagentType,
+        totalTokens: m.usage?.total_tokens ?? cur.totalTokens,
+        toolUses: m.usage?.tool_uses ?? cur.toolUses,
+        durationMs: m.usage?.duration_ms ?? cur.durationMs,
+        lastToolName: m.last_tool_name ?? cur.lastToolName,
+        summary: m.summary ?? cur.summary,
+      });
+    }
+    this.flushSubagents();
+  }
+
+  private handleTaskUpdated(m: TaskUpdatedEnvelope): void {
+    const cur = this.state.subagents.get(m.task_id);
+    if (!cur) return; // orphan update — ignore
+    const patch = m.patch ?? {};
+    // Map SDK lifecycle to our 4-value union.
+    let status: SubagentSnapshot["status"] = cur.status;
+    if (patch.status === "completed") status = "completed";
+    else if (patch.status === "failed") status = "failed";
+    else if (patch.status === "killed") status = "killed";
+    else if (patch.status === "running" || patch.status === "pending" || patch.status === "paused") {
+      status = "running";
+    }
+    this.state.subagents.set(m.task_id, {
+      ...cur,
+      status,
+      description: patch.description ?? cur.description,
+      endedAt: typeof patch.end_time === "number" ? patch.end_time : cur.endedAt,
+      error: patch.error ?? cur.error,
+    });
+    this.flushSubagents();
+  }
+
+  /** Emit the current subagent roster as a single `subagent.update` event.
+   *  REPLACE semantics — the host should swap, not merge. */
+  private flushSubagents(): void {
+    this.ctx.emit({
+      type: "subagent.update",
+      sessionId: this.sessionId,
+      agents: Array.from(this.state.subagents.values()),
+    } satisfies SubagentUpdateEvent);
+  }
+
+  /** Look up a subagent snapshot by its originating Task tool_use id.
+   *  Used to merge a later SDK task_started with a synthetic snapshot
+   *  we created from the tool_use block. */
+  private findSubagentByToolUseId(toolUseId: string): SubagentSnapshot | undefined {
+    for (const s of this.state.subagents.values()) {
+      if (s.toolUseId === toolUseId) return s;
+    }
+    return undefined;
+  }
+
+  private handleStreamEvent(m: SDKPartialAssistantMessage): void {
+    const ev = m.event;
+    if (!ev) return;
+
+    if (ev.type === "content_block_start") {
+      const index = (ev as { index?: number }).index;
+      if (typeof index === "number") {
+        this.state.blockMessageIds.set(index, randomUUID());
+      }
+    } else if (ev.type === "content_block_stop") {
+      // Flush withheld text from sentinel scanner.
+      const index = (ev as { index?: number }).index;
+      if (typeof index === "number") {
+        const messageId = this.state.blockMessageIds.get(index);
+        if (messageId) {
+          const scanner = this.state.textScanners.get(messageId);
+          if (scanner) {
+            const tail = scanner.flush();
+            if (tail) {
+              this.ctx.emit({
+                type: "text.delta",
+                sessionId: this.sessionId,
+                messageId,
+                text: tail,
+              } satisfies TextDeltaEvent);
+            }
+          }
+        }
+      }
+    } else if (ev.type === "content_block_delta") {
+      const index = (ev as { index?: number }).index;
+      if (typeof index !== "number") return;
+      const messageId = this.state.blockMessageIds.get(index);
+      if (!messageId) return;
+
+      const delta = (ev as { delta?: { type?: string; text?: string; thinking?: string } }).delta;
+      if (!delta) return;
+
+      if (delta.type === "text_delta" && delta.text) {
+        if (!this.askUserQuestionAvailable) {
+          // Run through sentinel scanner to filter AskUserQuestion JSON
+          let scanner = this.state.textScanners.get(messageId);
+          if (!scanner) {
+            scanner = new SentinelScanner();
+            this.state.textScanners.set(messageId, scanner);
+          }
+          const safe = scanner.push(delta.text);
+          if (safe) {
+            this.ctx.emit({
+              type: "text.delta",
+              sessionId: this.sessionId,
+              messageId,
+              text: safe,
+            } satisfies TextDeltaEvent);
+          }
+          for (const json of scanner.takeQuestions()) {
+            const questions = parseQuestions(safeJsonParse(json));
+            if (questions.length > 0) {
+              // Sentinel-fallback questions can't block the SDK turn (the
+              // model already finished emitting — there's no canUseTool to
+              // answer). Use a `sentinel_`-prefixed requestId so the host
+              // knows to send answers as the next turn's prompt rather than
+              // resolving a Deferred.
+              this.ctx.emit({
+                type: "question.ask",
+                sessionId: this.sessionId,
+                requestId: `sentinel_${randomUUID()}`,
+                questions,
+              } satisfies AskUserQuestionEvent);
+            }
+          }
+        } else {
+          // Native tool handles AskUserQuestion via canUseTool; text deltas
+          // pass through unfiltered.
+          this.ctx.emit({
+            type: "text.delta",
+            sessionId: this.sessionId,
+            messageId,
+            text: delta.text,
+          } satisfies TextDeltaEvent);
+        }
+      } else if (delta.type === "thinking_delta" && delta.thinking) {
+        this.ctx.emit({
+          type: "thinking",
+          sessionId: this.sessionId,
+          messageId,
+          text: delta.thinking,
+        } satisfies ThinkingEvent);
+      }
+    }
+  }
+
+  private handleAssistant(m: SDKAssistantMessage): void {
+    const message = m.message as {
+      content?: Array<{ type: string; id?: string; name?: string; input?: unknown }>;
+      usage?: RawClaudeUsage;
+      model?: string;
+    };
+    const blocks = message.content;
+    if (!blocks) return;
+
+    // Path A (doc §2): per-assistant-response usage. This is the most accurate
+    // reflection of the current context-window occupancy (the API call's prompt
+    // + output size). Emits mid-turn so the status bar can update before the
+    // turn completes. Skipped when `usage` is absent or all-zero (the SDK
+    // forwards zeros from some proxies / non-Anthropic gateways).
+    this.emitTokenUsage(message.usage, message.model, undefined);
+
+    for (const b of blocks) {
+      if (b.type === "tool_use" && b.id && b.name) {
+        if (this.state.emittedToolUse.has(b.id)) continue;
+        this.state.emittedToolUse.add(b.id);
+
+        this.ctx.emit({
+          type: "tool.use",
+          sessionId: this.sessionId,
+          toolCallId: b.id,
+          toolName: b.name,
+          input: b.input,
+          requiresApproval: false,
+        } satisfies ToolUseEvent);
+
+        // Snapshot the pre-turn content for Edit/Write so the user can
+        // "撤销本轮" later. Fire-and-forget — we never want a snapshot
+        // failure to derail the event stream. The first call per
+        // (cwd+path) does the actual read; later calls are no-ops.
+        if (b.name === "Edit" || b.name === "Write") {
+          const fp = readStr(
+            (b.input as Record<string, unknown> | undefined)?.file_path,
+          );
+          if (fp) {
+            void this.snapshots.recordPre(this.cwd, fp);
+          }
+        }
+
+        // TaskCreate / TaskUpdate → todo.update
+        if (b.name === "TaskCreate") {
+          const subject = readStr((b.input as Record<string, unknown> | undefined)?.subject);
+          if (subject) {
+            this.state.tasks.push({ content: subject, status: "pending", priority: "medium" });
+            this.ctx.emit({
+              type: "todo.update",
+              sessionId: this.sessionId,
+              todos: [...this.state.tasks],
+            });
+          }
+        } else if (b.name === "TaskUpdate") {
+          const taskId = Number((b.input as Record<string, unknown> | undefined)?.taskId);
+          const status = readStr((b.input as Record<string, unknown> | undefined)?.status);
+          if (Number.isInteger(taskId) && taskId >= 1 && taskId <= this.state.tasks.length) {
+            const norm = status === "completed" ? "completed" : status === "in_progress" ? "in_progress" : "pending";
+            this.state.tasks[taskId - 1] = { ...this.state.tasks[taskId - 1], status: norm };
+            this.ctx.emit({
+              type: "todo.update",
+              sessionId: this.sessionId,
+              todos: [...this.state.tasks],
+            });
+          }
+        } else if (b.name === "AskUserQuestion") {
+          // Native AskUserQuestion tool_use appears in the finalized assistant
+          // message AFTER canUseTool already fired question.ask via
+          // ctx.requestUserInput. Don't re-emit here — it would duplicate the
+          // question card and lose the requestId correlation. The sentinel
+          // fallback path (when native tool is unavailable) is handled in
+          // handleStreamEvent.
+        } else if (b.name === "Task") {
+          // Task tool (a.k.a. Agent) spawns a subagent. The SDK normally
+          // emits a paired `task_started` system message; if that arrives
+          // later it will merge/upgrade this snapshot. If not (e.g. the
+          // SDK skipped the edge for a system-internal task), the snapshot
+          // we create here is the only entry — better than nothing, and
+          // it carries the user-supplied `description` which is the most
+          // informative label we have.
+          const input = (b.input ?? {}) as Record<string, unknown>;
+          const description = readStr(input.description);
+          const subagentType = readStr(input.subagent_type) || undefined;
+          const existing = this.findSubagentByToolUseId(b.id);
+          if (existing) {
+            // Refine: SDK already opened a snapshot, just attach the
+            // user-supplied description if the SDK didn't provide one.
+            this.state.subagents.set(existing.taskId, {
+              ...existing,
+              description: existing.description || description,
+              subagentType: existing.subagentType ?? subagentType,
+            });
+            this.flushSubagents();
+          } else if (description || subagentType) {
+            // Synthesize a placeholder keyed by the tool_use_id (we don't
+            // know the SDK task_id yet). If a later task_started arrives
+            // with a different task_id, it will create its own snapshot
+            // and this one becomes orphaned — the renderer's roster is
+            // REPLACE-based, so it'll just disappear. Acceptable.
+            const syntheticId = `synthetic:${b.id}`;
+            this.state.subagents.set(syntheticId, {
+              taskId: syntheticId,
+              toolUseId: b.id,
+              description: description || "(subagent)",
+              subagentType,
+              status: "running",
+            });
+            this.flushSubagents();
+          }
+        } else if (b.name === "EnterPlanMode") {
+          // Model initiated plan mode (e.g. via the EnterPlanMode tool). Tell
+          // the host so the composer chip / status bar sync to "plan".
+          this.ctx.emit({
+            type: "mode.change",
+            sessionId: this.sessionId,
+            mode: "plan",
+            source: "model",
+          } satisfies ModeChangeEvent);
+          // Mark the plan-mode session and emit a `plan.update` so the
+          // activity capsule's Plan section appears immediately. The draft
+          // is empty until ExitPlanMode; the renderer shows a "草拟中"
+          // placeholder.
+          this.state.inPlanMode = true;
+          this.ctx.emit({
+            type: "plan.update",
+            sessionId: this.sessionId,
+            plan: "",
+            phase: "drafting",
+          } satisfies PlanUpdateEvent);
+        } else if (b.name === "ExitPlanMode") {
+          // The finalized ExitPlanMode tool_use appears here only AFTER the
+          // user approved it via canUseTool (a deny keeps the model in plan
+          // mode and the SDK doesn't finalize the call). So seeing it here
+          // means plan mode has ended for this turn → sync UI back to default.
+          this.ctx.emit({
+            type: "mode.change",
+            sessionId: this.sessionId,
+            mode: "default",
+            source: "model",
+          } satisfies ModeChangeEvent);
+          // Emit a `plan.update` snapshot of the final plan text BEFORE
+          // clearing the in-plan flag. The text comes from the tool's
+          // `input.plan` field (verified present at runtime — SDK type
+          // omits it but the wire format includes it). This is the
+          // single source of truth for the plan the user just approved.
+          const planText = typeof (b.input as { plan?: unknown })?.plan === "string"
+            ? ((b.input as { plan: string }).plan)
+            : "";
+          if (planText) {
+            this.ctx.emit({
+              type: "plan.update",
+              sessionId: this.sessionId,
+              plan: planText,
+              phase: "ready",
+            } satisfies PlanUpdateEvent);
+          }
+          this.state.inPlanMode = false;
+        }
+      }
+    }
+  }
+
+  private handleUser(m: SDKUserMessage): void {
+    const blocks = (m.message as { content?: Array<{ type: string; tool_use_id?: string; is_error?: boolean; content?: unknown }> }).content;
+    if (!blocks) return;
+
+    for (const b of blocks) {
+      if (b.type === "tool_result" && b.tool_use_id) {
+        this.ctx.emit({
+          type: "tool.result",
+          sessionId: this.sessionId,
+          toolCallId: b.tool_use_id,
+          isError: !!b.is_error,
+          content: b.content,
+        } satisfies ToolResultEvent);
+      }
+    }
+  }
+
+  private handleResult(m: SDKResultMessage): void {
+    this.state.resultSeen = true;
+
+    // Diagnostic: log the raw result envelope so we can see exactly what the
+    // SDK delivered. Tokens staying at 0 after a turn usually means either
+    // (a) the SDK didn't populate `usage` here, or (b) a non-success subtype
+    // skipped usage emission entirely. Keep until the bug is confirmed fixed.
+    const rawUsage = (m as { usage?: unknown }).usage;
+    const rawModelUsage = (m as { modelUsage?: unknown }).modelUsage;
+    this.ctx.log.info(
+      `claude result: subtype=${m.subtype} usage=${JSON.stringify(rawUsage)} modelUsage=${JSON.stringify(rawModelUsage)} total_cost_usd=${(m as { total_cost_usd?: number }).total_cost_usd ?? "n/a"}`,
+    );
+
+    if (m.subtype === "success") {
+      // Usage + cost (see https://code.claude.com/docs/en/agent-sdk/cost-tracking)
+      // `usage` covers the top-level agent loop only; subagent tokens (e.g.
+      // WebSearch, Task) are tracked in `modelUsage`. When `usage` reports
+      // 0 tokens (all work delegated to subagents), we aggregate modelUsage
+      // so the context ring still shows meaningful data.
+      const usage = m.usage as {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      } | undefined;
+      const rawInput = usage?.input_tokens ?? 0;
+      const rawOutput = usage?.output_tokens ?? 0;
+
+      // modelUsage: aggregate token/cost as a fallback for subagent-heavy
+      // turns, AND read the per-model `contextWindow` (authoritative window
+      // ceiling) for resolveEffectiveContextWindow. The SDK reports window
+      // sizes here (e.g. claude-opus-4-1[1M] → 1_000_000).
+      const modelUsage = (m as {
+        modelUsage?: Record<string, {
+          inputTokens?: number;
+          outputTokens?: number;
+          cacheReadInputTokens?: number;
+          cacheCreationInputTokens?: number;
+          costUSD?: number;
+          contextWindow?: number;
+        }>;
+      }).modelUsage;
+      let muInput = 0, muOutput = 0, muCacheRead = 0, muCacheCreation = 0, muCost = 0;
+      let reportedWindow: number | undefined;
+      if (modelUsage) {
+        for (const v of Object.values(modelUsage)) {
+          muInput += v.inputTokens ?? 0;
+          muOutput += v.outputTokens ?? 0;
+          muCacheRead += v.cacheReadInputTokens ?? 0;
+          muCacheCreation += v.cacheCreationInputTokens ?? 0;
+          muCost += v.costUSD ?? 0;
+          // Track the largest reported window — multi-model turns should pick
+          // the dominant model's ceiling. (Never-downgrade handled by
+          // resolveEffectiveContextWindow via lastKnownContextWindow.)
+          if (typeof v.contextWindow === "number" && v.contextWindow > 0) {
+            reportedWindow = Math.max(reportedWindow ?? 0, v.contextWindow);
+          }
+        }
+      }
+
+      // Path C (doc §2): turn-end merged snapshot. `usedTokens` (window
+      // occupancy) is the bigger of this turn's data and the last known
+      // mid-turn snapshot; `totalProcessedTokens` comes from accumulated
+      // result.usage. `lastKnownTokenUsage` from path A seeds the merge;
+      // when no path-A snapshot exists (e.g. usage came back only at turn
+      // end), we fall back to this turn's raw values.
+      const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
+      const model = (m as { model?: string }).model;
+      const fallback: RawClaudeUsage | undefined = this.state.lastKnownTokenUsage
+        ? undefined
+        : {
+            inputTokens: rawInput > 0 ? rawInput : muInput,
+            outputTokens: rawOutput > 0 ? rawOutput : muOutput,
+            cacheReadInputTokens:
+              (usage?.cache_read_input_tokens ?? 0) > 0
+                ? usage!.cache_read_input_tokens
+                : muCacheRead > 0 ? muCacheRead : undefined,
+            cacheCreationInputTokens:
+              (usage?.cache_creation_input_tokens ?? 0) > 0
+                ? usage!.cache_creation_input_tokens
+                : muCacheCreation > 0 ? muCacheCreation : undefined,
+            costUsd,
+            model,
+          };
+      if (fallback) {
+        this.emitTokenUsage(fallback, model, reportedWindow);
+      } else if (this.state.lastKnownTokenUsage) {
+        // Re-normalize the accumulated result usage, then merge with path A
+        // so usedTokens reflects the latest window read (doc §2 path C).
+        const accumulated = normalizeClaudeTokenUsage(
+          {
+            inputTokens: rawInput > 0 ? rawInput : muInput,
+            outputTokens: rawOutput > 0 ? rawOutput : muOutput,
+            cacheReadInputTokens:
+              (usage?.cache_read_input_tokens ?? 0) > 0 ? usage!.cache_read_input_tokens : muCacheRead || undefined,
+            cacheCreationInputTokens:
+              (usage?.cache_creation_input_tokens ?? 0) > 0 ? usage!.cache_creation_input_tokens : muCacheCreation || undefined,
+            costUsd,
+            model,
+          },
+          { reported: reportedWindow, lastKnown: this.state.lastKnownContextWindow },
+        );
+        if (accumulated) {
+          const merged = mergeClaudeTokenUsageSnapshot(
+            this.state.lastKnownTokenUsage,
+            accumulated,
+            accumulated.maxTokens,
+          );
+          this.publishTokenUsageSnapshot(merged);
+        }
+      }
+
+      // Permission denials
+      for (const d of m.permission_denials ?? []) {
+        if (!d.tool_use_id) continue;
+        this.ctx.emit({
+          type: "tool.result",
+          sessionId: this.sessionId,
+          toolCallId: d.tool_use_id,
+          isError: true,
+          content: `Permission denied${d.tool_name ? ` (${d.tool_name})` : ""}`,
+        } satisfies ToolResultEvent);
+      }
+
+      const reason = (m.stop_reason ?? "end_turn") as TurnDoneEvent["reason"];
+      this.ctx.emit({
+        type: "turn.done",
+        sessionId: this.sessionId,
+        reason,
+      } satisfies TurnDoneEvent);
+    } else {
+      // Error result
+      this.ctx.emit({
+        type: "error",
+        sessionId: this.sessionId,
+        message: (m as { result?: string }).result ?? "Unknown error",
+        code: "CLAUDE_ERROR",
+      } satisfies ErrorEvent);
+      this.ctx.emit({
+        type: "turn.done",
+        sessionId: this.sessionId,
+        reason: "error",
+      } satisfies TurnDoneEvent);
+    }
+  }
+
+  /* ──────────────── token usage (paths A + C, doc §2) ──────────────── */
+
+  /** Normalize raw usage fields and emit a `token-usage.updated` event
+   *  carrying the resulting {@link ContextSnapshot}. Shared by path A
+   *  (per assistant response) and the turn-end fallback in path C.
+   *
+   *  `reportedWindow` is the SDK-reported ceiling from `modelUsage[model].
+   *  contextWindow`; `configured` is the user override (reserved for future
+   *  settings). Both feed `resolveEffectiveContextWindow`, which also applies
+   *  the never-downgrade rule via `state.lastKnownContextWindow`.
+   *
+   *  No-op when `usage` is absent or all-zero (`normalizeClaudeTokenUsage`
+   *  returns `undefined`) — avoids emitting ghost "0 / 200k (0%)" snapshots. */
+  private emitTokenUsage(
+    usage: RawClaudeUsage | undefined,
+    model: string | undefined,
+    reportedWindow: number | undefined,
+    configured?: ClaudeContextWindowTag,
+  ): void {
+    if (!usage) return;
+    const snapshot = normalizeClaudeTokenUsage(
+      { ...usage, model: usage.model ?? model },
+      {
+        reported: reportedWindow,
+        lastKnown: this.state.lastKnownContextWindow,
+        configured,
+      },
+    );
+    if (!snapshot) return;
+    this.publishTokenUsageSnapshot(snapshot);
+  }
+
+  /** Emit a pre-built snapshot (used by path C's merge branch) and update
+   *  the adapter's never-downgrade state. */
+  private publishTokenUsageSnapshot(snapshot: ContextSnapshot): void {
+    // Update never-downgrade state BEFORE emitting so the next resolve sees
+    // the new ceiling. lastKnownContextWindow only grows.
+    if (snapshot.maxTokens > this.state.lastKnownContextWindow) {
+      this.state.lastKnownContextWindow = snapshot.maxTokens;
+    }
+    this.state.lastKnownTokenUsage = snapshot;
+    this.ctx.emit({
+      type: "token-usage.updated",
+      sessionId: this.sessionId,
+      snapshot,
+    } satisfies ContextUsageEvent);
+  }
+}

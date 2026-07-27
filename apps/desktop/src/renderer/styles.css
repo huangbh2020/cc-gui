@@ -2,21 +2,77 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Thin dark scrollbars to match the IDE aesthetic. */
+/* ───────────── Theme variables ─────────────
+ * Each value is a space-separated "R G B" triplet (no commas, no #) so
+ * Tailwind's <alpha-value> placeholder can compose alpha variants like
+ * bg-surface/50. The light set is the :root default; .dark overrides.
+ * Driven by nativeTheme.themeSource → <html>.dark toggle (see lib/theme.ts).
+ *
+ * If these are missing, every `bg-surface` / `text-content` / … class
+ * resolves to an invalid rgb() and the browser falls back to defaults
+ * (black text on dark bg) — which is exactly the "can't read anything"
+ * symptom. So: keep these in sync with tailwind.config.js token names.
+ */
+:root {
+  /* surfaces (backgrounds) */
+  --surface: 255 255 255; /* white */
+  --surface-muted: 244 244 245; /* zinc-100 */
+  --surface-hover: 228 228 231; /* zinc-200 */
+  /* content (text) */
+  --content: 24 24 27; /* zinc-900 */
+  --content-muted: 82 82 91; /* zinc-600 */
+  --content-subtle: 161 161 170; /* zinc-400 */
+  /* borders */
+  --edge: 228 228 231; /* zinc-200 */
+  /* Brighter border for the composer input box. In dark mode the regular
+   * --edge (zinc-800) is nearly invisible against the zinc-900 background,
+   * so the input box outline disappears. This token sits one+ stop brighter
+   * so the box reads clearly at a glance in both themes. Only the composer
+   * container uses it — panel dividers / cards keep --edge. */
+  --input-edge: 212 212 216; /* zinc-300 */
+  /* accent + status (one shade each; tuned per theme for contrast) */
+  --accent: 5 150 105; /* emerald-600 */
+  --danger: 220 38 38; /* red-600 */
+  --warning: 217 119 6; /* amber-600 */
+  --info: 124 58 237; /* violet-600 */
+
+  color-scheme: light;
+}
+
+.dark {
+  --surface: 24 24 27; /* zinc-900 */
+  --surface-muted: 39 39 42; /* zinc-800 */
+  --surface-hover: 63 63 70; /* zinc-700 */
+  --content: 244 244 245; /* zinc-100 — light text on dark bg */
+  --content-muted: 161 161 170; /* zinc-400 */
+  --content-subtle: 82 82 91; /* zinc-600 */
+  --edge: 39 39 42; /* zinc-800 */
+  --input-edge: 161 161 170; /* zinc-400 — brighter than --edge so the
+                              * composer box outline stays visible on the
+                              * zinc-900 background */
+  --accent: 16 185 129; /* emerald-500 */
+  --danger: 248 113 113; /* red-400 */
+  --warning: 251 191 36; /* amber-400 */
+  --info: 167 139 250; /* violet-400 */
+
+  color-scheme: dark;
+}
+
+/* Thin scrollbars that follow the theme. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #3f3f46 transparent;
+  scrollbar-color: rgb(var(--surface-hover)) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: rgb(var(--surface-hover));
   border-radius: 4px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: rgb(var(--content-subtle));
 }
 
 html,
@@ -27,4 +83,17 @@ body,
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* AskUserQuestion bottom-sheet slide-up. Tailwind's arbitrary-animation
+ * syntax `animate-[qa-sheet-in_140ms_ease-out]` references this name. */
+@keyframes qa-sheet-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }

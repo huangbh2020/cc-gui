@@ -16,12 +16,12 @@ export function ThreePaneLayout({ left, center, right }: Props) {
   return (
     <>
       {leftOpen && (
-        <aside className="flex h-full w-[280px] shrink-0 flex-col border-r border-pane-border bg-pane-left">
-          <div className="flex items-center justify-between px-3 py-2 text-xs uppercase tracking-wide text-zinc-500">
+        <aside className="flex h-full w-[280px] shrink-0 flex-col border-r border-edge bg-surface">
+          <div className="flex items-center justify-between px-3 py-2 text-xs uppercase tracking-wide text-content-subtle">
             <span>Explorer</span>
             <button
               onClick={() => setLeftOpen(false)}
-              className="rounded px-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+              className="rounded px-1 text-content-subtle hover:bg-surface-muted hover:text-content-muted"
               title="Hide sidebar"
             >
               ✕
@@ -31,15 +31,15 @@ export function ThreePaneLayout({ left, center, right }: Props) {
         </aside>
       )}
 
-      <main className="flex min-w-0 flex-1 flex-col bg-pane-center">{center}</main>
+      <main className="flex min-w-0 flex-1 flex-col bg-surface-muted">{center}</main>
 
       {rightOpen && (
-        <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-pane-border bg-pane-right">
-          <div className="flex items-center justify-between px-3 py-2 text-xs uppercase tracking-wide text-zinc-500">
+        <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-edge bg-surface">
+          <div className="flex items-center justify-between px-3 py-2 text-xs uppercase tracking-wide text-content-subtle">
             <span>Inspector</span>
             <button
               onClick={() => setRightOpen(false)}
-              className="rounded px-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+              className="rounded px-1 text-content-subtle hover:bg-surface-muted hover:text-content-muted"
               title="Hide panel"
             >
               ✕
@@ -53,7 +53,7 @@ export function ThreePaneLayout({ left, center, right }: Props) {
       {!leftOpen && (
         <button
           onClick={() => setLeftOpen(true)}
-          className="absolute left-1 top-12 z-10 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-700"
+          className="absolute left-1 top-12 z-10 rounded bg-surface-muted px-2 py-1 text-xs text-content-muted hover:bg-surface-hover"
         >
           ▸ Explorer
         </button>
@@ -61,7 +61,7 @@ export function ThreePaneLayout({ left, center, right }: Props) {
       {!rightOpen && (
         <button
           onClick={() => setRightOpen(true)}
-          className="absolute right-1 top-12 z-10 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-700"
+          className="absolute right-1 top-12 z-10 rounded bg-surface-muted px-2 py-1 text-xs text-content-muted hover:bg-surface-hover"
         >
           Inspector ◂
         </button>

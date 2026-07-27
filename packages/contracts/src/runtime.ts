@@ -4,8 +4,25 @@
  * renders; the ClaudeAdapter translates raw NDJSON into these.
  */
 
-/** Permission modes mirror claude's --permission-mode flag. */
-export type PermissionMode = "default" | "plan" | "acceptEdits";
+/**
+ * Permission modes mirror claude's --permission-mode flag (verified against
+ * the Claude Agent SDK Options.permissionMode, which accepts the same set).
+ *
+ * The full union has 6 values, but the renderer's composer only exposes the 4
+ * user-facing ones Claude Code's own UI shows (default / acceptEdits / plan /
+ * bypassPermissions). `dontAsk` and `auto` can still arrive here via
+ * `--resume` of a session that was started in those modes, or via future
+ * settings sync — the contract stores them verbatim, the UI just doesn't
+ * render a chip for them. Keeping the union wider than the UI list lets us
+ * round-trip these values without lossy coercion.
+ */
+export type PermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "plan"
+  | "bypassPermissions"
+  | "dontAsk"
+  | "auto";
 
 /**
  * Effort levels mirror claude's --effort flag (verified on 2.1.186:
@@ -92,15 +109,72 @@ export interface TodoUpdateEvent {
   }>;
 }
 
-/** Token usage reported at the end of a turn. */
-export interface UsageEvent {
-  type: "usage";
-  sessionId: string;
-  inputTokens: number;
+/**
+ * Context-window token usage, normalized by the provider adapter before
+ * emission. The provider (claude-sdk adapter) extracts raw usage fields from
+ * SDK messages, runs the shared math in `claudeTokenUsage.ts`, and emits this
+ * event carrying an already-display-ready `ContextSnapshot`. Downstream
+ * (renderer) is provider-neutral — it only stores and renders the snapshot.
+ *
+ * Three emission points mirror Synara's design (docs/claude-context-usage-
+ * tracking.md §2): path A (per assistant response, mid-turn read) and path C
+ * (turn-end merged). Path B (the Agent SDK control channel for live window
+ * queries) is not exposed by the SDK's stream-json surface — `usedPercent` /
+ * `warning` degrade to `usedTokens/maxTokens` (doc §7.2).
+ */
+
+/** Top-level occupancy warning level for the context ring. */
+export type ContextWarning = "ok" | "near-window" | "critical";
+
+/** Granular warning kinds (doc §5), computed each emit and folded into the
+ *  snapshot. Empty when nothing is amiss. */
+export type ContextWarningKind =
+  | "uncached-ingestion"
+  | "near-window"
+  | "large-prompt";
+
+/** A ready-to-render snapshot of context-window state. Built by the adapter
+ *  from raw SDK usage fields; all math (pct / warning / clamps) is already
+ *  applied. */
+export interface ContextSnapshot {
+  /** Tokens currently occupying the context window:
+   *  `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`,
+   *  clamped to `maxTokens`. Cache reads bill at a reduced rate but occupy
+   *  the window at full weight (doc §3). */
+  usedTokens: number;
+  /** Cumulative tokens processed across this turn
+   *  (`input + output + cache_read + cache_creation`). May exceed maxTokens. */
+  totalProcessedTokens: number;
+  /** Context-window ceiling. Prefer SDK-reported (`modelUsage[model].
+   *  contextWindow`); fall back to model-name heuristic; never downgrade
+   *  (doc §4). */
+  maxTokens: number;
+  /** Output tokens from the last completed turn. */
   outputTokens: number;
-  /** Approximate cost in USD, if known. */
+  /** Tokens read from the prompt cache (reduced billing rate). */
+  cacheReadTokens?: number;
+  /** Tokens used to create new cache entries (higher write rate). */
+  cacheCreationTokens?: number;
+  /** Estimated USD cost for this turn, if known. Includes subagent activity. */
   costUsd?: number;
+  /** Active model identifier (from SDK result message). */
   model?: string;
+  /** Context occupancy as a percentage [0, 100], clamped. */
+  pct: number;
+  /** Derived warning level (>=90 critical / >=70 near-window / else ok). */
+  warning: ContextWarning;
+  /** Granular doc-§5 warnings triggered this turn (uncached-ingestion /
+   *  near-window / large-prompt). */
+  warnings: ContextWarningKind[];
+}
+
+/** Emitted by the provider adapter whenever a new token-usage snapshot is
+ *  available (per-assistant-response mid-turn and at turn end). The renderer
+ *  replaces its latest snapshot with `e.snapshot`. */
+export interface ContextUsageEvent {
+  type: "token-usage.updated";
+  sessionId: string;
+  snapshot: ContextSnapshot;
 }
 
 /** Session-level error. */
@@ -118,6 +192,35 @@ export interface TurnDoneEvent {
   type: "turn.done";
   sessionId: string;
   reason: TurnDoneReason;
+}
+
+/**
+ * Emitted at the end of a turn listing the files Edit/Write touched in
+ * that turn. Renderer uses this to render the "本轮文件" card with the
+ * per-file diff and a rewind button. The pre-turn file *content* lives
+ * only in main process memory (FileSnapshot); only the paths and
+ * existence flags cross the IPC boundary.
+ *
+ * `kind: "created"` means the file did not exist before the turn —
+ * rewinding will unlink it. `kind: "modified"` means it existed —
+ * rewinding will write the original content back.
+ */
+export interface TurnFilesEvent {
+  type: "turn.files";
+  sessionId: string;
+  files: Array<{ filePath: string; kind: "modified" | "created" }>;
+}
+
+/** Emitted by main after a renderer-initiated rewind completes. The
+ *  renderer clears its turnFilesBySession entry and pushes a system
+ *  message into the stream so the user has a visual breadcrumb. */
+export interface TurnRewoundEvent {
+  type: "turn.rewound";
+  sessionId: string;
+  /** Paths that were successfully restored (subset of the previous
+   *  turn.files; failed paths are logged in main but not surfaced here
+   *  beyond the implicit "not in this list"). */
+  files: string[];
 }
 
 /**
@@ -141,7 +244,114 @@ export interface AskUserQuestionItem {
 export interface AskUserQuestionEvent {
   type: "question.ask";
   sessionId: string;
+  /** Opaque id for correlating an answer back (used by the approval bridge).
+   * Absent when the question is surfaced from sentinel-scanner fallback. */
+  requestId?: string;
   questions: AskUserQuestionItem[];
+}
+
+/**
+ * The session's effective permission mode changed mid-turn. Emitted when the
+ * model invokes EnterPlanMode / ExitPlanMode tools (source: "model"), so the
+ * UI (composer chip + status bar) can sync to what the SDK is actually doing.
+ * The GUI's session.permissionMode (persisted) is the *startup* mode; this
+ * event reports the *current* runtime mode, which may differ after a model
+ * initiated transition into or out of plan mode.
+ */
+export interface ModeChangeEvent {
+  type: "mode.change";
+  sessionId: string;
+  mode: PermissionMode;
+  /** Who triggered the change. "model" = a plan-mode tool call; "user" = the
+   * host flipping the composer chip (reserved for future use). */
+  source: "model" | "user";
+}
+
+/**
+ * The model has drafted a plan in plan mode and is calling ExitPlanMode to
+ * request user approval before executing. The plan text comes from the tool's
+ * `input.plan` field (the SDK forwards it through canUseTool). The user's
+ * decision is returned via the `claude:respondPlanApproval` IPC channel,
+ * keyed by `requestId`, which resolves the provider's pending Deferred and
+ * either allows (exits plan mode) or denies (stays in plan mode) the tool.
+ */
+export interface PlanApprovalRequestEvent {
+  type: "plan.approval_request";
+  sessionId: string;
+  requestId: string;
+  /** The ExitPlanMode tool_use id, for correlation with the tool card. */
+  toolCallId: string;
+  /** The plan text the model is proposing (Markdown). */
+  plan: string;
+}
+
+/**
+ * Plan draft update — emitted whenever the current plan-mode draft changes.
+ * Used by the activity capsule to preview the plan in real time, independent
+ * of the final `plan.approval_request` event (which only fires once, at
+ * ExitPlanMode time).
+ *
+ * Lifecycle:
+ *   - `phase: "drafting"` — model is still composing the plan; `plan` holds
+ *     whatever text has been written so far. Emitted on EnterPlanMode and on
+ *     subsequent text deltas within plan mode (the host may refine the
+ *     preview live).
+ *   - `phase: "ready"` — model has called ExitPlanMode; `plan` is the final
+ *     submitted plan. Capsules show a "等待批准" badge and the user can open
+ *     the plan for review.
+ *   - `phase: "cleared"` — plan mode has ended (approved, rejected, or
+ *     interrupted). `plan` is empty. The capsule drops the Plan section.
+ */
+export interface PlanUpdateEvent {
+  type: "plan.update";
+  sessionId: string;
+  plan: string;
+  phase: "drafting" | "ready" | "cleared";
+}
+
+/**
+ * Per-subagent status snapshot. The SDK sends `task_started`, `task_progress`,
+ * `task_updated` edge events; the adapter maintains a map keyed by `taskId`
+ * and emits a single consolidated `subagent.update` after each change (REPLACE
+ * semantics, mirroring the SDK's own level-signal guidance). The renderer
+ * renders the full array — no client-side merging required.
+ */
+export interface SubagentSnapshot {
+  /** SDK-provided task id (string). */
+  taskId: string;
+  /** Originating Task tool_use id, for correlation with the chat stream. */
+  toolUseId?: string;
+  /** Human description (SDK task_started.description or Task tool_use input). */
+  description: string;
+  /** Subagent type label (e.g. "general-purpose", "code-reviewer"). */
+  subagentType?: string;
+  /** Lifecycle status. `running` is the steady state until task_updated. */
+  status: "running" | "completed" | "failed" | "killed";
+  /** Cumulative token estimate (task_progress.usage.total_tokens). */
+  totalTokens?: number;
+  /** Cumulative tool-call count (task_progress.usage.tool_uses). */
+  toolUses?: number;
+  /** Elapsed milliseconds (task_progress.usage.duration_ms). */
+  durationMs?: number;
+  /** Most-recent tool name the subagent invoked. */
+  lastToolName?: string;
+  /** SDK-supplied progress summary (task_progress.summary). */
+  summary?: string;
+  /** Wall-clock end time (task_updated.patch.end_time). */
+  endedAt?: number;
+  /** Error message (task_updated.patch.error), if status=failed. */
+  error?: string;
+}
+
+/**
+ * Consolidated subagent roster update. Always carries the full current
+ * roster — the host should replace, not merge. Empty array means "no
+ * subagents active or recently completed".
+ */
+export interface SubagentUpdateEvent {
+  type: "subagent.update";
+  sessionId: string;
+  agents: SubagentSnapshot[];
 }
 
 /** The union of all runtime events. */
@@ -154,6 +364,12 @@ export type RuntimeEvent =
   | ApprovalRequestEvent
   | TodoUpdateEvent
   | AskUserQuestionEvent
-  | UsageEvent
+  | ModeChangeEvent
+  | PlanApprovalRequestEvent
+  | PlanUpdateEvent
+  | SubagentUpdateEvent
+  | ContextUsageEvent
   | ErrorEvent
-  | TurnDoneEvent;
+  | TurnDoneEvent
+  | TurnFilesEvent
+  | TurnRewoundEvent;

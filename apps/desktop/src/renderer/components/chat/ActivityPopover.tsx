@@ -1,0 +1,278 @@
+import { useState } from "react";
+import type { TodoItem, PlanDraft } from "@renderer/stores/sessionStore.js";
+import type { SubagentSnapshot } from "@contracts/runtime";
+import { Markdown } from "./Markdown.js";
+
+/* ── Tasks section (extracted from the old TodosPopover) ────────────── */
+
+const STATUS_META: Record<TodoItem["status"], { icon: string; cls: string }> = {
+  pending: { icon: "○", cls: "text-content-subtle" },
+  in_progress: { icon: "◐", cls: "text-warning" },
+  completed: { icon: "✓", cls: "text-accent" },
+};
+
+const PRIORITY_BAR: Record<TodoItem["priority"], string> = {
+  high: "border-l-red-500",
+  medium: "border-l-amber-500",
+  low: "border-l-zinc-600",
+};
+
+/** Status tints per subagent lifecycle state. Exported so the capsule
+ *  chip (SubagentsChip) can render matching labels/colors without
+ *  duplicating the map. */
+export const SUBAGENT_STATUS_META: Record<SubagentSnapshot["status"], { label: string; cls: string; spin?: boolean }> = {
+  running: { label: "运行中", cls: "text-warning", spin: true },
+  completed: { label: "已完成", cls: "text-accent" },
+  failed: { label: "失败", cls: "text-danger" },
+  killed: { label: "已终止", cls: "text-danger" },
+};
+
+/** Plan section phase labels. The badge color escalates with how far along
+ *  plan mode is — `drafting` is informational, `ready` means the model is
+ *  blocking on the user's decision. */
+const PLAN_PHASE_META: Record<PlanDraft["phase"], { label: string; cls: string }> = {
+  drafting: { label: "✎ 草拟中", cls: "text-info" },
+  ready: { label: "⚡ 等待批准", cls: "text-warning" },
+  cleared: { label: "", cls: "" },
+};
+
+/** Compact "1.2k tokens · 5 tools · 12s" string. Exported for reuse by the
+ *  capsule chip's tooltip / popover. */
+export function fmtUsage(snap: SubagentSnapshot): string {
+  const parts: string[] = [];
+  if (typeof snap.totalTokens === "number") parts.push(`${(snap.totalTokens / 1000).toFixed(1)}k tokens`);
+  if (typeof snap.toolUses === "number") parts.push(`${snap.toolUses} tools`);
+  if (typeof snap.durationMs === "number") parts.push(`${Math.round(snap.durationMs / 1000)}s`);
+  return parts.join(" · ");
+}
+
+/** Truncate a string to N characters with an ellipsis, preserving newlines. */
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, n).trimEnd() + "…";
+}
+
+/* ── Section primitives ─────────────────────────────────────────────── */
+
+/** A horizontal section header: icon + title (left), badge/right slot. */
+function SectionHeader({
+  icon,
+  title,
+  right,
+}: {
+  icon: string;
+  title: string;
+  right?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between border-b border-white/5 px-3 py-1.5">
+      <span className="text-[11px] font-semibold text-content-muted">
+        <span className="mr-1 opacity-80">{icon}</span>
+        {title}
+      </span>
+      {right && <span className="text-[10px] text-content-subtle">{right}</span>}
+    </div>
+  );
+}
+
+/* ── Section: Tasks ─────────────────────────────────────────────────── */
+
+function TasksSection({ todos }: { todos: TodoItem[] }) {
+  const done = todos.filter((t) => t.status === "completed").length;
+  const pct = todos.length > 0 ? Math.round((done / todos.length) * 100) : 0;
+  return (
+    <>
+      <SectionHeader
+        icon="✓"
+        title="Tasks"
+        right={
+          <span className="rounded-full bg-surface-muted px-2 py-0.5 tabular-nums">
+            {done}/{todos.length} · {pct}%
+          </span>
+        }
+      />
+      <ul className="max-h-60 overflow-y-auto py-1">
+        {todos.map((t, i) => {
+          const meta = STATUS_META[t.status];
+          return (
+            <li
+              key={i}
+              className={`flex items-start gap-2 border-l-2 px-3 py-1.5 ${PRIORITY_BAR[t.priority]}`}
+            >
+              <span className={`mt-0.5 shrink-0 text-xs ${meta.cls}`}>{meta.icon}</span>
+              <span
+                className={`text-xs leading-relaxed ${
+                  t.status === "completed" ? "text-content-subtle line-through" : "text-content-muted"
+                }`}
+              >
+                {t.content}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+/* ── Section: Subagents ────────────────────────────────────────────── */
+
+function SubagentsSection({ agents }: { agents: SubagentSnapshot[] }) {
+  const running = agents.filter((a) => a.status === "running").length;
+  return (
+    <>
+      <SectionHeader
+        icon="🤖"
+        title={`子代理 · ${agents.length} 个`}
+        right={
+          running > 0 ? (
+            <span className="flex items-center gap-1 text-warning">
+              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
+              {running} 运行中
+            </span>
+          ) : null
+        }
+      />
+      <ul className="max-h-60 overflow-y-auto py-1">
+        {agents.map((s) => {
+          const meta = SUBAGENT_STATUS_META[s.status];
+          const usage = fmtUsage(s);
+          return (
+            <li key={s.taskId} className="border-l-2 border-l-info/60 px-3 py-1.5">
+              <div className="flex items-center gap-1.5">
+                {s.subagentType && (
+                  <span className="rounded bg-info/20 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-info">
+                    {s.subagentType}
+                  </span>
+                )}
+                <span className={`flex items-center gap-1 text-[10px] ${meta.cls}`}>
+                  {meta.spin && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />}
+                  {meta.label}
+                </span>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-content" title={s.description}>
+                {s.description || "(无描述)"}
+              </p>
+              {(usage || s.lastToolName) && (
+                <p className="mt-0.5 text-[10px] text-content-subtle">
+                  {[s.lastToolName, usage].filter(Boolean).join(" · ")}
+                </p>
+              )}
+              {s.summary && (
+                <p className="mt-0.5 truncate text-[10px] italic text-content-subtle" title={s.summary}>
+                  {s.summary}
+                </p>
+              )}
+              {s.error && <p className="mt-0.5 text-[10px] text-danger">{s.error}</p>}
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+/* ── Section: Plan ─────────────────────────────────────────────────── */
+
+/** Number of characters of plan text to show in the preview before "展开". */
+const PLAN_PREVIEW_CHARS = 480;
+
+function PlanSection({
+  plan,
+  phase,
+  onOpenFull,
+}: {
+  plan: PlanDraft["plan"];
+  phase: PlanDraft["phase"];
+  /** Callback to open the full plan in PlanApprovalPrompt. Currently the
+   *  approval modal is only shown by canUseTool on ExitPlanMode, so this
+   *  just toggles the inline expanded view in the popover. */
+  onOpenFull?: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = PLAN_PHASE_META[phase];
+  const needsTruncation = plan.length > PLAN_PREVIEW_CHARS && !expanded;
+  return (
+    <>
+      <SectionHeader
+        icon="📋"
+        title="计划文档"
+        right={meta.label ? <span className={meta.cls}>{meta.label}</span> : null}
+      />
+      <div className="max-h-72 overflow-y-auto px-3 py-2">
+        {plan ? (
+          <div className="prose-plan text-[11px] leading-relaxed text-content-muted">
+            <Markdown>{needsTruncation ? truncate(plan, PLAN_PREVIEW_CHARS) : plan}</Markdown>
+          </div>
+        ) : (
+          <p className="text-[11px] italic text-content-subtle">
+            {phase === "drafting" ? "模型正在撰写计划…（提交后会自动填入）" : "暂无计划"}
+          </p>
+        )}
+      </div>
+      {(plan.length > PLAN_PREVIEW_CHARS || onOpenFull) && (
+        <div className="flex items-center justify-end gap-1 border-t border-white/5 px-3 py-1.5">
+          {plan.length > PLAN_PREVIEW_CHARS && (
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="rounded px-2 py-0.5 text-[10px] text-content-muted transition-colors hover:bg-surface-muted hover:text-content"
+              title={expanded ? "收起" : "展开完整内容"}
+            >
+              {expanded ? "收起" : "展开"}
+            </button>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ── Root: ActivityPopover ─────────────────────────────────────────── */
+
+/**
+ * Unified activity popover for the ChatPane sticky capsule. Renders up to
+ * three sections — Plan, Subagents, Tasks — in priority order. Each
+ * section is omitted entirely when its source state is empty (no Todos →
+ * no Tasks section), so the popover gracefully degrades to whatever the
+ * active session is actually doing right now.
+ *
+ * Pure presentational: open/close + outer positioning is handled by the
+ * caller (ChatPane). This component is the "expanded view of the
+ * activity capsule".
+ */
+export function ActivityPopover({
+  todos,
+  plan,
+  subagents,
+}: {
+  todos: TodoItem[];
+  plan: PlanDraft;
+  subagents: SubagentSnapshot[];
+}) {
+  const showPlan = plan.phase !== "cleared" || plan.plan.length > 0;
+  const showSubagents = subagents.length > 0;
+  const showTasks = todos.length > 0;
+
+  return (
+    <div className="absolute right-0 top-9 z-30 w-96 overflow-hidden rounded-xl border border-white/10 bg-surface/95 shadow-2xl backdrop-blur">
+      {/* Stacked sections: Plan → Subagents → Tasks. Thin dividers
+          between them; the topmost rendered section gets the rounded top
+          (handled by `overflow-hidden` on the parent). */}
+      {showPlan && (
+        <div className="border-b border-white/5">
+          <PlanSection plan={plan.plan} phase={plan.phase} />
+        </div>
+      )}
+      {showSubagents && (
+        <div className="border-b border-white/5">
+          <SubagentsSection agents={subagents} />
+        </div>
+      )}
+      {showTasks && (
+        <div>
+          <TasksSection todos={todos} />
+        </div>
+      )}
+    </div>
+  );
+}

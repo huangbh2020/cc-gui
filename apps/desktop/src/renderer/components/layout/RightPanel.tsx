@@ -16,15 +16,15 @@ export function RightPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 border-b border-pane-border">
+      <div className="flex shrink-0 border-b border-edge">
         {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={`flex-1 px-2 py-2 text-[11px] font-medium uppercase tracking-wide transition-colors ${
               tab === t.id
-                ? "border-b-2 border-emerald-500 text-zinc-200"
-                : "text-zinc-500 hover:text-zinc-300"
+                ? "border-b-2 border-accent text-content"
+                : "text-content-subtle hover:text-content-muted"
             }`}
           >
             <span className="mr-1">{t.icon}</span>
@@ -33,7 +33,7 @@ export function RightPanel() {
         ))}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-3 text-xs text-zinc-600">
+      <div className="min-h-0 flex-1 overflow-auto p-3 text-xs text-content-subtle">
         {tab === "files" && <p>File tree appears here (P4).</p>}
         {tab === "git" && <p>Git status &amp; diff appear here (P4).</p>}
         {tab === "terminal" && <p>Embedded terminal appears here (P4).</p>}

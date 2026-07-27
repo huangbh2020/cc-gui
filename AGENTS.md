@@ -6,13 +6,14 @@
 
 ## 项目是什么
 
-**my-claude-gui** — 基于 `claude` CLI 的 stream-json 协议构建的**桌面端 GUI**(Electron 三栏 IDE)。
+**my-claude-gui** — 基于 Claude Agent SDK 构建的**桌面端 GUI**(Electron 三栏 IDE)。
 
-核心理念:**不重新实现 agent,只做 claude 的交互界面**。claude 作为黑盒子进程被 spawn,经其官方流式协议驱动;本应用负责会话管理、实时渲染、工具审批、IDE 能力(文件/git/终端)。
+核心理念:**不重新实现 agent,只做 Claude 的交互界面**。通过 Agent SDK 驱动 claude agent loop;本应用负责会话管理、实时渲染、工具审批、IDE 能力(文件/git/终端)。
 
-- **不打包** `claude.exe`,只调用用户系统已装的 Claude Code
+- 使用 `@anthropic-ai/claude-agent-sdk`,内部管理 claude 二进制(项目不直接 spawn)
 - 项目 MIT,可独立开源
 - 架构受 [Synara](https://github.com/Emanuele-web04/synara) 启发,但用主流 TS 重写(无 effect-ts、无 bun)
+- 内置 `AgentProvider` 抽象层,后续可扩展其他 agent 平台(OpenAI Codex、Gemini CLI 等)
 
 ---
 
@@ -21,9 +22,10 @@
 | 主题 | 文档 |
 |------|------|
 | 技术栈、架构、踩坑记录 | [`docs/tech-stack.md`](docs/tech-stack.md) |
-| claude stream-json 数据格式(解析器依据) | [`docs/claude-stream-json.md`](docs/claude-stream-json.md) |
+| claude stream-json 数据格式(旧 CLI 方式的 dump 记录,SDK 的 SDKMessage 与此对应) | [`docs/claude-stream-json.md`](docs/claude-stream-json.md) |
+| Claude Agent SDK 参考 | https://code.claude.com/docs/en/agent-sdk |
 
-改 `ClaudeRuntime` 或涉及 claude 输出解析时,**必须**先读 stream-json 文档——那里每个字段都来自真实 dump,不要凭记忆。
+改 `SdkMessageAdapter` 或涉及 SDK 输出解析时,**必须**先读 stream-json 文档——SDK 的 `SDKMessage` 类型本质上是对 CLI stream-json 的类型化封装,字段语义一一对应。
 
 ---
 
@@ -33,11 +35,12 @@
 Renderer (React 19, contextIsolation:true, nodeIntegration:false)
         ↕  Electron IPC(preload contextBridge + zod 校验)
 Main (Node.js)
-  ├── ClaudeRuntime       spawn claude, 解析 stream-json → RuntimeEvent
-  ├── SessionManager      会话生命周期(P2: SQLite)
+  ├── RuntimeManager      持 ProviderRegistry,构造 ProviderContext
+  │     └── AgentProvider  ClaudeAgentSdkProvider(→ query() → SDKMessage → RuntimeEvent)
+  ├── SessionManager      会话生命周期(SQLite via sql.js)
   └── IDE Services        terminal / git / checkpoint(P4)
-        ↕  child_process.spawn(claude CLI, --output-format stream-json)
-     claude(用户系统已装,不打包)
+        ↕  @anthropic-ai/claude-agent-sdk (query)
+     claude 二进制(SDK 内打包,项目不直接 spawn)
 ```
 
 **安全边界**:renderer 不能 `require()` 任何 Node 模块。通往 Node 的唯一桥梁是 preload 暴露的 `window.api`,所有消息经 zod 校验后才放行。新增 IPC 通道时,必须在 `packages/contracts/src/ipc.ts` 定义 schema + 通道常量,并在 preload 白名单注册。
@@ -48,19 +51,24 @@ Main (Node.js)
 
 ```
 packages/contracts/src/        # 跨进程共享(无运行时逻辑)
-  runtime.ts                   # RuntimeEvent 联合 — claude 流事件的归一化目标
+  runtime.ts                   # RuntimeEvent 联合 — provider 中立的归一化事件
   session.ts                   # Project / Session / Message 领域类型
   ipc.ts                       # zod schema + IPC 通道常量 + RPC 类型表
+  provider.ts                  # AgentProvider 接口 / ProviderContext / TurnHandle
 
 apps/desktop/src/
   main/                        # 主进程
     claude/
-      ClaudePathResolver.ts    # 跨平台定位 claude 入口(本机: cli-wrapper.cjs)
-      ClaudeRuntime.ts         # ★ spawn + NDJSON 解析(改前读 stream-json 文档)
-      RuntimeManager.ts        # 会话↔runtime 映射
+      RuntimeManager.ts        # ★ 会话↔provider 映射,构造 ProviderContext
+      ApprovalBridge.ts        # 工具审批/AskUserQuestion 的 IPC 异步桥
+    providers/
+      registry.ts              # ProviderRegistry 单例(启动时注册所有 provider)
+      claude-sdk/
+        ClaudeAgentSdkProvider.ts  # AgentProvider 实现(query() 包装 + canUseTool 桥)
+        SdkMessageAdapter.ts       # ★ SDKMessage → RuntimeEvent 归一化(改前读 SDK 文档)
     ipc/{claude,projects}.ts   # IPC handler
     lib/logger.ts              # 文件+stderr 日志(userData/logs/main.log)
-    store/memoryStore.ts       # 内存存储(P2 换 SQLite)
+    store/{db,repositories}.ts # SQLite 持久化(sql.js)
   preload/index.ts             # contextBridge 白名单 API
   renderer/                    # 前端(React)
     stores/sessionStore.ts     # ★ Zustand store,ingest RuntimeEvent → ChatMessage
@@ -114,11 +122,39 @@ pnpm build
 - 新通道:先在 `contracts/ipc.ts` 加 zod schema + `IPC` 常量 → preload 白名单注册 → main handler 用 `Schema.parse(raw)` 校验入参
 - main→renderer 推送用 `sendToRenderer(IPC.XXX, msg)`,renderer 用 `api.on.xxx` 订阅
 
-### claude 解析(ClaudeRuntime)
-- readline 逐行 parse,**坏行只 warn 不中断**
-- 未知 `type` 静默忽略(向前兼容 CLI 升级)
+### claude 解析(SdkMessageAdapter)
+- `SdkMessageAdapter.dispatch()` 将 SDK 的 `SDKMessage` 归一化为 `RuntimeEvent`
+- 流是按 `message.type` 分发的 if/else 链,未知 type 静默忽略(向前兼容)
 - stream_event 的 text/thinking 增量**只在 delta 渲染**;assistant 完整消息只补全 tool_use,不重发 text(避免重复)
-- turn 结束判定:收到 `result` 行发 `turn.done`;若 claude 异常退出无 result,`close` 事件兜底补发
+- turn 结束判定:收到 `result` 消息发 `turn.done`;generator 正常结束但无 result 时,`flushFinal()` 兜底补发
+- **canUseTool 审批回调由 `ClaudeAgentSdkProvider` 在 `query()` options 里注册**,不在 adapter 里处理
+
+### 中间面板 Tab 模式(P3.5)
+- **显示模式偏好**持久化在 `settings` 表的 `ui.displayMode` key(`DISPLAY_MODE_SETTING_KEY`),`init()` 启动时 `setting.get` 拉取,`setDisplayMode()` 写回。
+- `openTabs: string[]` 是已开 tab 的 sessionId 有序列表;**不论 single / tabs 模式都写**,切模式不丢已开线程。
+- `closeTab()` **不取消运行中的 turn**,只从 tab 列表移除;事件流继续按 sessionId 入桶,重新打开 tab 可看到最新状态。
+- 单 slot 字段(原 `pendingQuestion` / `turnFiles`)已改为 per-session 桶(`pendingQuestionBySession` / `turnFilesBySession`),多 tab 并发不会互相覆盖。
+- `ChatPane` 接受 `sessionId: string | null` prop,所有 per-session 选择器都按 prop 读;`null` 走空态(`EmptyCenterPane`)。
+- `CenterPane`(在 `App.tsx`)按 `displayMode` 决定:`single` 直接挂 `<ChatPane>`;`tabs` 先挂 `<SessionTabs />` 再挂 `<ChatPane key={activeSessionId} />`(只挂载前台 tab,key 变化重挂载)。
+- 4 个全局 config 槽(model / effort / permissionMode / customModelId)保持不变——它们表达"前台 tab 的配置",`syncConfigFromSession` 在 `selectSession` / `openTab` / `closeTab` 切活动时自动同步,Composer 立即反映。
+
+### 前端组件与图标
+
+#### 组件库
+- **`@base-ui/react` ^1.5.0** — Radix UI 原班人马开发的新一代无头 UI 组件库。项目中的可复用 UI 组件基于 base-ui 封装,位于 `src/renderer/components/ui/` 目录。
+- **辅助**:`class-variance-authority` ^0.7.1 — 用 `cva()` 管理组件 variant/size;`tailwind-merge` ^3.6.0 — 用 `twMerge` + `clsx` 暴露 `cn()` 工具函数。
+
+#### 图标库
+- **主图标库**:**`@tabler/icons-react` ^3.44.0**。图标统一以 `<IconX size={16} />` 形式使用。
+- **辅助图标库**:**`react-icons` ^5.6.0** — Tabler 未覆盖的特殊图标集(Phosphor `Pi*`、Remix `Ri*`、Simple Icons `Si*`、VS Code `Vsc*`)。
+- **适配层**:`src/renderer/lib/icons.tsx` 集中 re-export 所有可用图标,附带常用图标的简写别名(如 `SettingsIcon = IconSettings`)。
+
+#### 使用规范(新代码必须遵守)
+1. **class 合并**:**必须**使用 `cn()`(从 `@renderer/lib/cn.js` 导入)替代 template literal 拼接。旧代码可保持原样,新代码一律用 `cn()`。
+2. **基础 UI 组件**:优先从 `@renderer/components/ui/index.js` 导入 `<Button>` / `<Input>` / `<Dialog>` / `<Select>` 等封装组件,不直接写原始 `<button>` + inline className。
+3. **variant 管理**:用 `cva()` 定义组件的 variant/size 变体,不手写条件 className。
+4. **图标**:使用 `@tabler/icons-react` 的 `<IconX>` 组件替代 Unicode 字符(✦▶✕⚙等)。需从 `@renderer/lib/icons.js` 导入。
+5. **语义 Token**:所有 Tailwind class 使用现有的语义颜色 token(`bg-surface` / `text-content` / `border-edge` / `text-accent` / `text-content-muted` / `text-content-subtle` 等),不使用原始 Tailwind 颜色值。
 
 ---
 
@@ -127,11 +163,13 @@ pnpm build
 | 阶段 | 状态 | 说明 |
 |------|------|------|
 | P0 脚手架 | ✅ | 三进程、三栏布局、IPC 契约 |
-| P1 端到端 | ✅ | spawn claude + 流式渲染 + 输入框 |
-| P2 会话持久化 | ⬜ | better-sqlite3、`--resume` 续传、会话列表 |
-| P3 工具审批 | ⬜ | tool 卡片、审批内联条、权限模式 |
+| P1 端到端 | ✅ | claude stream-json + 流式渲染 + 输入框 |
+| P2 会话持久化 | ✅ | sql.js(SQLite)、`--resume` 续传、会话列表 |
+| P2.5 SDK 迁移 | ✅ | @anthropic-ai/claude-agent-sdk + AgentProvider 抽象层 + ProviderRegistry |
+| P3 工具审批 | ✅ 基础 | canUseTool 桥 → approval.request/approve IPC(后端已通,前端审批 UI 待 P5) |
+| P3.5 中间面板 Tab 模式 | ✅ | 中间面板显示模式偏好(单/tab),`openTabs` + `SessionTabs` 标签条;关闭 tab 后台 turn 继续运行 |
 | P4 IDE 右栏 | ⬜ | 文件树、git、终端(xterm+node-pty)、Monaco diff |
-| P5 体验打磨 | ⬜ | 浏览器预览、checkpoint 时间线、Cmd+K |
+| P5 体验打磨 | ⬜ | 浏览器预览、checkpoint 时间线、Cmd+K、审批 UI |
 | P6 发布 | ⬜ | electron-builder、自动更新、CI |
 
 详见 `docs/tech-stack.md` 第八节。
