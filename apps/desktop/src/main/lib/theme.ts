@@ -17,7 +17,7 @@ import { nativeTheme } from "electron";
 import type { ThemeName, EffectiveTheme } from "@contracts/theme";
 import { THEME_SETTING_KEY } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
-import { sendToRenderer } from "@main/window.js";
+import { sendToRenderer, updateTitleBarOverlay } from "@main/window.js";
 import { IPC } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
 
@@ -83,5 +83,6 @@ export function initTheme(): void {
   // regardless — cheap to re-broadcast). Also fires when WE set themeSource.
   nativeTheme.on("updated", () => {
     broadcast();
+    updateTitleBarOverlay();
   });
 }

@@ -34,6 +34,7 @@ export {
   IconShare,
   IconSend,
   IconSend2,
+  IconArchive,
   // Navigation
   IconChevronDown,
   IconChevronUp,
@@ -118,6 +119,8 @@ export {
   IconHexagon,
   IconRobot,
   IconCpu,
+  // Theme picker icons
+  IconDeviceDesktop,
 } from "@tabler/icons-react";
 
 /* ───────── Shorthand aliases (commonly used) ───────── */

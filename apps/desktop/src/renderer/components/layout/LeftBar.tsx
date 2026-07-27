@@ -1,48 +1,64 @@
-import { Menu } from "@base-ui/react/menu";
+import { useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconFolder,
   IconMessage,
   IconChevronRight,
   IconPlus,
-  IconCheck,
-  IconDotsVertical,
   IconArrowRight,
+  IconArchive,
+  IconTrash,
+  IconLoader2,
+  IconSettings,
+  IconCheck,
+  IconX,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Project, Session } from "@contracts/session";
 
 /**
  * Left bar — a tree of projects → sessions, with archive (soft) / delete (hard)
- * on each node, plus a collapsible "archived" section at the bottom.
+ * icon buttons revealed on hover for every row, plus a collapsible "archived"
+ * section at the bottom grouped by project.
+ *
+ * Sessions are paginated: only the first SESSION_PAGE_SIZE (5) threads load
+ * per project, and a "加载更多" button under the list appends the next page.
  *
  * Replaces the old two flat lists (Projects / Sessions) which had no project
  * switching and no lifecycle actions. Sessions are cached per-project in the
- * store (sessionsByProject), so expanding a project is instant.
+ * store (sessionsByProject = active page slice, archivedSessionsByProject =
+ * unpaginated archived rows), so expanding a project is instant.
  *
  * Layout sketch:
  *   EXPLORER                       [+ 添加项目]
- *   ▾ 📁 my-claude-gui          ⋯
- *       💬 P2会话持久化
- *       💬 自定义模型        ✓
- *   ▸ 📁 blog-site             ⋯
+ *   ▾ 📁 my-claude-gui         + 🗑
+ *       💬 P2会话持久化         📦 🗑
+ *       💬 自定义模型     ✓    📦 🗑
+ *       加载更多（还有 3 条）
+ *   ▸ 📁 blog-site             + 🗑
  *   ─────────────────────────────
- *   ▾ 已归档 (3)
- *       📁 old-project  [恢复] [删]
- *       💬 old-thread   [恢复] [删]
+ *   ▾ 已归档 (4)
+ *       📁 old-project     [恢复] [删]
+ *       📁 side-project
+ *         💬 old-thread       [恢复] [删]
+ *   ─────────────────────────────
+ *   ⚙ 设置
  */
 export function LeftBar() {
   const projects = useSessionStore((s) => s.projects);
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const sessionsByProject = useSessionStore((s) => s.sessionsByProject);
+  const sessionsHasMoreByProject = useSessionStore((s) => s.sessionsHasMoreByProject);
+  const sessionsTotalByProject = useSessionStore((s) => s.sessionsTotalByProject);
+  const archivedSessionsByProject = useSessionStore((s) => s.archivedSessionsByProject);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const expandedProjects = useSessionStore((s) => s.expandedProjects);
   const archivedViewOpen = useSessionStore((s) => s.archivedViewOpen);
 
   const addProject = useSessionStore((s) => s.addProjectFromFolder);
-  const selectProject = useSessionStore((s) => s.selectProject);
   const toggleProjectExpanded = useSessionStore((s) => s.toggleProjectExpanded);
   const setArchivedViewOpen = useSessionStore((s) => s.setArchivedViewOpen);
+  const loadMoreSessions = useSessionStore((s) => s.loadMoreSessions);
   const startSession = useSessionStore((s) => s.startSession);
   // Use `openTab` rather than `selectSession` so the clicked thread is
   // added to the tab strip (in `tabs` mode) or simply activated (in
@@ -53,39 +69,39 @@ export function LeftBar() {
   const archiveProject = useSessionStore((s) => s.archiveProject);
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const archiveSession = useSessionStore((s) => s.archiveSession);
+  const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
+  const runningBySession = useSessionStore((s) => s.runningBySession);
 
-  // Split into active vs archived. Active projects show in the tree; archived
-  // ones (and archived sessions under active projects) show in the archived bin.
+  // Split into active vs archived. Active projects show in the tree;
+  // archived projects (whole-project archive) show as their own rows in
+  // the archived bin, while archived SESSIONS under still-active projects
+  // are grouped by their parent project in the bin.
   const activeProjects = projects.filter((p) => !p.archived);
   const archivedProjects = projects.filter((p) => p.archived);
 
-  // Archived sessions that live under NON-archived projects (an archived
-  // project's sessions are already covered by showing the project itself).
-  const archivedSessions: { session: Session; project: Project }[] = [];
-  for (const p of activeProjects) {
-    for (const s of sessionsByProject[p.id] ?? []) {
-      if (s.archived) archivedSessions.push({ session: s, project: p });
-    }
-  }
-  const archivedCount = archivedProjects.length + archivedSessions.length;
+  // Archived sessions grouped by their (still-active) parent project, in
+  // the same project order as the tree above. Empty groups are skipped.
+  const archivedGroups = activeProjects
+    .map((p) => ({ project: p, sessions: archivedSessionsByProject[p.id] ?? [] }))
+    .filter((g) => g.sessions.length > 0);
+  const archivedCount = archivedProjects.length + archivedGroups.reduce((n, g) => n + g.sessions.length, 0);
 
   return (
     <div className="flex h-full flex-col px-2 py-2 text-sm">
       {/* Header */}
-      <div className="mb-1 flex items-center justify-between px-1">
+      <div className="group mb-1 flex items-center justify-between px-1">
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-content-subtle">
-          Explorer
+          项目
         </h3>
         <button
           onClick={() => void addProject()}
           className={cn(
-            "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-content-muted transition-colors",
-            "hover:bg-surface-muted hover:text-accent",
+            "flex items-center rounded px-1 py-0.5 text-content-muted opacity-0 transition-all",
+            "hover:text-accent group-hover:opacity-100",
           )}
           title="打开一个文件夹作为项目"
         >
           <IconPlus size={12} />
-          添加项目
         </button>
       </div>
 
@@ -110,32 +126,31 @@ export function LeftBar() {
                 key={p.id}
                 project={p}
                 sessions={sessionsByProject[p.id] ?? []}
+                hasMore={!!sessionsHasMoreByProject[p.id]}
+                total={sessionsTotalByProject[p.id] ?? 0}
                 expanded={!!expandedProjects[p.id]}
                 isActiveProject={p.id === activeProjectId}
                 activeSessionId={activeSessionId}
+                runningBySession={runningBySession}
                 onToggleExpand={() => toggleProjectExpanded(p.id)}
-                onClickProject={() => void selectProject(p.id)}
                 onNewSession={() => void startSession(p.id)}
+                onLoadMore={() => void loadMoreSessions(p.id)}
                 onSelectSession={(sid) => void openTab(sid)}
-                onArchive={() => void archiveProject(p.id, true)}
                 onDelete={() => {
                   if (confirm(`删除项目「${p.name}」及其所有线程?此操作不可恢复。`)) {
                     void deleteProject(p.id);
                   }
                 }}
                 onArchiveSession={(sid) => void archiveSession(sid, true)}
-                onDeleteSession={(s) => {
-                  if (confirm(`删除线程「${s.title}」?此操作不可恢复。`)) {
-                    void deleteSession(s.id);
-                  }
-                }}
+                onDeleteSession={(s) => void deleteSession(s.id)}
               />
             ))}
           </ul>
         )}
       </div>
 
-      {/* Archived bin */}
+      {/* Archived bin — archived projects first, then archived sessions
+          grouped by their parent project. */}
       {archivedCount > 0 && (
         <div className="mt-2 border-t border-edge pt-2">
           <button
@@ -169,24 +184,51 @@ export function LeftBar() {
                   }}
                 />
               ))}
-              {archivedSessions.map(({ session, project }) => (
-                <ArchivedRow
-                  key={session.id}
-                  icon={<IconMessage size={14} className="opacity-60" />}
-                  title={session.title}
-                  subtitle={project.name}
-                  onRestore={() => void archiveSession(session.id, false)}
-                  onDelete={() => {
-                    if (confirm(`彻底删除线程「${session.title}」?`)) {
-                      void deleteSession(session.id);
-                    }
-                  }}
-                />
+              {archivedGroups.map(({ project, sessions }) => (
+                <li key={project.id} className="mt-0.5">
+                  {/* Group header: parent project name (non-interactive). */}
+                  <div className="flex items-center gap-1 px-1 py-0.5 text-[11px] text-content-subtle">
+                    <IconFolder size={12} className="opacity-50" />
+                    <span className="truncate">{project.name}</span>
+                  </div>
+                  <ul className="ml-3 space-y-0.5 border-l border-edge/50 pl-2">
+                    {sessions.map((s) => (
+                      <ArchivedRow
+                        key={s.id}
+                        icon={<IconMessage size={14} className="opacity-60" />}
+                        title={s.title}
+                        onRestore={() => void archiveSession(s.id, false)}
+                        onDelete={() => {
+                          if (confirm(`彻底删除线程「${s.title}」?`)) {
+                            void deleteSession(s.id);
+                          }
+                        }}
+                      />
+                    ))}
+                  </ul>
+                </li>
               ))}
             </ul>
           )}
         </div>
       )}
+
+      {/* Settings — entry moved here from the (removed) TopBar header.
+          Docked to the bottom of the left rail so it's always reachable
+          regardless of how far the project list scrolls. */}
+      <div className="mt-2 shrink-0 border-t border-edge pt-1.5">
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className={cn(
+            "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-content-muted transition-colors",
+            "hover:bg-surface-muted hover:text-content",
+          )}
+          title="设置"
+        >
+          <IconSettings size={14} className="shrink-0" />
+          设置
+        </button>
+      </div>
     </div>
   );
 }
@@ -196,14 +238,16 @@ export function LeftBar() {
 interface ProjectNodeProps {
   project: Project;
   sessions: Session[];
+  hasMore: boolean;
+  total: number;
   expanded: boolean;
   isActiveProject: boolean;
   activeSessionId: string | null;
+  runningBySession: Record<string, boolean>;
   onToggleExpand: () => void;
-  onClickProject: () => void;
   onNewSession: () => void;
+  onLoadMore: () => void;
   onSelectSession: (sessionId: string) => void;
-  onArchive: () => void;
   onDelete: () => void;
   onArchiveSession: (sessionId: string) => void;
   onDeleteSession: (session: Session) => void;
@@ -211,11 +255,12 @@ interface ProjectNodeProps {
 
 function ProjectNode(props: ProjectNodeProps) {
   const {
-    project, sessions, expanded, isActiveProject, activeSessionId,
-    onToggleExpand, onClickProject, onNewSession, onSelectSession,
-    onArchive, onDelete, onArchiveSession, onDeleteSession,
+    project, sessions, hasMore, total, expanded, isActiveProject, activeSessionId,
+    runningBySession,
+    onToggleExpand, onNewSession, onLoadMore, onSelectSession,
+    onDelete, onArchiveSession, onDeleteSession,
   } = props;
-  const activeSessions = sessions.filter((s) => !s.archived);
+  const loaded = sessions.length;
 
   return (
     <li>
@@ -242,9 +287,9 @@ function ProjectNode(props: ProjectNodeProps) {
           />
         </button>
 
-        {/* Project name → click to select */}
+        {/* Project name → click toggles expand/collapse (matches chevron) */}
         <button
-          onClick={onClickProject}
+          onClick={onToggleExpand}
           className="flex min-w-0 flex-1 items-center gap-1 text-left"
           title={project.path}
         >
@@ -264,30 +309,41 @@ function ProjectNode(props: ProjectNodeProps) {
           <IconPlus size={12} />
         </button>
 
-        {/* Context menu (archive / delete) */}
-        <NodeMenu
-          items={[
-            { label: "归档", onClick: onArchive },
-            { label: "删除", danger: true, onClick: onDelete },
-          ]}
-        />
+        {/* Delete — inline on hover (projects cannot be archived, only removed). */}
+        <HoverIconButton onClick={onDelete} title="删除" danger>
+          <IconTrash size={13} />
+        </HoverIconButton>
       </div>
 
       {expanded && (
         <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-edge/50 pl-2">
-          {activeSessions.length === 0 ? (
+          {loaded === 0 ? (
             <li className="px-2 py-1 text-[11px] text-content-subtle">暂无线程</li>
           ) : (
-            activeSessions.map((s) => (
+            sessions.map((s) => (
               <SessionRow
                 key={s.id}
                 session={s}
                 active={s.id === activeSessionId}
+                isRunning={!!runningBySession[s.id]}
                 onSelect={() => onSelectSession(s.id)}
                 onArchive={() => onArchiveSession(s.id)}
                 onDelete={() => onDeleteSession(s)}
               />
             ))
+          )}
+          {hasMore && (
+            <li>
+              <button
+                onClick={onLoadMore}
+                className={cn(
+                  "w-full rounded px-2 py-1 text-left text-[11px] text-content-subtle transition-colors",
+                  "hover:bg-surface-muted/50 hover:text-accent",
+                )}
+              >
+                加载更多{total > 0 ? `（还有 ${Math.max(total - loaded, 0)} 条）` : ""}
+              </button>
+            </li>
           )}
         </ul>
       )}
@@ -298,17 +354,25 @@ function ProjectNode(props: ProjectNodeProps) {
 /* ── Session row (leaf) ── */
 
 function SessionRow({
-  session, active, onSelect, onArchive, onDelete,
+  session, active, isRunning, onSelect, onArchive, onDelete,
 }: {
   session: Session;
   active: boolean;
+  isRunning: boolean;
   onSelect: () => void;
   onArchive: () => void;
   onDelete: () => void;
 }) {
+  const [pendingConfirm, setPendingConfirm] = useState<null | "archive" | "delete">(null);
+
+  const handleRowClick = () => {
+    setPendingConfirm(null);
+    onSelect();
+  };
+
   return (
     <li
-      onClick={onSelect}
+      onClick={handleRowClick}
       className={cn(
         "group flex cursor-pointer items-center gap-1 rounded px-1 py-1 text-xs",
         active
@@ -319,14 +383,101 @@ function SessionRow({
     >
       <IconMessage size={14} className="shrink-0" />
       <span className="min-w-0 flex-1 truncate">{session.title}</span>
-      {active && <IconCheck size={12} className="shrink-0 text-accent" />}
-      <NodeMenu
-        items={[
-          { label: "归档", onClick: onArchive },
-          { label: "删除", danger: true, onClick: onDelete },
-        ]}
-      />
+
+      {/* Inline confirm — shown after the first click on archive or delete.
+          Two icons replace the normal single-action button: a confirm check
+          and a cancel X. The actual action only fires on the second click
+          (confirm). Clicking anywhere else dismisses the pending state. */}
+      {pendingConfirm === "archive" && (
+        <>
+          <button
+            onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onArchive(); }}
+            className="flex shrink-0 items-center rounded px-1 text-accent hover:bg-surface-hover"
+            title="确认归档"
+          >
+            <IconCheck size={13} />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
+            className="flex shrink-0 items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+            title="取消"
+          >
+            <IconX size={13} />
+          </button>
+        </>
+      )}
+      {pendingConfirm === "delete" && (
+        <>
+          <button
+            onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onDelete(); }}
+            className="flex shrink-0 items-center rounded px-1 text-danger hover:bg-surface-hover"
+            title="确认删除"
+          >
+            <IconCheck size={13} />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
+            className="flex shrink-0 items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+            title="取消"
+          >
+            <IconX size={13} />
+          </button>
+        </>
+      )}
+
+      {/* Normal action buttons — hidden on running threads (no hover actions
+          while the turn is in flight, keeping the row clean). */}
+      {!isRunning && pendingConfirm === null && (
+        <>
+          <HoverIconButton
+            onClick={() => { setPendingConfirm("archive"); }}
+            title="归档"
+          >
+            <IconArchive size={13} />
+          </HoverIconButton>
+          <HoverIconButton
+            onClick={() => { setPendingConfirm("delete"); }}
+            title="删除"
+            danger
+          >
+            <IconTrash size={13} />
+          </HoverIconButton>
+        </>
+      )}
+
+      {/* Running spinner — always visible at the far right when a turn is live. */}
+      {isRunning && (
+        <IconLoader2
+          size={12}
+          className="shrink-0 animate-spin text-accent"
+        />
+      )}
     </li>
+  );
+}
+
+/* ── Hover-revealed inline icon button (archive / delete) ── */
+
+function HoverIconButton({
+  onClick, title, danger, children,
+}: {
+  onClick: () => void;
+  title: string;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className={cn(
+        "flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors",
+        "hover:bg-surface-hover group-hover:opacity-100",
+        danger ? "hover:text-danger" : "hover:text-content",
+      )}
+      title={title}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -378,55 +529,5 @@ function ArchivedRow({
         删
       </button>
     </li>
-  );
-}
-
-/* ── Hover context menu (base-ui Menu) ── */
-
-interface MenuItem {
-  label: string;
-  onClick: () => void;
-  danger?: boolean;
-}
-
-function NodeMenu({ items }: { items: MenuItem[] }) {
-  return (
-    <Menu.Root>
-      <Menu.Trigger
-        className={cn(
-          "flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors",
-          "hover:bg-surface-hover hover:text-content group-hover:opacity-100",
-        )}
-        title="更多操作"
-      >
-        <IconDotsVertical size={12} />
-      </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner align="end">
-          <Menu.Popup
-            className={cn(
-              "z-50 min-w-[80px] origin-top-right rounded-md border border-edge bg-surface-muted py-0.5 shadow-xl",
-              "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
-              "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
-              "transition-[transform,opacity] duration-100",
-            )}
-          >
-            {items.map((it) => (
-              <Menu.Item
-                key={it.label}
-                className={cn(
-                  "flex w-full cursor-pointer items-center px-2 py-1 text-left text-[11px] outline-none select-none",
-                  "data-[highlighted]:bg-surface-hover",
-                  it.danger ? "text-danger" : "text-content-muted",
-                )}
-                onClick={it.onClick}
-              >
-                {it.label}
-              </Menu.Item>
-            ))}
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
-    </Menu.Root>
   );
 }

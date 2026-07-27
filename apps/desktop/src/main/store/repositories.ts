@@ -174,14 +174,56 @@ export const SessionRepo = {
     persist();
   },
 
-  listByProject(projectId: string): Session[] {
+  /** List sessions for a project, newest first.
+   *
+   *  `opts.limit` / `opts.offset` paginate (used by the left-bar tree, which
+   *  loads the first page and appends on "load more"). `opts.archived` filters
+   *  by the soft-delete flag: omit for all, `false` for the active thread list,
+   *  `true` for the archived bin. */
+  listByProject(
+    projectId: string,
+    opts?: { limit?: number; offset?: number; archived?: boolean },
+  ): Session[] {
     const db = getDb();
-    const stmt = db.prepare("SELECT * FROM sessions WHERE project_id = ? ORDER BY created_at DESC");
-    stmt.bind([v(projectId)]);
+    const where = ["project_id = ?"];
+    const params: BindValue[] = [v(projectId)];
+    if (opts?.archived !== undefined) {
+      where.push("archived = ?");
+      params.push(opts.archived ? 1 : 0);
+    }
+    let sql = `SELECT * FROM sessions WHERE ${where.join(" AND ")} ORDER BY created_at DESC`;
+    if (opts?.limit !== undefined) {
+      sql += " LIMIT ?";
+      params.push(v(opts.limit));
+      if (opts?.offset !== undefined) {
+        sql += " OFFSET ?";
+        params.push(v(opts.offset));
+      }
+    }
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
     const out: Session[] = [];
     while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
     stmt.free();
     return out;
+  },
+
+  /** Count sessions for a project, optionally filtered by archived flag.
+   *  Used to compute `hasMore` for pagination. */
+  countByProject(projectId: string, archived?: boolean): number {
+    const db = getDb();
+    const where = ["project_id = ?"];
+    const params: BindValue[] = [v(projectId)];
+    if (archived !== undefined) {
+      where.push("archived = ?");
+      params.push(archived ? 1 : 0);
+    }
+    const stmt = db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE ${where.join(" AND ")}`);
+    stmt.bind(params);
+    stmt.step();
+    const n = (stmt.getAsObject() as { n: number }).n;
+    stmt.free();
+    return n;
   },
 
   get(id: string): Session | undefined {

@@ -283,9 +283,13 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // Show the button as soon as the user scrolls up at all from the latest
+    // content. The 120px threshold (rather than 10px) prevents flicker when
+    // a new line is appended — the auto-scroll lands within a few pixels of
+    // the bottom and shouldn't pop the button in and out for that.
     const onScroll = () => {
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-      setShowJumpBottom(!nearBottom);
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    setShowJumpBottom(!nearBottom);
     };
     el.addEventListener("scroll", onScroll);
     return () => el.removeEventListener("scroll", onScroll);
@@ -325,29 +329,33 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     }
   };
 
+  const empty = messages.length === 0;
+
   return (
     <div className="relative flex h-full flex-col">
-      {/* Message stream. The capsule row is sticky top-right (ZCode-style: stays
-          put while scrolling, glassy, compact) so it overlays content without
-          taking a layout row. */}
-      <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-y-auto px-6 py-6">
-        {(todos.length > 0 || contextSnapshot || subagents.length > 0) && (
-          <div className="pointer-events-none sticky top-0 z-20 -mx-2 flex items-center justify-end gap-1.5 bg-gradient-to-b from-surface-muted/90 to-transparent pb-2 pt-1">
-            <StatusCapsule
-              snapshot={contextSnapshot}
-              subagents={subagents}
-              todos={todos}
-              plan={plan}
-            />
-          </div>
+      {/* Message stream — the scroll container is ALWAYS rendered so the
+          scroll event listener (attached in useEffect) works reliably even
+          when messages load after mount. The container is hidden via CSS
+          when empty so the input box can take full height and center. */}
+      <div
+        ref={scrollRef}
+        className={cn(
+          "relative overflow-y-auto",
+          empty ? "hidden" : "min-h-0 flex-1",
         )}
-        <div className="mx-auto max-w-3xl space-y-5">
-          {messages.length === 0 ? (
-            <div className="rounded-md border border-dashed border-edge px-6 py-12 text-center text-sm text-content-subtle">
-              Send a message to start working with Claude.
+      >
+        {(todos.length > 0 || contextSnapshot || subagents.length > 0) && (
+          <div className="pointer-events-none sticky top-0 z-20 flex items-center justify-end gap-1.5 bg-gradient-to-b from-surface/80 to-transparent pb-2 pt-1">
+              <StatusCapsule
+                snapshot={contextSnapshot}
+                subagents={subagents}
+                todos={todos}
+                plan={plan}
+              />
             </div>
-          ) : (
-            messages.map((m, i) => {
+          )}
+          <div className="mx-auto max-w-5xl space-y-5">
+            {messages.map((m, i) => {
               // The "streaming tail" is the last assistant message while a
               // turn is running — it's the one still receiving deltas, so
               // it gets the bottom loading indicator.
@@ -355,39 +363,56 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 isRunning &&
                 m.role === "assistant" &&
                 i === messages.length - 1;
-              return <MessageRow key={m.id} msg={m} isStreamingTail={isStreamingTail} />;
-            })
+              // The "last completed assistant" is the final assistant
+              // message after a turn has finished — only this message
+              // shows a copy button (the full payload is available).
+              const isLastCompletedAssistant =
+                !isRunning &&
+                m.role === "assistant" &&
+                i === messages.length - 1;
+              return (
+                <MessageRow
+                  key={m.id}
+                  msg={m}
+                  isStreamingTail={isStreamingTail}
+                  isLastCompletedAssistant={isLastCompletedAssistant}
+                />
+              );
+            })}
+          </div>
+          {/* Jump-to-bottom button: fixed to the scroll viewport's
+              bottom-right. Always visible whenever the user has scrolled
+              up from the latest message, so they can return without having
+              to scroll back manually. Icon-only — the chevron is universal
+              enough on its own. */}
+          {showJumpBottom && (
+            <button
+              onClick={jumpToBottom}
+              className={cn(
+                "absolute right-4 z-20 rounded-full border border-edge/50",
+                "bg-surface/80 p-1.5 shadow-lg backdrop-blur transition-colors",
+                "hover:bg-surface-hover/80",
+              )}
+              title="回到底部"
+            >
+              <IconArrowDown size={14} className="text-content-muted" />
+            </button>
           )}
         </div>
-        {/* Jump-to-bottom button: appears when the user has scrolled up. */}
-        {showJumpBottom && (
-          <button
-            onClick={jumpToBottom}
-            className={cn(
-              "absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full border border-edge/50",
-              "bg-surface-muted/90 px-3 py-1.5 text-[11px] text-content-muted shadow-lg backdrop-blur transition-colors",
-              "hover:bg-surface-hover",
-            )}
-            title="Jump to latest"
-          >
-            <IconArrowDown size={12} className="inline" />
-            {" "}Latest
-          </button>
-        )}
-      </div>
 
       {/* Input box — Codex-style: a single rounded container holding the
           textarea on top and a bottom row (option chips left, send button
           right) inside the same border.
 
-          The container is `relative` so the AskUserQuestion overlay can
-          `absolute inset-0` over it (covering textarea + toolbar like a
-          dialog), and the context ring can pin to the textarea's top-right
-          corner. A tool-approval card renders as a separate block above the
-          box (it's larger and needs more room); the "本轮文件" rewind card is
-          non-blocking and also sits above. */}
-      <div className="shrink-0 border-t border-edge px-6 py-3">
-        <div className="mx-auto max-w-3xl">
+          When there are no messages yet the box is centered vertically so the
+          user lands on a clean vertical-center start page (no empty banner). */}
+      <div className={cn(
+        "py-3",
+        empty
+          ? "flex flex-1 items-center justify-center"
+          : "shrink-0",
+      )}>
+        <div className={cn("w-full", empty ? "max-w-3xl" : "mx-auto max-w-5xl")}>
           {turnFiles.length > 0 && (
             <TurnFilesCard files={turnFiles} onRewind={() => void rewindTurn()} />
           )}
@@ -536,7 +561,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
  *  "开始 HH:MM:SS · 用时 12.3s" stat row ABOVE the content. The streaming
  *  tail (the last assistant message while a turn is running) shows a
  *  spinning loader at the bottom of the content. */
-function MessageRow({ msg, isStreamingTail }: { msg: ChatMessage; isStreamingTail?: boolean }) {
+function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant }: { msg: ChatMessage; isStreamingTail?: boolean; isLastCompletedAssistant?: boolean }) {
   const isUser = msg.role === "user";
   const copyText = useMemo(() => blocksToText(msg.blocks), [msg.blocks]);
   // Only show the copy button on messages with real text content — i.e. the
@@ -546,9 +571,14 @@ function MessageRow({ msg, isStreamingTail }: { msg: ChatMessage; isStreamingTai
   // the presence of a non-empty `text` block. Pure-tool / pure-thinking
   // messages have no copy button.
   const hasTextContent = msg.blocks.some((b) => b.kind === "text" && b.text.trim().length > 0);
-  const showCopy = hasTextContent && !!copyText && !isStreamingTail;
+  // User messages always show copy on hover (gated by group-hover in CopyRow).
+  // Assistant messages only show copy on the LAST completed turn — copying a
+  // partial or intermediate reply is rarely useful.
+  const showCopy = isUser
+    ? hasTextContent && !!copyText
+    : hasTextContent && !!copyText && isLastCompletedAssistant;
   return (
-    <div className={isUser ? "flex justify-end" : ""}>
+    <div className={cn("group", isUser ? "flex justify-end" : "")}>
       <div className={isUser ? "max-w-[85%]" : "w-full"}>
         {/* Per-turn stat row — only on the first assistant message of a
             turn (the one carrying turnMeta). Sits above the content. */}
@@ -564,18 +594,14 @@ function MessageRow({ msg, isStreamingTail }: { msg: ChatMessage; isStreamingTai
           {/* Streaming loader at the bottom of the content while this
               message is still receiving deltas. */}
           {isStreamingTail && (
-            <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-content-subtle">
+            <div className="mt-1.5 flex items-center gap-1.5">
               <IconLoader2 size={12} className="animate-spin text-accent" />
-              <span>Claude 正在输出…</span>
             </div>
           )}
         </div>
         {/* Copy action BELOW the content bubble — outside its border.
-            Only shown for messages with real text content (the model's
-            substantive reply). Pure-thinking and pure-tool_use messages
-            are procedural and have no copy button. Also hidden while
-            actively streaming (the copy payload isn't final yet). */}
-        {showCopy && <CopyRow text={copyText} isUser={isUser} />}
+            Icon-only, left-aligned, revealed on row hover. */}
+        {showCopy && <CopyRow text={copyText} />}
       </div>
     </div>
   );
@@ -600,12 +626,7 @@ function blocksToText(blocks: Block[]): string {
   return out.join("\n\n").trim();
 }
 
-/** Small row below the message content with a copy button that flips to
- *  a check on success. Sits outside the user bubble's border (mt-1 tucks
- *  it just beneath the bubble) and is right-aligned for both roles so the
- *  action reads as "grab this message's text". Subtle styling so it
- *  doesn't compete with the content. */
-function CopyRow({ text, isUser }: { text: string; isUser: boolean }) {
+function CopyRow({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     try {
@@ -618,31 +639,15 @@ function CopyRow({ text, isUser }: { text: string; isUser: boolean }) {
     }
   };
   return (
-    // User messages align right (under the bubble); assistant messages
-    // align right too so the button sits at the trailing edge of the
-    // full-width content.
-    <div className={cn("mt-1 flex", isUser ? "justify-end" : "justify-end")}>
+    <div className="mt-1 flex justify-start opacity-0 transition-opacity group-hover:opacity-100">
       <button
         type="button"
         onClick={onCopy}
         title="复制"
         aria-label="复制"
-        className={cn(
-          "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-content-subtle",
-          "transition-colors hover:bg-surface-hover hover:text-content-muted",
-        )}
+        className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
       >
-        {copied ? (
-          <>
-            <IconCheck size={12} className="text-accent" />
-            <span className="text-accent">已复制</span>
-          </>
-        ) : (
-          <>
-            <IconCopy size={12} />
-            <span>复制</span>
-          </>
-        )}
+        {copied ? <IconCheck size={12} className="text-accent" /> : <IconCopy size={12} />}
       </button>
     </div>
   );

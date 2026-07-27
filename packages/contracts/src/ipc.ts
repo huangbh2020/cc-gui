@@ -174,6 +174,19 @@ export const ArchiveProjectSchema = z.object({ id: z.string(), archived: z.boole
 export const DeleteSessionSchema = z.object({ id: z.string() });
 export const ArchiveSessionSchema = z.object({ id: z.string(), archived: z.boolean() });
 
+/** List a project's sessions with optional pagination + archived filter.
+ *  The left-bar tree loads the first `limit` (default 5) non-archived threads
+ *  and appends the next page on "load more"; the archived bin requests
+ *  `archived: true` (unpaginated). `hasMore` / `total` let the UI decide
+ *  whether to render the "load more" affordance. */
+export const ProjectSessionsSchema = z.object({
+  projectId: z.string(),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().nonnegative().optional(),
+  archived: z.boolean().optional(),
+});
+export type ProjectSessionsInput = z.infer<typeof ProjectSessionsSchema>;
+
 /* A persisted message: content is opaque JSON (text/thinking/tool_use blocks).
  * P2's renderer serializes its ChatMessage.blocks array here.
  * We use z.custom<unknown>() for content: zod treats z.unknown()/z.any() as
@@ -328,7 +341,7 @@ export interface RpcMap {
   // Projects
   "project.create": (input: CreateProjectInput) => Promise<{ project: Project }>;
   "project.list": () => Promise<{ projects: Project[] }>;
-  "project.sessions": (projectId: string) => Promise<{ sessions: Session[] }>;
+  "project.sessions": (input: ProjectSessionsInput) => Promise<{ sessions: Session[]; hasMore: boolean; total: number }>;
   /** Hard-delete a project; its sessions + messages cascade-delete (DB FK). */
   "project.delete": (input: { id: string }) => Promise<void>;
   /** Set a project's archived flag (soft-delete; restorable). */

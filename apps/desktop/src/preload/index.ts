@@ -29,8 +29,8 @@ const api = {
     create: ((input) =>
       ipcRenderer.invoke(IPC.PROJECT_CREATE, input)) as RpcMap["project.create"],
     list: (() => ipcRenderer.invoke(IPC.PROJECT_LIST)) as RpcMap["project.list"],
-    sessions: ((projectId) =>
-      ipcRenderer.invoke(IPC.PROJECT_SESSIONS, projectId)) as RpcMap["project.sessions"],
+    sessions: ((input) =>
+      ipcRenderer.invoke(IPC.PROJECT_SESSIONS, input)) as RpcMap["project.sessions"],
     delete: ((input) =>
       ipcRenderer.invoke(IPC.PROJECT_DELETE, input)) as RpcMap["project.delete"],
     archive: ((input) =>

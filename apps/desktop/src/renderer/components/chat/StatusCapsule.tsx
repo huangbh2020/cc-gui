@@ -56,7 +56,7 @@ export function StatusCapsule({
           "flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium backdrop-blur transition-all",
           open
             ? "border-accent/40 bg-accent/10 text-accent"
-            : "border-edge/50 bg-surface-muted/70 text-content-muted hover:border-edge hover:bg-surface-hover/80",
+            : "border-edge/50 bg-surface/80 text-content-muted hover:border-edge hover:bg-surface-hover/80",
         )}
         title="查看活动详情（任务 / 子代理 / 上下文）"
       >

@@ -11,6 +11,23 @@ function bgColor(): string {
   return getEffectiveTheme() === "dark" ? "#18181b" : "#ffffff";
 }
 
+/** Title-bar overlay colour scheme that matches the app theme. The overlay sits
+ *  behind the native min/max/close buttons when `titleBarStyle: 'hidden'` is
+ *  active, so it must visually blend with the custom titlebar in the renderer. */
+function overlayColors() {
+  const dark = getEffectiveTheme() === "dark";
+  return {
+    color: dark ? "#18181b" : "#ffffff",
+    symbolColor: dark ? "#a1a1aa" : "#71717a",
+    height: 32,
+  };
+}
+
+/** Update the title-bar overlay colors (called when the theme switches). */
+export function updateTitleBarOverlay(): void {
+  mainWindow?.setTitleBarOverlay(overlayColors());
+}
+
 /** Create the primary three-pane window. */
 export function createMainWindow(): BrowserWindow {
   mainWindow = new BrowserWindow({
@@ -22,6 +39,12 @@ export function createMainWindow(): BrowserWindow {
     autoHideMenuBar: true,
     title: "Claude GUI",
     backgroundColor: bgColor(),
+    // Hidden title-bar + overlay lets us render custom content (the toggle
+    // button plus a draggable handle) in the title-bar row alongside the
+    // native window-control buttons (min / max / close).  The overlay colours
+    // are set once here and kept in sync by updateTitleBarOverlay().
+    titleBarStyle: "hidden",
+    titleBarOverlay: overlayColors(),
     webPreferences: {
       preload: join(__dirname, "../preload/index.mjs"),
       contextIsolation: true,

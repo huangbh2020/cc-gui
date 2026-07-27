@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { DISPLAY_MODE_SETTING_KEY, type DisplayMode } from "@contracts/ipc";
+import { RadioCard } from "./RadioCard.js";
 
 /** Settings panel: how the center pane renders when a session is active.
  *
@@ -63,36 +64,5 @@ export function DisplayModePanel() {
         />
       </div>
     </div>
-  );
-}
-
-interface RadioCardProps {
-  checked: boolean;
-  title: string;
-  desc: string;
-  onSelect: () => void;
-}
-
-function RadioCard({ checked, title, desc, onSelect }: RadioCardProps) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={`flex w-full items-start gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
-        checked
-          ? "border-accent/60 bg-accent/5"
-          : "border-edge bg-surface/40 hover:border-edge/80 hover:bg-surface-muted/50"
-      }`}
-    >
-      <span
-        className={`mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded-full border-2 transition-colors ${
-          checked ? "border-accent bg-accent" : "border-content-subtle/60"
-        }`}
-      />
-      <div className="min-w-0">
-        <div className="text-xs font-medium text-content">{title}</div>
-        <div className="mt-0.5 text-[11px] leading-relaxed text-content-subtle">{desc}</div>
-      </div>
-    </button>
   );
 }

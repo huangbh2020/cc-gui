@@ -74,7 +74,22 @@ interface SessionState {
    * as a convenience alias for the active project's sessions. */
   projects: Project[];
   activeProjectId: string | null;
+  /** Active (non-archived) sessions per project — paginated: only the first
+   *  `SESSION_PAGE_SIZE` rows are loaded on init / project expand, and
+   *  `loadMoreSessions(projectId)` appends the next page. `sessions` is kept
+   *  as a convenience alias for the active project's loaded page. */
   sessionsByProject: Record<string, Session[]>;
+  /** `true` when a project has more active sessions on the server than are
+   *  currently loaded into `sessionsByProject[pid]`. Drives the "加载更多"
+   *  affordance under the project's thread list. */
+  sessionsHasMoreByProject: Record<string, boolean>;
+  /** Total active-session count per project (server-side). Lets the UI show
+   *  "还有 N 条" alongside the load-more button. */
+  sessionsTotalByProject: Record<string, number>;
+  /** Archived sessions per project (unpaginated). Powers the bottom "已归档"
+   *  bin, which is now grouped by project rather than a flat dump. Only
+   *  populated for projects that have ≥1 archived session. */
+  archivedSessionsByProject: Record<string, Session[]>;
   /** Sessions of the active project (derived view; components may read either). */
   sessions: Session[];
   activeSessionId: string | null;
@@ -104,7 +119,7 @@ interface SessionState {
    *  so consumers always see "am I running?" relative to the active thread. */
   runningBySession: Record<string, boolean>;
   claudeInstalled: boolean | null;
-  /** Settings modal visibility (controlled from TopBar ⚙ and CLI-missing CTA). */
+  /** Settings modal visibility (opened from the LeftBar ⚙ footer and the CLI-missing CTA). */
   settingsOpen: boolean;
   /** Permission mode for the next session. The 6-value union
    *  (default / acceptEdits / plan / bypassPermissions / dontAsk / auto)
@@ -170,6 +185,9 @@ interface SessionState {
   selectProject: (projectId: string) => Promise<void>;
   toggleProjectExpanded: (projectId: string) => void;
   setArchivedViewOpen: (open: boolean) => void;
+  /** Fetch the next page of active sessions for a project and append it to
+   *  `sessionsByProject[projectId]`. No-op when there are no more to load. */
+  loadMoreSessions: (projectId: string) => Promise<void>;
   startSession: (projectId?: string) => Promise<void>;
   /** Switch the active session (and load its history if not cached).
    *  Always replaces the center pane content. In `single` displayMode
@@ -285,15 +303,28 @@ const EMPTY_CUSTOM_MODELS: CustomModelPublic[] = [];
 const EMPTY_SESSIONS: Session[] = [];
 export const EMPTY_SUBAGENTS: SubagentSnapshot[] = [];
 /** Stable cleared-plan reference — used both as the initial state and as
- *  the "not in plan mode" placeholder returned by selectors. */
+ * the "not in plan mode" placeholder returned by selectors. */
 export const EMPTY_PLAN: PlanDraft = { plan: "", phase: "cleared" };
 
-/** Find a session across the per-project cache by id. Returns undefined if
- *  the cache hasn't been populated yet (init race) or the id is unknown. */
-function findSession(sessionsByProject: Record<string, Session[]>, id: string): Session | undefined {
+/** Page size for the left-bar thread list. The first page is fetched on
+ *  init / project expand; further pages are appended on "加载更多". */
+const SESSION_PAGE_SIZE = 5;
+
+/** Find a session across both the active and archived per-project caches by
+ *  id. The archived cache is consulted so that config hydration still finds
+ *  a session a user just restored (and so deleted/restored fallbacks don't
+ *  miss rows that were moved between caches). */
+function findSession(
+  sessionsByProject: Record<string, Session[]>,
+  archivedByProject: Record<string, Session[]>,
+  id: string,
+): Session | undefined {
   for (const list of Object.values(sessionsByProject)) {
-    if (!list) continue;
-    const hit = list.find((s) => s.id === id);
+    const hit = list?.find((s) => s.id === id);
+    if (hit) return hit;
+  }
+  for (const list of Object.values(archivedByProject)) {
+    const hit = list?.find((s) => s.id === id);
     if (hit) return hit;
   }
   return undefined;
@@ -309,7 +340,7 @@ function syncConfigFromSession(
   get: () => SessionState,
   sessionId: string,
 ): void {
-  const sess = findSession(get().sessionsByProject, sessionId);
+  const sess = findSession(get().sessionsByProject, get().archivedSessionsByProject, sessionId);
   if (!sess) return;
   set({
     model: sess.model,
@@ -332,7 +363,7 @@ function hydrateContextSnapshot(
   get: () => SessionState,
   sessionId: string,
 ): void {
-  const sess = findSession(get().sessionsByProject, sessionId);
+  const sess = findSession(get().sessionsByProject, get().archivedSessionsByProject, sessionId);
   const snapshot = sess?.contextSnapshot;
   set((s) => {
     const next = { ...s.contextSnapshotBySession };
@@ -355,7 +386,7 @@ function hydrateCapsule(
   get: () => SessionState,
   sessionId: string,
 ): void {
-  const sess = findSession(get().sessionsByProject, sessionId);
+  const sess = findSession(get().sessionsByProject, get().archivedSessionsByProject, sessionId);
   const todos = sess?.todos ?? null;
   const subagents = sess?.subagents ?? null;
   const planDraft = sess?.planDraft ?? null;
@@ -386,6 +417,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   projects: [],
   activeProjectId: null,
   sessionsByProject: {},
+  sessionsHasMoreByProject: {},
+  sessionsTotalByProject: {},
+  archivedSessionsByProject: {},
   sessions: [],
   activeSessionId: null,
   expandedProjects: {},
@@ -444,13 +478,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     if (projects.length === 0) return;
 
-    // Eagerly load every project's sessions so the tree renders without a
-    // round-trip per expand. Local SQLite makes this instant.
+    // Eagerly load the FIRST page of active sessions for every project so
+    // the tree renders without a round-trip per expand. The archived bin is
+    // also pre-fetched (grouped by project) so the bottom section is ready.
+    // Both are local SQLite reads, so this stays instant.
     const byProject: Record<string, Session[]> = {};
+    const hasMoreByProject: Record<string, boolean> = {};
+    const totalByProject: Record<string, number> = {};
+    const archivedByProject: Record<string, Session[]> = {};
     await Promise.all(
       projects.map(async (p) => {
-        const { sessions } = await api.project.sessions(p.id);
-        byProject[p.id] = sessions;
+        const active = await api.project.sessions({
+          projectId: p.id,
+          limit: SESSION_PAGE_SIZE,
+          offset: 0,
+          archived: false,
+        });
+        byProject[p.id] = active.sessions;
+        hasMoreByProject[p.id] = active.hasMore;
+        totalByProject[p.id] = active.total;
+        // Archived threads power the bottom "已归档" bin — fetch all (no
+        // pagination there). The handler unpaginates when archived:true.
+        const archived = await api.project.sessions({
+          projectId: p.id,
+          archived: true,
+        });
+        if (archived.sessions.length > 0) {
+          archivedByProject[p.id] = archived.sessions;
+        }
       }),
     );
 
@@ -463,6 +518,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     set({
       sessionsByProject: byProject,
+      sessionsHasMoreByProject: hasMoreByProject,
+      sessionsTotalByProject: totalByProject,
+      archivedSessionsByProject: archivedByProject,
       sessions: firstSessions,
       activeProjectId: firstActive.id,
       // Auto-expand the active project so its threads are visible on load.
@@ -485,6 +543,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => ({
       projects: [...s.projects, project],
       sessionsByProject: { ...s.sessionsByProject, [project.id]: [] },
+      sessionsHasMoreByProject: { ...s.sessionsHasMoreByProject, [project.id]: false },
+      sessionsTotalByProject: { ...s.sessionsTotalByProject, [project.id]: 0 },
       activeProjectId: project.id,
       sessions: [],
       activeSessionId: null,
@@ -524,6 +584,35 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setArchivedViewOpen: (open) => set({ archivedViewOpen: open }),
 
+  /** Fetch the next page of active sessions for a project and append to the
+   *  cached list. Updates `hasMore` / `total` from the server response so the
+   *  "加载更多" affordance reflects the truth. No-op when nothing more to load. */
+  loadMoreSessions: async (projectId) => {
+    if (!get().sessionsHasMoreByProject[projectId]) return;
+    const offset = (get().sessionsByProject[projectId] ?? []).length;
+    const page = await api.project.sessions({
+      projectId,
+      limit: SESSION_PAGE_SIZE,
+      offset,
+      archived: false,
+    });
+    set((s) => {
+      const prev = s.sessionsByProject[projectId] ?? [];
+      // De-dup in case a session was created mid-fetch (newest-first means
+      // newly-created rows would slide in ahead of the next page; we drop
+      // any overlap by id rather than risk showing a row twice).
+      const seen = new Set(prev.map((x) => x.id));
+      const merged = [...prev, ...page.sessions.filter((x) => !seen.has(x.id))];
+      const isActive = projectId === s.activeProjectId;
+      return {
+        sessionsByProject: { ...s.sessionsByProject, [projectId]: merged },
+        sessionsHasMoreByProject: { ...s.sessionsHasMoreByProject, [projectId]: page.hasMore },
+        sessionsTotalByProject: { ...s.sessionsTotalByProject, [projectId]: page.total },
+        sessions: isActive ? merged : s.sessions,
+      };
+    });
+  },
+
   startSession: async (projectIdArg) => {
     const projectId = projectIdArg ?? get().activeProjectId;
     if (!projectId) return;
@@ -540,6 +629,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const isactive = projectId === s.activeProjectId;
       return {
         sessionsByProject: nextByProject,
+        // A brand-new session sits at the head (newest created_at) and bumps
+        // the active-thread total by one. `hasMore` flips on if the page now
+        // exceeds SESSION_PAGE_SIZE — the load-more button reveals to fetch
+        // the next page rather than growing the cache unbounded.
+        sessionsTotalByProject: {
+          ...s.sessionsTotalByProject,
+          [projectId]: (s.sessionsTotalByProject[projectId] ?? 0) + 1,
+        },
+        sessionsHasMoreByProject: {
+          ...s.sessionsHasMoreByProject,
+          [projectId]: (s.sessionsTotalByProject[projectId] ?? 0) + 1 > SESSION_PAGE_SIZE,
+        },
         sessions: isactive ? nextByProject[projectId] : s.sessions,
         activeProjectId: projectId,
         activeSessionId: session.id,
@@ -632,7 +733,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (nextActive && nextActive !== s.activeSessionId) {
         // Defer to the set body: we can't call syncConfigFromSession
         // here because it uses the same `set`. Inline the same lookup.
-        const sess = findSession(s.sessionsByProject, nextActive);
+        const sess = findSession(s.sessionsByProject, s.archivedSessionsByProject, nextActive);
         return {
           openTabs: nextTabs,
           activeSessionId: nextActive,
@@ -653,10 +754,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => {
       const projects = s.projects.filter((p) => p.id !== id);
       const sessionsByProject = { ...s.sessionsByProject };
-      // Capture the deleted project's sessionIds BEFORE dropping the entry
-      // so we can scrub them from the tab strip.
-      const removedSessionIds = new Set((sessionsByProject[id] ?? []).map((sess) => sess.id));
+      const archivedByProject = { ...s.archivedSessionsByProject };
+      const totalByProject = { ...s.sessionsTotalByProject };
+      const hasMoreByProject = { ...s.sessionsHasMoreByProject };
+      // Capture the deleted project's sessionIds BEFORE dropping the entries
+      // so we can scrub them from the tab strip — both caches may hold rows.
+      const removedSessionIds = new Set([
+        ...(sessionsByProject[id] ?? []).map((sess) => sess.id),
+        ...(archivedByProject[id] ?? []).map((sess) => sess.id),
+      ]);
       delete sessionsByProject[id];
+      delete archivedByProject[id];
+      delete totalByProject[id];
+      delete hasMoreByProject[id];
       const wasActive = s.activeProjectId === id;
       if (!wasActive) {
         // Still need to scrub any open tabs that belonged to the deleted
@@ -666,7 +776,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const activeSessionId = openTabs.includes(s.activeSessionId ?? "")
           ? s.activeSessionId
           : (openTabs[0] ?? null);
-        return { projects, sessionsByProject, openTabs, activeSessionId };
+        return {
+          projects, sessionsByProject, archivedSessionsByProject: archivedByProject,
+          sessionsTotalByProject: totalByProject, sessionsHasMoreByProject: hasMoreByProject,
+          openTabs, activeSessionId,
+        };
       }
       // Pick a new active project + its latest session.
       const next = projects.find((p) => !p.archived) ?? projects[0];
@@ -678,6 +792,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         projects,
         sessionsByProject,
+        archivedSessionsByProject: archivedByProject,
+        sessionsTotalByProject: totalByProject,
+        sessionsHasMoreByProject: hasMoreByProject,
         activeProjectId: next?.id ?? null,
         sessions: nextSessions,
         activeSessionId: nextSession?.id ?? null,
@@ -713,19 +830,44 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  /** Hard-delete a session; its messages cascade-delete in the DB. If it was
-   *  active, fall back to the next session in the same project. */
+  /** Hard-delete a session; its messages cascade-delete in the DB. The row is
+   *  removed from whichever per-project cache currently holds it (active or
+   *  archived). If it was active, fall back to the next session in the same
+   *  project. */
   deleteSession: async (id) => {
     await api.session.delete({ id });
     set((s) => {
-      // Find which project owns this session so we can update its list.
-      const projectId = Object.keys(s.sessionsByProject).find((pid) =>
-        (s.sessionsByProject[pid] ?? []).some((sess) => sess.id === id),
-      );
+      // Find which project + cache owns this session.
+      let projectId: string | undefined;
+      let inArchived = false;
+      for (const [pid, list] of Object.entries(s.sessionsByProject)) {
+        if (list?.some((sess) => sess.id === id)) { projectId = pid; inArchived = false; break; }
+      }
+      if (!projectId) {
+        for (const [pid, list] of Object.entries(s.archivedSessionsByProject)) {
+          if (list?.some((sess) => sess.id === id)) { projectId = pid; inArchived = true; break; }
+        }
+      }
       if (!projectId) return {};
-      const prevList = s.sessionsByProject[projectId] ?? [];
+      const prevList = (inArchived ? s.archivedSessionsByProject : s.sessionsByProject)[projectId] ?? [];
       const nextList = prevList.filter((sess) => sess.id !== id);
-      const sessionsByProject = { ...s.sessionsByProject, [projectId]: nextList };
+      const sessionsByProject = { ...s.sessionsByProject };
+      const archivedByProject = { ...s.archivedSessionsByProject };
+      // Replace the touched cache. Empty archived cache entries are dropped
+      // so the "已归档" bin doesn't render empty project groups.
+      if (inArchived) {
+        if (nextList.length > 0) archivedByProject[projectId] = nextList;
+        else delete archivedByProject[projectId];
+      } else {
+        sessionsByProject[projectId] = nextList;
+      }
+      // Active-thread totals only move when an active (non-archived) row is
+      // deleted; deleting an already-archived row doesn't change the active
+      // count.
+      const totalActive = inArchived
+        ? (s.sessionsTotalByProject[projectId] ?? 0)
+        : Math.max((s.sessionsTotalByProject[projectId] ?? 0) - 1, 0);
+      const hasMoreActive = totalActive > nextList.length;
       // Also drop all per-session buckets for this id. The session is gone
       // for good; no point keeping its messages / running flag / question
       // / approval queue / files in memory.
@@ -757,6 +899,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (!wasActive) {
         return {
           sessionsByProject,
+          archivedSessionsByProject: archivedByProject,
+          sessionsTotalByProject: { ...s.sessionsTotalByProject, [projectId]: totalActive },
+          sessionsHasMoreByProject: { ...s.sessionsHasMoreByProject, [projectId]: hasMoreActive },
           messagesBySession,
           runningBySession,
           todosBySession,
@@ -784,9 +929,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // into the global slots so the composer chips show the right
       // model/effort/permission.
       const finalActive = nextActive ?? nextInProject?.id ?? null;
-      const sess = finalActive ? findSession(s.sessionsByProject, finalActive) : undefined;
+      const sess = finalActive ? findSession(sessionsByProject, archivedByProject, finalActive) : undefined;
       return {
         sessionsByProject,
+        archivedSessionsByProject: archivedByProject,
+        sessionsTotalByProject: { ...s.sessionsTotalByProject, [projectId]: totalActive },
+        sessionsHasMoreByProject: { ...s.sessionsHasMoreByProject, [projectId]: hasMoreActive },
         messagesBySession,
         runningBySession,
         todosBySession,
@@ -808,15 +956,47 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  /** Set a session's archived flag (soft-delete; restorable). */
+  /** Set a session's archived flag (soft-delete; restorable). The session
+   *  MOVES between the active cache (`sessionsByProject`) and the archived
+   *  cache (`archivedSessionsByProject`) of its project so each list only
+   *  contains rows in the matching state — the left-bar tree renders active
+   *  threads inline under the project, and archived threads in the bottom
+   *  "已归档" bin, also grouped by project. Totals are recomputed from the
+   *  server response so `hasMore` / the load-more button stay accurate. */
   archiveSession: async (id, archived) => {
     const { session } = await api.session.archive({ id, archived });
     set((s) => {
       const projectId = session.projectId;
-      const prevList = s.sessionsByProject[projectId] ?? [];
-      const nextList = prevList.map((sess) => (sess.id === id ? session : sess));
-      const sessionsByProject = { ...s.sessionsByProject, [projectId]: nextList };
       const isActiveProject = projectId === s.activeProjectId;
+
+      // Pull the row out of whichever cache currently holds it and push the
+      // server-fresh copy into the opposite cache. Newest-first ordering is
+      // preserved by inserting at the head (the API returns DESC by created_at,
+      // and these archive flips don't change created_at).
+      const oldActive = s.sessionsByProject[projectId] ?? [];
+      const oldArchived = s.archivedSessionsByProject[projectId] ?? [];
+      let nextActive: Session[];
+      let nextArchived: Session[];
+      if (archived) {
+        nextActive = oldActive.filter((x) => x.id !== id);
+        nextArchived = [session, ...oldArchived.filter((x) => x.id !== id)];
+      } else {
+        nextArchived = oldArchived.filter((x) => x.id !== id);
+        nextActive = [session, ...oldActive.filter((x) => x.id !== id)];
+      }
+      const sessionsByProject = { ...s.sessionsByProject, [projectId]: nextActive };
+      const archivedByProject = { ...s.archivedSessionsByProject };
+      if (nextArchived.length > 0) {
+        archivedByProject[projectId] = nextArchived;
+      } else {
+        delete archivedByProject[projectId];
+      }
+      // Keep the active-thread totals in lockstep with the cache move. The
+      // archive cache isn't paginated, so no hasMore/total tracking needed
+      // there.
+      const totalActive = (s.sessionsTotalByProject[projectId] ?? 0) + (archived ? -1 : 1);
+      const hasMoreActive = totalActive > nextActive.length;
+
       // Archived sessions shouldn't stay open in the tab strip — the user
       // archived them, they don't want to see them in the center pane.
       const idx = s.openTabs.indexOf(id);
@@ -825,24 +1005,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (!isActiveProject || !wasActive || !archived) {
         return {
           sessionsByProject,
-          sessions: isActiveProject ? nextList : s.sessions,
+          archivedSessionsByProject: archivedByProject,
+          sessionsTotalByProject: { ...s.sessionsTotalByProject, [projectId]: Math.max(totalActive, 0) },
+          sessionsHasMoreByProject: { ...s.sessionsHasMoreByProject, [projectId]: hasMoreActive },
+          sessions: isActiveProject ? nextActive : s.sessions,
           openTabs,
         };
       }
       // Archived the active session → jump to the next visible one.
-      const next = nextList.find((sess) => !sess.archived);
-      let nextActive: string | null = next?.id ?? null;
+      const next = nextActive.find((sess) => !sess.archived);
+      let nextActiveId: string | null = next?.id ?? null;
       // If the new active was the previous tab (idx > 0), keep that; else
       // fall back to the new tail of the now-shortened list.
       if (openTabs.length > 0) {
-        nextActive = idx > 0 ? openTabs[idx - 1] : openTabs[0];
+        nextActiveId = idx > 0 ? openTabs[idx - 1] : openTabs[0];
       }
-      const sess = nextActive ? findSession(s.sessionsByProject, nextActive) : undefined;
+      const sess = nextActiveId
+        ? findSession(sessionsByProject, archivedByProject, nextActiveId)
+        : undefined;
       return {
         sessionsByProject,
-        sessions: nextList,
+        archivedSessionsByProject: archivedByProject,
+        sessionsTotalByProject: { ...s.sessionsTotalByProject, [projectId]: Math.max(totalActive, 0) },
+        sessionsHasMoreByProject: { ...s.sessionsHasMoreByProject, [projectId]: hasMoreActive },
+        sessions: nextActive,
         openTabs,
-        activeSessionId: nextActive,
+        activeSessionId: nextActiveId,
         model: sess?.model ?? s.model,
         effort: sess?.effort ?? s.effort,
         permissionMode: sess?.permissionMode ?? s.permissionMode,

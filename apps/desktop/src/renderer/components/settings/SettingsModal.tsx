@@ -3,12 +3,13 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ClaudePathPanel } from "./ClaudePathPanel.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { DisplayModePanel } from "./DisplayModePanel.js";
+import { ThemePanel } from "./ThemePanel.js";
 
 /**
  * Settings modal with a left functional menu + right content panel layout.
  *
- * Controlled by `settingsOpen` in the session store (opened from the TopBar ⚙
- * button, the CLI-missing CTA, or the model-dropdown "manage models" entry).
+ * Controlled by `settingsOpen` in the session store (opened from the LeftBar ⚙
+ * footer, the CLI-missing CTA, or the model-dropdown "manage models" entry).
  *
  * Available sections:
  *  - 通用           (placeholder)
@@ -105,7 +106,13 @@ export function SettingsModal() {
             )}
             {active === "claude-path" && <ClaudePathPanel />}
             {active === "custom-models" && <CustomModelsPanel />}
-            {active === "appearance" && <DisplayModePanel />}
+            {active === "appearance" && (
+              <div className="space-y-6">
+                <ThemePanel />
+                <div className="border-t border-edge" />
+                <DisplayModePanel />
+              </div>
+            )}
             {active === "about" && (
               <PlaceholderPanel title="关于" desc="版本信息、开源协议与更新检查(开发中)。"/>
             )}

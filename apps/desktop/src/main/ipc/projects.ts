@@ -6,6 +6,7 @@ import {
   ArchiveProjectSchema,
   DeleteSessionSchema,
   ArchiveSessionSchema,
+  ProjectSessionsSchema,
 } from "@contracts/ipc";
 import type { Project } from "@contracts/session";
 import { uid } from "@main/utils.js";
@@ -33,8 +34,17 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     return { projects: ProjectRepo.list() };
   });
 
-  ipcMain.handle(IPC.PROJECT_SESSIONS, (_evt, projectId: string) => {
-    return { sessions: SessionRepo.listByProject(projectId) };
+  ipcMain.handle(IPC.PROJECT_SESSIONS, (_evt, raw) => {
+    const input = ProjectSessionsSchema.parse(raw);
+    const archived = input.archived;
+    // The archived bin lists every archived item (no pagination); the active
+    // thread list paginates with a default page size of 5.
+    const limit = input.limit ?? (archived ? undefined : 5);
+    const offset = input.offset ?? 0;
+    const sessions = SessionRepo.listByProject(input.projectId, { limit, offset, archived });
+    const total = SessionRepo.countByProject(input.projectId, archived);
+    const hasMore = limit !== undefined ? offset + sessions.length < total : false;
+    return { sessions, hasMore, total };
   });
 
   // Hard-delete a project (cascades to its sessions + messages via DB FKs).
