@@ -2,11 +2,9 @@ import { useState, useMemo, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconChevronDown,
-  IconChevronRight,
   IconCheck,
   IconX,
   IconLoader2,
-  IconClock,
   IconAlertTriangle,
   IconTools,
 } from "@renderer/lib/icons.js";
@@ -14,14 +12,14 @@ import type { Block } from "@renderer/stores/sessionStore.js";
 import { Markdown } from "./Markdown.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
 
-/** Render the content blocks of a message. */
+/** Render the content blocks of a message.
+ *
+ *  Purely procedural content (thinking + tool calls, no prose) is collapsed
+ *  into a single boxed `ProceduralGroup` so the message stream stays calm
+ *  — one summary line instead of N cards. Text and error blocks render
+ *  inline as before. */
 export function MessageBlocks({ blocks }: { blocks: Block[] }) {
   if (blocks.length === 0) return null;
-  // Group consecutive tool_use blocks so a turn that fired off N tool
-  // calls doesn't dump N cards into the stream. groupBlocks() splits the
-  // block list into "single" segments (one block, no grouping) and
-  // "group" segments (a contiguous run of tool_use blocks >= threshold)
-  // that render as a single collapsible ToolGroup.
   const segments = groupBlocks(blocks);
   return (
     <div className="space-y-2">
@@ -29,38 +27,38 @@ export function MessageBlocks({ blocks }: { blocks: Block[] }) {
         seg.kind === "single" ? (
           <BlockView key={i} block={seg.block} />
         ) : (
-          <ToolGroup key={i} blocks={seg.blocks} />
+          <ProceduralGroup key={i} blocks={seg.blocks} />
         ),
       )}
     </div>
   );
 }
 
-/** Minimum run length to qualify for grouping. A single tool_use stays
- *  inline (no extra click) — only when 2+ run together do we collapse. */
-const TOOL_GROUP_THRESHOLD = 2;
-
 type ToolUseBlock = Extract<Block, { kind: "tool_use" }>;
-type Segment = { kind: "single"; block: Block } | { kind: "group"; blocks: ToolUseBlock[] };
+type ThinkingBlock = Extract<Block, { kind: "thinking" }>;
+/** Procedural blocks are the "model action" surface — thinking and tool
+ *  calls. They get grouped together so a turn that thinks + fires off N
+ *  tools reads as one compact card, not a wall of cards. */
+type ProceduralBlock = ThinkingBlock | ToolUseBlock;
+type Segment =
+  | { kind: "single"; block: Block }
+  | { kind: "procedural"; blocks: ProceduralBlock[] };
 
-/** Linear scan: collect consecutive tool_use blocks into a run. Any
- *  non-tool_use block flushes the run (or emits a single if the run
- *  was just one block). Cross-message grouping is not done — a
- *  message is its own semantic segment, runs don't span messages. */
+/** Linear scan: collect consecutive thinking / tool_use blocks into a run.
+ *  Any text or error block flushes the run (and renders as its own segment).
+ *  Even a single tool_use with no surrounding text becomes a procedural
+ *  group — that's the whole point: keep the prose stream clean. */
 function groupBlocks(blocks: Block[]): Segment[] {
   const out: Segment[] = [];
-  let run: ToolUseBlock[] = [];
+  let run: ProceduralBlock[] = [];
   const flush = () => {
-    if (run.length === 0) return;
-    if (run.length >= TOOL_GROUP_THRESHOLD) {
-      out.push({ kind: "group", blocks: run });
-    } else {
-      out.push({ kind: "single", block: run[0] });
+    if (run.length > 0) {
+      out.push({ kind: "procedural", blocks: run });
+      run = [];
     }
-    run = [];
   };
   for (const b of blocks) {
-    if (b.kind === "tool_use") {
+    if (b.kind === "thinking" || b.kind === "tool_use") {
       run.push(b);
     } else {
       flush();
@@ -95,39 +93,56 @@ function StatusIcon({ status }: { status: "running" | "done" | "error" }) {
   return <IconCheck size={12} className="text-accent" />;
 }
 
-/** Summary card for a run of 2+ tool_use blocks. Renders a single
- *  "Claude 进行了 N 个操作 · Bash ×2 · Read ×1" line; expanding forces
- *  every child card open so the user gets the full picture at once
- *  (per the design: 点开才全展开). The per-card state is uncontrolled
- *  (useState) but seeded from `defaultOpen={true}` from the group. */
-function ToolGroup({ blocks }: { blocks: ToolUseBlock[] }) {
+/** Collapsible box for a run of procedural blocks (thinking + tool calls).
+ *  Collapsed: one summary line — aggregate status icon + a compact
+ *  "N 个操作 · Bash ×2 · Read ×1" breakdown. Expanded: each child renders
+ *  in its normal form (thinking as Collapsible, tool calls as ToolCard),
+ *  all starting collapsed — the user drills in further only if they want. */
+function ProceduralGroup({ blocks }: { blocks: ProceduralBlock[] }) {
   const [open, setOpen] = useState(false);
-  // Tally toolName occurrences for the breakdown. Map preserves insertion
-  // order, so the breakdown reads in the order tools were first invoked.
+
+  const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
+  const thinkingCount = blocks.filter((b) => b.kind === "thinking").length;
+
+  // Aggregate status: any running → running; else any error → error; else done.
+  // Thinking blocks have no status of their own, so only tools drive this.
+  const aggregateStatus: "running" | "done" | "error" = toolBlocks.some((b) => b.status === "running")
+    ? "running"
+    : toolBlocks.some((b) => b.status === "error")
+      ? "error"
+      : "done";
+
+  // Tool-name tally in first-invocation order (Map preserves insertion).
   const counts = new Map<string, number>();
-  for (const b of blocks) counts.set(b.toolName, (counts.get(b.toolName) ?? 0) + 1);
+  for (const b of toolBlocks) counts.set(b.toolName, (counts.get(b.toolName) ?? 0) + 1);
   const breakdown = [...counts.entries()].map(([n, c]) => `${n} ×${c}`).join(" · ");
 
+  // Summary label: "思考 + N 个操作" / "N 个操作" / "思考".
+  let label: string;
+  if (thinkingCount > 0 && toolBlocks.length > 0) {
+    label = `思考 + ${toolBlocks.length} 个操作`;
+  } else if (toolBlocks.length > 0) {
+    label = `${toolBlocks.length} 个操作`;
+  } else {
+    label = "思考";
+  }
+
   return (
-    <div className="rounded-md border border-edge bg-surface-muted/60 text-xs">
+    <div className="rounded-md border border-edge bg-surface/40 text-xs">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/50"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/40"
       >
+        <StatusIcon status={aggregateStatus} />
         <IconTools size={14} className="shrink-0 text-content-muted" />
-        <span className="font-medium text-content-muted">
-          Claude 进行了 {blocks.length} 个操作
-        </span>
-        <span className="truncate text-content-subtle">{breakdown}</span>
+        <span className="font-medium text-content-muted">{label}</span>
+        {breakdown && <span className="truncate text-content-subtle">{breakdown}</span>}
         <Chevron open={open} />
       </button>
       {open && (
         <div className="space-y-1.5 border-t border-edge px-3 py-2">
-          {/* defaultOpen=true forces each child card to render its body.
-              The cards' own useState is seeded with this on first render
-              and stays open for the life of the message. */}
           {blocks.map((b, i) => (
-            <BlockView key={i} block={b} defaultOpen />
+            <BlockView key={i} block={b} />
           ))}
         </div>
       )}
@@ -316,15 +331,14 @@ function annotateDiffWithLineNumbers(
 }
 
 /** Write tool card: shows the new file content preview. No diff because
- *  Write is a full-file replace. defaultOpen lets ToolGroup expand all
- *  contained cards together; standalone (no group) keeps the prior
- *  behavior of opening the body so the content preview is the story. */
+ *  Write is a full-file replace. Collapsed by default like the other cards —
+ *  the user expands to see the content preview. */
 function WriteToolCard({
   filePath,
   content,
   status,
   result,
-  defaultOpen = true,
+  defaultOpen = false,
 }: {
   filePath: string;
   content: string;

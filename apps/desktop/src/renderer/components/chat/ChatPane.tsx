@@ -333,86 +333,77 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="relative flex h-full flex-col">
-      {/* Message stream — the scroll container is ALWAYS rendered so the
-          scroll event listener (attached in useEffect) works reliably even
-          when messages load after mount. The container is hidden via CSS
-          when empty so the input box can take full height and center. */}
+      {/* Message stream — scroll container, hidden when empty so the input
+          box can take the full height and center vertically. No border or
+          gap between the scroll area and the input box below. */}
       <div
         ref={scrollRef}
         className={cn(
-          "relative overflow-y-auto",
+          "relative overflow-y-auto px-4",
           empty ? "hidden" : "min-h-0 flex-1",
         )}
       >
-        {(todos.length > 0 || contextSnapshot || subagents.length > 0) && (
-          <div className="pointer-events-none sticky top-0 z-20 flex items-center justify-end gap-1.5 bg-gradient-to-b from-surface/80 to-transparent pb-2 pt-1">
-              <StatusCapsule
-                snapshot={contextSnapshot}
-                subagents={subagents}
-                todos={todos}
-                plan={plan}
-              />
-            </div>
-          )}
-          <div className="mx-auto max-w-5xl space-y-5">
-            {messages.map((m, i) => {
-              // The "streaming tail" is the last assistant message while a
-              // turn is running — it's the one still receiving deltas, so
-              // it gets the bottom loading indicator.
-              const isStreamingTail =
-                isRunning &&
-                m.role === "assistant" &&
-                i === messages.length - 1;
-              // The "last completed assistant" is the final assistant
-              // message after a turn has finished — only this message
-              // shows a copy button (the full payload is available).
-              const isLastCompletedAssistant =
-                !isRunning &&
-                m.role === "assistant" &&
-                i === messages.length - 1;
-              return (
-                <MessageRow
-                  key={m.id}
-                  msg={m}
-                  isStreamingTail={isStreamingTail}
-                  isLastCompletedAssistant={isLastCompletedAssistant}
+        {!empty && (
+          <>
+            {(todos.length > 0 || contextSnapshot || subagents.length > 0) && (
+              <div className="pointer-events-none sticky top-0 z-20 flex items-center justify-end gap-1.5 bg-gradient-to-b from-surface/80 to-transparent pb-2 pt-3 pr-2">
+                <StatusCapsule
+                  snapshot={contextSnapshot}
+                  subagents={subagents}
+                  todos={todos}
+                  plan={plan}
                 />
-              );
-            })}
-          </div>
-          {/* Jump-to-bottom button: fixed to the scroll viewport's
-              bottom-right. Always visible whenever the user has scrolled
-              up from the latest message, so they can return without having
-              to scroll back manually. Icon-only — the chevron is universal
-              enough on its own. */}
-          {showJumpBottom && (
-            <button
-              onClick={jumpToBottom}
-              className={cn(
-                "absolute right-4 z-20 rounded-full border border-edge/50",
-                "bg-surface/80 p-1.5 shadow-lg backdrop-blur transition-colors",
-                "hover:bg-surface-hover/80",
-              )}
-              title="回到底部"
-            >
-              <IconArrowDown size={14} className="text-content-muted" />
-            </button>
-          )}
-        </div>
+              </div>
+            )}
+            <div className="mx-auto max-w-5xl space-y-5">
+              {messages.map((m, i) => {
+                const isStreamingTail =
+                  isRunning &&
+                  m.role === "assistant" &&
+                  i === messages.length - 1;
+                const isLastCompletedAssistant =
+                  !isRunning &&
+                  m.role === "assistant" &&
+                  i === messages.length - 1;
+                return (
+                  <MessageRow
+                    key={m.id}
+                    msg={m}
+                    isStreamingTail={isStreamingTail}
+                    isLastCompletedAssistant={isLastCompletedAssistant}
+                  />
+                );
+              })}
+            </div>
+            {/* Jump-to-bottom button */}
+            {showJumpBottom && (
+              <button
+                onClick={jumpToBottom}
+                className={cn(
+                  "absolute right-4 z-20 rounded-full border border-edge/50",
+                  "bg-surface/80 p-1.5 shadow-lg backdrop-blur transition-colors",
+                  "hover:bg-surface-hover/80",
+                )}
+                title="回到底部"
+              >
+                <IconArrowDown size={14} className="text-content-muted" />
+              </button>
+            )}
+          </>
+        )}
+      </div>
 
-      {/* Input box — Codex-style: a single rounded container holding the
-          textarea on top and a bottom row (option chips left, send button
-          right) inside the same border.
-
-          When there are no messages yet the box is centered vertically so the
-          user lands on a clean vertical-center start page (no empty banner). */}
+      {/* Input box — fixed at the bottom (outside the scroll container) so
+          the user always has access to the composer. No border-t divider:
+          the box sits flush against the message area. When the session is
+          empty the wrapper takes flex-1 and centers the box vertically. */}
       <div className={cn(
-        "py-3",
+        "px-4",
         empty
           ? "flex flex-1 items-center justify-center"
-          : "shrink-0",
+          : "shrink-0 pb-3",
       )}>
-        <div className={cn("w-full", empty ? "max-w-3xl" : "mx-auto max-w-5xl")}>
+        <div className={cn("w-full", empty ? "max-w-3xl" : "mx-auto max-w-5xl pt-2")}>
           {turnFiles.length > 0 && (
             <TurnFilesCard files={turnFiles} onRewind={() => void rewindTurn()} />
           )}
@@ -436,9 +427,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
             />
           )}
           <div className="relative flex flex-col rounded-xl border border-edge-input bg-surface-muted/30 focus-within:border-accent">
-            {/* Content-tag chips: long/multi-line pastes promoted from inline
-                text to compact chips so they don't bury the textarea. Click a
-                chip to preview its content; click × to remove. */}
             {tags.length > 0 && (
               <div className="relative flex flex-wrap gap-1 px-2 pt-2">
                 {tags.map((tag) => (
@@ -455,8 +443,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                     }}
                   />
                 ))}
-                {/* The preview popover anchors to the chip row; only one open
-                    at a time (the chip whose id matches openTagId). */}
                 {openTagId &&
                   (() => {
                     const t = tags.find((x) => x.id === openTagId);
@@ -478,8 +464,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               className={cn(
                 "max-h-72 min-h-[52px] resize-none bg-transparent px-3 pt-2.5 text-sm leading-relaxed text-content outline-none",
                 "placeholder:text-content-subtle disabled:opacity-60",
-                // When tags are present, shrink the top padding since chips
-                // already provide spacing above.
                 tags.length > 0 && "pt-1.5",
               )}
             />
