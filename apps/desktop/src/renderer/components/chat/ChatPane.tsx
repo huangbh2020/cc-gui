@@ -19,7 +19,9 @@ import {
   type ContentTag,
   composePromptWithTags,
   makeContentTag,
+  makeFileTag,
   shouldPromoteToTag,
+  FILE_DRAG_MIME,
 } from "@renderer/lib/contentTag.js";
 import { MessageBlocks, ProceduralGroup, type ProceduralBlock, type BeforeContentMap } from "./MessageBlocks.js";
 import { ComposerToolbar } from "./ComposerToolbar.js";
@@ -350,6 +352,9 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // textarea so they don't bury the input area. Ephemeral per-turn UI
   // state (cleared on send). See lib/contentTag.ts for the promote rules.
   const [tags, setTags] = useState<ContentTag[]>([]);
+  // Whether a file-tree drag is currently hovering over the composer —
+  // drives a highlight ring so the drop target is discoverable.
+  const [dragOver, setDragOver] = useState(false);
   // Which tag's preview popover is open (by id); null = none.
   const [openTagId, setOpenTagId] = useState<string | null>(null);
   // Refs to each chip's DOM node, keyed by tag id. Used to measure the
@@ -470,7 +475,12 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     // displayText = just the typed text; the attachment content is shown
     // via the cards, so we must NOT also inline it into the text block
     // (the full prompt, with attachments inlined, is still sent to the SDK).
-    const attachments = tags.map((t) => ({ preview: t.preview, content: t.content }));
+    const attachments = tags.map((t) => ({
+      preview: t.preview,
+      content: t.content,
+      attachmentKind: t.kind,
+      filePath: t.filePath,
+    }));
     void sendPrompt(
       prompt,
       attachments.length > 0 ? attachments : undefined,
@@ -634,7 +644,37 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               }
             />
           )}
-          <div className="relative flex flex-col rounded-xl border border-edge-input bg-surface-muted/30 focus-within:border-accent">
+          <div
+            className={cn(
+              "relative flex flex-col rounded-xl border border-edge-input bg-surface-muted/30 focus-within:border-accent",
+              // Highlight the composer while a file-tree drag hovers over it.
+              dragOver && "border-accent ring-1 ring-accent/30",
+            )}
+            onDragOver={(e) => {
+              // Only react to OUR file drag (custom MIME). External drags
+              // (text, images, files from outside the app) are ignored.
+              if (e.dataTransfer.types.includes(FILE_DRAG_MIME)) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "copy";
+                if (!dragOver) setDragOver(true);
+              }
+            }}
+            onDragLeave={(e) => {
+              // Only clear when leaving the container itself (not when
+              // crossing into a child). relatedTarget is null when the
+              // pointer leaves to outside the window.
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setDragOver(false);
+              }
+            }}
+            onDrop={(e) => {
+              const path = e.dataTransfer.getData(FILE_DRAG_MIME);
+              if (!path) return;
+              e.preventDefault();
+              setDragOver(false);
+              setTags((prev) => [...prev, makeFileTag(path)]);
+            }}
+          >
             {tags.length > 0 && (
               <div className="flex flex-wrap gap-1 px-2 pt-2">
                 {tags.map((tag) => (

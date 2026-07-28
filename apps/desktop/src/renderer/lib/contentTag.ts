@@ -15,6 +15,11 @@
  *  collapsed; an ellipsis is appended if the original was longer. */
 export const TAG_PREVIEW_CHARS = 24;
 
+/** Custom DataTransfer MIME type used by the file-tree → composer drag.
+ *  Using a custom type (instead of text/plain) ensures only OUR file nodes
+ *  trigger a drop — external text/image drags are ignored by the composer. */
+export const FILE_DRAG_MIME = "application/x-file-path";
+
 /** Pasting a single-line shorter than this is left inline in the textarea
  *  (no chip). Anything over this OR a paste with more than
  *  {@link TAG_THRESHOLD_LINES} lines becomes a tag. */
@@ -26,16 +31,22 @@ export const TAG_THRESHOLD_CHARS = 200;
  *  for ordinary multi-line pastes. */
 export const TAG_THRESHOLD_LINES = 3;
 
-/** Source of the tag. Today only paste; future: file-drop, image-paste, etc. */
-export type ContentTagKind = "paste";
+/** Source of the tag: "paste" for bulky clipboard content, "file" for a
+ *  file dragged in from the file tree (path reference only — no content
+ *  is read). */
+export type ContentTagKind = "paste" | "file";
 
 /** One content tag. `id` is the React key + removal handle. `content` is the
- *  full pasted text, sent verbatim on Send. `preview` is for chip display. */
+ *  full pasted text (for paste) or the `@path` reference string (for file),
+ *  sent verbatim on Send. `preview` is for chip display. `filePath` is only
+ *  set for file tags (the absolute path of the dragged file). */
 export interface ContentTag {
   id: string;
   kind: ContentTagKind;
   preview: string;
   content: string;
+  /** Absolute path of the dragged file. Only set when kind === "file". */
+  filePath?: string;
 }
 
 /** Decide whether a pasted string should become a tag rather than be
@@ -73,6 +84,26 @@ export function makeContentTag(text: string): ContentTag {
   };
 }
 
+/** Build a ContentTag for a file dragged in from the file tree. Unlike paste
+ *  tags, a file tag carries only a PATH reference (the agent reads the file
+ *  itself via its tools) — no file content is loaded. `preview` is the base
+ *  file name; `content` is the `@path` reference injected into the prompt. */
+export function makeFileTag(filePath: string): ContentTag {
+  // Derive a short display name from the last path segment (handles both /
+  // and \ separators for cross-platform paths).
+  const segs = filePath.split(/[/\\]/);
+  const name = segs[segs.length - 1] || filePath;
+  const preview =
+    name.length > TAG_PREVIEW_CHARS ? name.slice(0, TAG_PREVIEW_CHARS) + "…" : name;
+  return {
+    id: cryptoRandomId(),
+    kind: "file",
+    preview,
+    content: `@${filePath}`,
+    filePath,
+  };
+}
+
 /** Browser-safe UUID. Electron renderer has `crypto.randomUUID()` in secure
  *  contexts; fall back to a Math.random-based id for any environment that
  *  doesn't (defensive — shouldn't happen in Electron, but keeps the code
@@ -90,18 +121,34 @@ function cryptoRandomId(): string {
 }
 
 /** Compose the final prompt string from the textarea text + all tags.
- *  Tags are appended as delimited blocks so the model can clearly see
- *  "user typed X, plus these N attachments". Order: typed text first,
- *  then tags in array order. */
+ *  Tags are appended so the model can clearly see "user typed X, plus these
+ *  N attachments". Order: typed text first, then tags in array order.
+ *
+ *  - Paste tags become delimited content blocks (full text wrapped in
+ *    `--- pasted content N ---` / `--- end ---` markers).
+ *  - File tags become bare `@path` reference lines (one per line) — the
+ *    agent reads the file itself via its tools, so no content is inlined. */
 export function composePromptWithTags(
   text: string,
   tags: ReadonlyArray<ContentTag>,
 ): string {
   const textTrimmed = text.trim();
   if (tags.length === 0) return textTrimmed;
-  const blocks = tags.map(
-    (tag, i) =>
-      `--- pasted content ${i + 1} (${tag.content.length} chars) ---\n${tag.content}\n--- end ---`,
-  );
-  return textTrimmed ? `${textTrimmed}\n\n${blocks.join("\n\n")}` : blocks.join("\n\n");
+  // Separate paste blocks (delimited) from file refs (bare @path lines).
+  // We preserve the original tag order by walking the array and emitting
+  // each tag's contribution in sequence, joined by blank lines.
+  const parts: string[] = [];
+  let pasteIdx = 0;
+  for (const tag of tags) {
+    if (tag.kind === "file") {
+      parts.push(tag.content); // already "@path"
+    } else {
+      pasteIdx += 1;
+      parts.push(
+        `--- pasted content ${pasteIdx} (${tag.content.length} chars) ---\n${tag.content}\n--- end ---`,
+      );
+    }
+  }
+  const tagBlock = parts.join("\n\n");
+  return textTrimmed ? `${textTrimmed}\n\n${tagBlock}` : tagBlock;
 }

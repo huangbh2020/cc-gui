@@ -34,7 +34,7 @@ export function OpenTabsBar() {
   const dirtySet = useDirtyFiles();
 
   return (
-    <div className="flex shrink-0 items-stretch overflow-x-auto border-b border-edge bg-surface-muted/40">
+    <div className="flex shrink-0 items-end gap-0.5 overflow-x-auto border-b border-edge bg-surface/40 px-2 pt-1.5">
       {openFiles.map((path) => {
         const active = path === activeFile;
         const dirty = dirtySet.has(path);
@@ -42,10 +42,10 @@ export function OpenTabsBar() {
           <div
             key={path}
             className={cn(
-              "group flex shrink-0 cursor-pointer items-center gap-1.5 border-r border-edge px-2.5 py-1.5 text-[11px] transition-colors",
+              "group flex max-w-[200px] min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 text-[11px] transition-colors",
               active
-                ? "bg-surface text-content"
-                : "text-content-muted hover:bg-surface-hover/40",
+                ? "border-accent bg-surface text-content"
+                : "border-transparent text-content-muted hover:bg-surface-muted/50 hover:text-content",
             )}
             onClick={() => setActive(path)}
             title={path}
@@ -54,7 +54,7 @@ export function OpenTabsBar() {
             {/* Dirty dot (unsaved) OR close button on hover. */}
             {dirty ? (
               <span
-                className="h-2 w-2 shrink-0 rounded-full bg-accent"
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent animate-pulse"
                 title="未保存"
               />
             ) : (
@@ -64,7 +64,7 @@ export function OpenTabsBar() {
                   e.stopPropagation();
                   close(path);
                 }}
-                className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-0 transition-opacity hover:bg-surface-hover hover:text-content group-hover:opacity-100"
+                className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-0 transition-opacity hover:bg-surface-hover hover:text-content group-hover:opacity-100"
                 title="关闭"
               >
                 <IconX size={10} />

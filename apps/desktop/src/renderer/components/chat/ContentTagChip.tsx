@@ -1,6 +1,6 @@
 import { forwardRef } from "react";
 import { cn } from "@renderer/lib/cn.js";
-import { IconClipboard, IconX } from "@renderer/lib/icons.js";
+import { IconClipboard, IconFile, IconX } from "@renderer/lib/icons.js";
 import type { ContentTag } from "@renderer/lib/contentTag.js";
 
 /**
@@ -27,6 +27,7 @@ export const ContentTagChip = forwardRef<
     onRemove: () => void;
   }
 >(function ContentTagChip({ tag, open, onToggle, onRemove }, ref) {
+  const isFile = tag.kind === "file";
   return (
     <span
       ref={ref}
@@ -40,10 +41,14 @@ export const ContentTagChip = forwardRef<
       <button
         type="button"
         onClick={onToggle}
-        title={open ? "收起预览" : "查看内容"}
+        title={isFile ? (tag.filePath ?? tag.preview) : open ? "收起预览" : "查看内容"}
         className="flex items-center gap-1"
       >
-        <IconClipboard size={12} className="opacity-80" />
+        {isFile ? (
+          <IconFile size={12} className="opacity-80" />
+        ) : (
+          <IconClipboard size={12} className="opacity-80" />
+        )}
         <span className="max-w-[160px] truncate font-normal">{tag.preview}</span>
       </button>
       <button

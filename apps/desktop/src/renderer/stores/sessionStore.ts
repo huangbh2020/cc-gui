@@ -38,7 +38,7 @@ export type Block =
   | { kind: "thinking"; text: string }
   | { kind: "tool_use"; toolCallId: string; toolName: string; input: unknown; status: "running" | "done" | "error"; result?: unknown }
   | { kind: "error"; message: string }
-  | { kind: "attachment"; preview: string; content: string }
+  | { kind: "attachment"; preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }
   | {
       kind: "plan";
       /** Stable id for the in-turn live plan block — "current" while the turn
@@ -319,7 +319,7 @@ interface SessionState {
   archiveSession: (id: string, archived: boolean) => Promise<void>;
   sendPrompt: (
     prompt: string,
-    attachments?: { preview: string; content: string }[],
+    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }[],
     /** Text shown in the user message's text block. Defaults to `prompt`,
      *  but when attachments are present the caller passes just the typed
      *  text (without the inlined attachment content) so the card + text
@@ -1956,7 +1956,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const blocks: Block[] = [];
     if (attachments) {
       for (const a of attachments) {
-        blocks.push({ kind: "attachment", preview: a.preview, content: a.content });
+        blocks.push({
+          kind: "attachment",
+          preview: a.preview,
+          content: a.content,
+          attachmentKind: a.attachmentKind,
+          filePath: a.filePath,
+        });
       }
     }
     blocks.push({ kind: "text", text: displayText ?? prompt });

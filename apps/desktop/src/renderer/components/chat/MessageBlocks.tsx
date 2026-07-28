@@ -8,6 +8,7 @@ import {
   IconAlertTriangle,
   IconTools,
   IconClipboard,
+  IconFile,
   IconCopy,
 } from "@renderer/lib/icons.js";
 import type { Block } from "@renderer/stores/sessionStore.js";
@@ -239,7 +240,14 @@ const BlockView = memo(function BlockView({
       return <ToolCard block={block} defaultOpen={defaultOpen} beforeMap={beforeMap} />;
 
     case "attachment":
-      return <AttachmentCard preview={block.preview} content={block.content} />;
+      return (
+        <AttachmentCard
+          preview={block.preview}
+          content={block.content}
+          attachmentKind={block.attachmentKind}
+          filePath={block.filePath}
+        />
+      );;
 
     case "error":
       return (
@@ -276,19 +284,34 @@ const BlockView = memo(function BlockView({
 });
 export { BlockView };
 
-/** A pasted-content attachment shown as a chip-like card in the message
- *  stream. Mirrors the composer's ContentTagChip visual language (accent
- *  theme color, clipboard icon) so a paste reads the same before and after
- *  sending. Collapsed: a one-line preview; expanded: the full content in a
- *  scrollable box with a Copy button. Borderless to match the other
- *  procedural cards.
+/** A pasted-content or file-reference attachment shown as a chip-like card in
+ *  the message stream. Mirrors the composer's ContentTagChip visual language
+ *  (accent theme color) so an attachment reads the same before and after
+ *  sending.
+ *
+ *  - Paste attachments (attachmentKind="paste" or undefined): clipboard icon,
+ *    collapsed = one-line preview, expanded = full content + Copy button.
+ *  - File attachments (attachmentKind="file"): file icon, collapsed = file
+ *    name, expanded = the full file path (the `@path` reference sent to the
+ *    model). No Copy button — a path is short enough to read inline.
  *
  *  Unlike the composer's TagPopover (fixed-positioned to the chip), this
  *  expands inline — the message stream is the stable anchor here, so a
  *  floating popover would be fragile on scroll. */
-function AttachmentCard({ preview, content }: { preview: string; content: string }) {
+function AttachmentCard({
+  preview,
+  content,
+  attachmentKind,
+  filePath,
+}: {
+  preview: string;
+  content: string;
+  attachmentKind?: "paste" | "file";
+  filePath?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const isFile = attachmentKind === "file";
 
   const handleCopy = async () => {
     try {
@@ -304,7 +327,7 @@ function AttachmentCard({ preview, content }: { preview: string; content: string
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
-        title={open ? "收起内容" : "查看内容"}
+        title={isFile ? (filePath ?? preview) : open ? "收起内容" : "查看内容"}
         className={cn(
           "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition-colors",
           open
@@ -312,7 +335,11 @@ function AttachmentCard({ preview, content }: { preview: string; content: string
             : "border-accent/40 bg-accent/10 text-accent hover:border-accent/70 hover:bg-accent/20",
         )}
       >
-        <IconClipboard size={12} className="opacity-80" />
+        {isFile ? (
+          <IconFile size={12} className="opacity-80" />
+        ) : (
+          <IconClipboard size={12} className="opacity-80" />
+        )}
         <span className="max-w-[220px] truncate font-normal">{preview}</span>
         <IconChevronDown
           size={11}
@@ -321,26 +348,28 @@ function AttachmentCard({ preview, content }: { preview: string; content: string
       </button>
       {open && (
         <div className="mt-1 space-y-1">
-          <div className="flex items-center justify-end">
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-accent transition-colors hover:bg-accent/30"
-              title="复制完整内容"
-            >
-              {copied ? (
-                <>
-                  <IconCheck size={11} /> 已复制
-                </>
-              ) : (
-                <>
-                  <IconCopy size={11} /> Copy
-                </>
-              )}
-            </button>
-          </div>
+          {!isFile && (
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-accent transition-colors hover:bg-accent/30"
+                title="复制完整内容"
+              >
+                {copied ? (
+                  <>
+                    <IconCheck size={11} /> 已复制
+                  </>
+                ) : (
+                  <>
+                    <IconCopy size={11} /> Copy
+                  </>
+                )}
+              </button>
+            </div>
+          )}
           <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-surface/60 px-3 py-2 font-mono text-[11px] leading-relaxed text-content-muted">
-            {content}
+            {isFile ? (filePath ?? content) : content}
           </pre>
         </div>
       )}

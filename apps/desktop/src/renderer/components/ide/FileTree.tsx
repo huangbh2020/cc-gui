@@ -4,6 +4,7 @@ import { cn } from "@renderer/lib/cn.js";
 import type { FileTreeEntry } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
+import { FILE_DRAG_MIME } from "@renderer/lib/contentTag.js";
 import {
   IconChevronRight,
   IconChevronDown,
@@ -230,6 +231,14 @@ function FileNodeRow({
   return (
     <button
       type="button"
+      draggable
+      onDragStart={(e) => {
+        // Stash the file path in a custom MIME type so the composer's drop
+        // handler can read it. effectAllowed=copy signals "this creates a
+        // new reference" (not a move).
+        e.dataTransfer.setData(FILE_DRAG_MIME, path);
+        e.dataTransfer.effectAllowed = "copy";
+      }}
       onClick={onClick}
       className={cn(
         "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors",
