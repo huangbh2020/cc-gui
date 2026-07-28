@@ -6,6 +6,7 @@ import { ClaudePathPanel } from "./ClaudePathPanel.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { DisplayModePanel } from "./DisplayModePanel.js";
 import { ChatAppearancePanel } from "./ChatAppearancePanel.js";
+import { AccentPanel } from "./AccentPanel.js";
 import { ThemePanel } from "./ThemePanel.js";
 
 /**
@@ -95,6 +96,8 @@ export function SettingsPage() {
               <DisplayModePanel />
               <div className="border-t border-edge" />
               <ChatAppearancePanel />
+              <div className="border-t border-edge" />
+              <AccentPanel />
             </div>
           )}
           {active === "about" && (

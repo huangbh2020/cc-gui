@@ -2,21 +2,26 @@ import { useEffect } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 /**
- * Runtime application of user-configurable chat appearance settings.
+ * Runtime application of user-configurable appearance settings.
  *
- * The settings (font size + user-message bg color) live in the session
- * store (hydrated from the `settings` SQLite table). This module mirrors
- * them onto <html> as CSS custom properties so they cascade into the chat
- * rendering without per-component plumbing:
+ * The settings (font size, user-message bg color, global accent color) live
+ * in the session store (hydrated from the `settings` SQLite table). This
+ * module mirrors them onto <html> as CSS custom properties so they cascade
+ * into the rendering without per-component plumbing:
  *
  *   --chat-font-size : consumed by `[font-size:var(--chat-font-size)]`
  *                       classes in ChatPane + Markdown.
  *   --user-bubble    : an "R G B" triplet consumed by the `userBubble`
  *                       Tailwind color token (composes `/10` alpha).
+ *   --accent         : an "R G B" triplet consumed by the `accent` Tailwind
+ *                       color token — the global emphasis color (buttons,
+ *                       links, selected states, focus rings, prompt-card
+ *                       accents). Composes `/10`, `/15`, `/60` etc. alpha.
  *
- * Static fallbacks for both vars live in styles.css (:root + .dark); when
- * the user has NOT customized a value we REMOVE the inline property so the
- * stylesheet default re-asserts (and correctly differs between light/dark).
+ * Static fallbacks for all three vars live in styles.css (:root + .dark);
+ * when the user has NOT customized a value we REMOVE the inline property so
+ * the stylesheet default re-asserts (and correctly differs between light/
+ * dark — e.g. --accent is emerald-600 in light, emerald-500 in dark).
  *
  * This is the project's first runtime CSS-variable write; lib/theme.ts's
  * `applyThemeClass` is the closest precedent (DOM mutation on <html>).
@@ -38,15 +43,27 @@ export function applyUserBubbleColor(rgbTriplet: string | null): void {
   }
 }
 
+/** Write the global brand/accent color (R G B triplet) as `--accent` on
+ *  <html>. Pass null to remove the override and fall back to the per-theme
+ *  default defined in styles.css (emerald-600 light / emerald-500 dark). */
+export function applyAccentColor(rgbTriplet: string | null): void {
+  if (rgbTriplet) {
+    document.documentElement.style.setProperty("--accent", rgbTriplet);
+  } else {
+    document.documentElement.style.removeProperty("--accent");
+  }
+}
+
 /**
- * Keep the two appearance CSS vars in sync with the session store. Mount
+ * Keep the three appearance CSS vars in sync with the session store. Mount
  * once at the app root (alongside useTheme). Re-runs whenever the store
  * values change (user dragged the slider / picked a color in Settings),
- * re-applying both vars idempotently.
+ * re-applying all three vars idempotently.
  */
 export function useChatAppearance(): void {
   const chatFontSize = useSessionStore((s) => s.chatFontSize);
   const userMessageColor = useSessionStore((s) => s.userMessageColor);
+  const accentColor = useSessionStore((s) => s.accentColor);
 
   useEffect(() => {
     applyChatFontSize(chatFontSize);
@@ -55,4 +72,8 @@ export function useChatAppearance(): void {
   useEffect(() => {
     applyUserBubbleColor(userMessageColor);
   }, [userMessageColor]);
+
+  useEffect(() => {
+    applyAccentColor(accentColor);
+  }, [accentColor]);
 }

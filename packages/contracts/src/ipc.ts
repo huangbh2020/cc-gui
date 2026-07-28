@@ -72,6 +72,18 @@ export const UI_CHAT_FONT_SIZE_SETTING_KEY = "ui.chatFontSize";
 export const UI_USER_MSG_COLOR_SETTING_KEY = "ui.userMessageColor";
 
 /**
+ * Setting key under which the user's custom brand/accent color is persisted.
+ * Value is a space-separated "R G B" triplet (e.g. "5 150 105") so it
+ * composes with Tailwind's <alpha-value> placeholder via the `accent` color
+ * token. An empty string / null means "use the theme default" (the --accent
+ * CSS var defined in styles.css per :root/.dark — emerald-600 in light,
+ * emerald-500 in dark). Unlike --user-bubble (chat-only), --accent is the
+ * global emphasis color: buttons, links, selected states, focus rings, and
+ * the accent highlights in the three prompt cards all follow it.
+ */
+export const UI_ACCENT_COLOR_SETTING_KEY = "ui.accentColor";
+
+/**
  * Permission mode literals accepted by the Claude Agent SDK's
  * `permissionMode` option (and the CLI's --permission-mode flag). Kept in
  * lock-step with the `PermissionMode` union in `./runtime.ts`; the renderer's

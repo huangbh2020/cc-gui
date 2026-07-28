@@ -20,6 +20,7 @@ import {
   DISPLAY_MODE_SETTING_KEY,
   UI_CHAT_FONT_SIZE_SETTING_KEY,
   UI_USER_MSG_COLOR_SETTING_KEY,
+  UI_ACCENT_COLOR_SETTING_KEY,
   type DisplayMode,
 } from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
@@ -122,6 +123,12 @@ interface SessionState {
    *  (e.g. "124 58 237"), or null to use the theme default. Persisted in
    *  the `settings` table. Applied to <html> as --user-bubble. */
   userMessageColor: string | null;
+  /** Custom global brand/accent color as an "R G B" triplet string
+   *  (e.g. "5 150 105"), or null to use the theme default. Persisted in
+   *  the `settings` table. Applied to <html> as --accent, which cascades
+   *  into the `accent` Tailwind token used by buttons, links, selected
+   *  states, focus rings, and the prompt-card accents. */
+  accentColor: string | null;
 
   messagesBySession: Record<string, ChatMessage[]>;
   /** Per-session running flag. Keyed by sessionId so a turn running in
@@ -235,6 +242,9 @@ interface SessionState {
   /** Update the user-message background color (R G B triplet, or null =
    *  theme default). Persists to the `settings` table. */
   setUserMessageColor: (rgb: string | null) => Promise<void>;
+  /** Set the global brand/accent color ("R G B" triplet, or null for the
+   *  theme default). Persists to the `settings` table. */
+  setAccentColor: (rgb: string | null) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => void;
   setModel: (model: string) => void;
   setEffort: (effort: EffortLevel) => void;
@@ -469,6 +479,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // mirror the CSS var defaults in styles.css (14px = text-sm).
   chatFontSize: 14,
   userMessageColor: null,
+  accentColor: null,
   messagesBySession: {},
   runningBySession: {},
   claudeInstalled: null,
@@ -512,15 +523,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.error("setting.get(displayMode) failed:", err);
     }
 
-    // Hydrate the chat-appearance settings (font size + user-message bg
-    // color). Both are optional — missing/invalid values leave the store
-    // defaults in place. lib/appearance.ts picks these up and writes the
-    // corresponding CSS vars on <html> so the first paint uses the right
-    // values (no flash of the default font size / color).
+    // Hydrate the appearance settings (font size, user-message bg color,
+    // and global accent color). All three are optional — missing/invalid
+    // values leave the store defaults in place. lib/appearance.ts picks
+    // these up and writes the corresponding CSS vars on <html> so the first
+    // paint uses the right values (no flash of the default font size / color).
     try {
-      const [fontRes, colorRes] = await Promise.all([
+      const [fontRes, colorRes, accentRes] = await Promise.all([
         api.setting.get({ key: UI_CHAT_FONT_SIZE_SETTING_KEY }),
         api.setting.get({ key: UI_USER_MSG_COLOR_SETTING_KEY }),
+        api.setting.get({ key: UI_ACCENT_COLOR_SETTING_KEY }),
       ]);
       if (fontRes.value != null) {
         const px = Number(fontRes.value);
@@ -531,8 +543,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (colorRes.value && RGB_TRIPLET_RE.test(colorRes.value)) {
         set({ userMessageColor: colorRes.value });
       }
+      if (accentRes.value && RGB_TRIPLET_RE.test(accentRes.value)) {
+        set({ accentColor: accentRes.value });
+      }
     } catch (err) {
-      console.error("setting.get(chat appearance) failed:", err);
+      console.error("setting.get(appearance) failed:", err);
     }
 
     const { projects } = await api.project.list();
@@ -1482,6 +1497,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(userMessageColor) failed:", err);
+    }
+  },
+
+  setAccentColor: async (rgb) => {
+    // Same normalization as setUserMessageColor: null or malformed → clear
+    // the override so the per-theme --accent default re-asserts.
+    const safe = rgb && RGB_TRIPLET_RE.test(rgb) ? rgb : null;
+    set({ accentColor: safe });
+    try {
+      await api.setting.set({
+        key: UI_ACCENT_COLOR_SETTING_KEY,
+        value: safe ?? "",
+      });
+    } catch (err) {
+      console.error("setting.set(accentColor) failed:", err);
     }
   },
 
