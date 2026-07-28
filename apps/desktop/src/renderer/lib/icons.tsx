@@ -73,6 +73,9 @@ export {
   IconClipboard,
   IconFolder,
   IconFolderOpen,
+  IconFolderPlus,
+  IconGitBranch,
+  IconFileSymlink,
   // Editing / actions
   IconPencil,
   IconRocket,
@@ -115,6 +118,7 @@ export {
   IconAdjustmentsHorizontal,
   IconList,
   IconListDetails,
+  IconSquare,
   IconLanguage,
   IconGlobe,
   IconSun,

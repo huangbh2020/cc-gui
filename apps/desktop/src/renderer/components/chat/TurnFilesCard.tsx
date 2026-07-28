@@ -173,14 +173,20 @@ function FileRow({ entry }: { entry: TurnFileEntry }) {
             <span className="text-content-subtle">无变化</span>
           )}
         </span>
-        {/* Placeholder review button — P4 will wire this to a review flow.
-            For now it just logs so the click is observable without effect. */}
+        {/* Review button — opens this file in the right-panel Files tab with a
+            diff view (before-snapshot vs current on-disk content). The store
+            action also bumps ideFocusNonce so App opens the panel if it's
+            currently collapsed. */}
         <Button
           variant="outline"
           size="sm"
           className="shrink-0 gap-1 px-1.5"
-          title="审查(P4)"
-          onClick={() => console.log("[review] (placeholder)", entry.filePath)}
+          title="在右侧面板审查改动"
+          onClick={() => {
+            const { setRightPanelTab, openFileInIde } = useSessionStore.getState();
+            setRightPanelTab("files");
+            openFileInIde(entry.filePath, { diff: true });
+          }}
         >
           <IconEye size={11} />
           审查

@@ -28,8 +28,15 @@ function overlayColors() {
   };
 }
 
-/** Update the title-bar overlay colors (called when the theme switches). */
+/** Update the title-bar overlay colors (called when the theme switches).
+ *
+ *  `setTitleBarOverlay` only exists on Windows and Linux, where
+ *  `titleBarOverlay` paints the area behind the native min/max/close buttons.
+ *  macOS uses the traffic-light buttons (see `trafficLightPosition`) and has no
+ *  overlay, so the call is a no-op there — without this guard it throws
+ *  "setTitleBarOverlay is not a function" on macOS. */
 export function updateTitleBarOverlay(): void {
+  if (process.platform === "darwin") return;
   mainWindow?.setTitleBarOverlay(overlayColors());
 }
 

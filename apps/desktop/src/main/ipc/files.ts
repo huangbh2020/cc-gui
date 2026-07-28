@@ -1,32 +1,82 @@
 /**
- * IPC handler for on-demand file reads.
+ * IPC handlers for filesystem operations crossing the main↔renderer boundary.
  *
  * The renderer runs under contextIsolation and has no filesystem access of
- * its own. The turn-files diff card needs a file's *current* (post-turn)
- * content to diff against the snapshotted `before` payload — this handler is
- * the only path that fetches it.
+ * its own. Three channels live here, all sharing one security rule: every
+ * path MUST resolve inside a known project root. We never trust a
+ * caller-supplied cwd; instead we scan all persisted projects and accept a
+ * root that contains the path (for read/write) or that matches the supplied
+ * `projectPath` exactly (for dir listing, where the caller already knows the
+ * root). A path that escapes every project root — or a read/write failure —
+ * degrades gracefully (empty listing / empty content / `ok: false`) rather
+ * than throwing into the renderer.
  *
- * Security: the path MUST resolve inside a known project root. We don't take
- * a cwd on trust from the renderer; instead we scan all persisted projects
- * and accept the first root that contains the path. A path that escapes every
- * project root (or a read failure / binary file) yields an empty string so
- * the caller degrades gracefully rather than crashing the diff view.
+ * Channels:
+ *  - `file:readFile`  — single-file utf-8 read (diff card, Monaco editor)
+ *  - `file:listDir`   — one-level directory listing for the file tree
+ *  - `file:writeFile` — utf-8 write with parent-dir creation (Monaco save)
  */
 import type { IpcMain } from "electron";
-import { readFile } from "node:fs/promises";
-import { IPC, FileReadSchema } from "@contracts/ipc";
+import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { IPC, FileReadSchema, FileListDirSchema, FileWriteSchema } from "@contracts/ipc";
+import type { FileTreeEntry } from "@contracts/ipc";
 import { ProjectRepo } from "@main/store/repositories.js";
-import { safeResolveOk } from "@main/lib/fileSnapshot.js";
 import { log } from "@main/lib/logger.js";
 
+/** Compare two filesystem paths for equality after normalizing (resolving
+ *  `.`, `..`, redundant separators, and trailing separators). Used instead of
+ *  raw `===` when matching a caller-supplied projectPath against persisted
+ *  Project.path values — the folder picker and the DB can disagree on trivial
+ *  formatting (e.g. a trailing `/` on macOS) which would otherwise cause a
+ *  silent "unknown projectPath" refusal. */
+function samePath(a: string, b: string): boolean {
+  return resolve(a) === resolve(b);
+}
+
+/** True if `abs` is inside `root` (or equals it), after normalizing both.
+ *  This is the containment check used by the read/write/list handlers to
+ *  enforce the project-root security boundary. Uses `resolve` + a
+ *  separator-aware prefix check so "/foo/bar" doesn't match root "/foo/ba". */
+function pathWithin(root: string, abs: string): boolean {
+  const r = resolve(root);
+  const a = resolve(abs);
+  if (a === r) return true;
+  // Ensure the root ends with a separator so "/foo/bar" doesn't match "/foo/ba".
+  return a.startsWith(r + sep);
+}
+
+/** Directory/file names hidden from the file tree. These are build artifacts
+ *  or VCS internals the user never wants to click through. Kept as a Set for
+ *  O(1) lookup during listing. Dotfiles are NOT hidden — users expect to see
+ *  `.env`, `.eslintrc`, etc. */
+const IGNORED_ENTRIES = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  ".next",
+  ".nuxt",
+  ".cache",
+  ".turbo",
+  ".vercel",
+  "coverage",
+  ".sass-cache",
+  "__pycache__",
+  ".DS_Store",
+  "out",
+  "target",
+]);
+
 export function registerFileHandlers(ipcMain: IpcMain): void {
+  /* ── file:readFile — single file read, scoped to any project root ── */
   ipcMain.handle(IPC.FILE_READ, async (_evt, raw) => {
     const input = FileReadSchema.parse(raw);
     // Find a project root that contains the requested path. We check every
     // project (cheap — there are rarely more than a handful) rather than
     // trusting a caller-supplied cwd.
     const projects = ProjectRepo.list();
-    const root = projects.find((p) => safeResolveOk(p.path, input.filePath));
+    const root = projects.find((p) => pathWithin(p.path, input.filePath));
     if (!root) {
       log.warn(`file.readFile refused — path outside any project root: ${input.filePath}`);
       return { content: "" };
@@ -40,6 +90,93 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
       // than throwing into the renderer.
       log.warn(`file.readFile failed for ${input.filePath}: ${(err as Error).message}`);
       return { content: "" };
+    }
+  });
+
+  /* ── file:listDir — one-level directory listing for the file tree ── */
+  ipcMain.handle(IPC.FILE_LIST_DIR, async (_evt, raw) => {
+    const input = FileListDirSchema.parse(raw);
+    // The caller supplies the project root explicitly (it's the active
+    // project's path). We still verify it matches a persisted project so a
+    // renderer bug can't list arbitrary directories. samePath normalizes both
+    // sides so a trailing-slash or casing difference doesn't cause a spurious
+    // refusal.
+    const known = ProjectRepo.list().some((p) => samePath(p.path, input.projectPath));
+    if (!known) {
+      log.warn(`file.listDir refused — unknown projectPath: ${input.projectPath}`);
+      return { entries: [] };
+    }
+    // Resolve the sub-directory against the project root. We do NOT use
+    // safeResolve here: its `rel !== ""` guard rejects dirPath === "" (the
+    // project root itself), which is a perfectly valid listing target — the
+    // file tree lists the root on first mount. pathWithin handles the root
+    // case correctly (abs === root returns true).
+    const abs = resolve(input.projectPath, input.dirPath || ".");
+    if (!pathWithin(input.projectPath, abs)) {
+      log.warn(
+        `file.listDir refused — dirPath escapes project root: ${input.dirPath} (root: ${input.projectPath})`,
+      );
+      return { entries: [] };
+    }
+    try {
+      const dirents = await readdir(abs, { withFileTypes: true });
+      const entries: FileTreeEntry[] = [];
+      for (const d of dirents) {
+        if (IGNORED_ENTRIES.has(d.name)) continue;
+        // Skip broken symlinks (isDirectory throws ENOENT on dangling links).
+        let isDir: boolean;
+        try {
+          isDir = d.isDirectory();
+        } catch {
+          continue;
+        }
+        const fullPath = join(abs, d.name);
+        entries.push({
+          name: d.name,
+          path: fullPath,
+          isDir,
+        });
+      }
+      // Sort: directories first, then alphabetically (case-insensitive).
+      entries.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      });
+      return { entries };
+    } catch (err) {
+      // Directory gone, not a directory, or EACCES — degrade to empty.
+      log.warn(`file.listDir failed for ${abs}: ${(err as Error).message}`);
+      return { entries: [] };
+    }
+  });
+
+  /* ── file:writeFile — utf-8 write, creates parent dirs, scoped to a root ── */
+  ipcMain.handle(IPC.FILE_WRITE, async (_evt, raw) => {
+    const input = FileWriteSchema.parse(raw);
+    // Same root-scoping guard as readFile: accept the first project whose
+    // root contains the target path.
+    const projects = ProjectRepo.list();
+    const root = projects.find((p) => pathWithin(p.path, input.filePath));
+    if (!root) {
+      log.warn(`file.writeFile refused — path outside any project root: ${input.filePath}`);
+      return { ok: false };
+    }
+    try {
+      // Ensure parent directory exists (Monaco may save a brand-new file).
+      const parent = dirname(input.filePath);
+      // Defense-in-depth: the parent must also stay inside the root. (Normal
+      // dirname of an in-root path always does, but this guards edge cases.)
+      if (!pathWithin(root.path, parent)) {
+        log.warn(`file.writeFile refused — parent escapes root: ${parent}`);
+        return { ok: false };
+      }
+      await mkdir(parent, { recursive: true });
+      await writeFile(input.filePath, input.content, "utf-8");
+      log.info(`file.writeFile saved: ${relative(root.path, input.filePath) || input.filePath}`);
+      return { ok: true };
+    } catch (err) {
+      log.error(`file.writeFile failed for ${input.filePath}: ${(err as Error).message}`);
+      return { ok: false };
     }
   });
 }

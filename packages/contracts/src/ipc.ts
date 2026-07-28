@@ -84,6 +84,57 @@ export const UI_USER_MSG_COLOR_SETTING_KEY = "ui.userMessageColor";
 export const UI_ACCENT_COLOR_SETTING_KEY = "ui.accentColor";
 
 /**
+ * Setting key under which the active right-panel tab is persisted.
+ * Value is one of "files" | "git" | "terminal" | "browser". The right panel
+ * reads it at boot and restores the last-used tab. (Git/Terminal/Browser tabs
+ * are placeholders in P4 — only Files is implemented — but the preference
+ * round-trips all four so later phases don't need a migration.)
+ */
+export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
+
+/** zod schema + TS union for the right-panel tab preference. */
+export const RightPanelTabSchema = z.enum(["files", "git", "terminal", "browser"]);
+export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
+
+/**
+ * Setting key under which the IDE file editor's open-file list is persisted.
+ * Value is a JSON-encoded `string[]` of absolute file paths (the tabs open in
+ * the Monaco editor area). Empty/unset = no files open. Restored at boot so
+ * the editor state survives restarts. Paths that no longer exist on disk are
+ * dropped silently on first open.
+ */
+export const UI_IDE_OPEN_FILES_SETTING_KEY = "ui.ideOpenFiles";
+
+/**
+ * Setting key under which the IDE file editor's active file is persisted.
+ * Value is an absolute file path, or empty/null for "none". Must be a member
+ * of the open-files list to take effect.
+ */
+export const UI_IDE_ACTIVE_FILE_SETTING_KEY = "ui.ideActiveFile";
+
+/**
+ * Setting key under which the IDE file-tree's expanded directories are
+ * persisted. Value is a JSON-encoded `string[]` of absolute directory paths.
+ * Restored at boot so the tree re-opens to where the user left it.
+ */
+export const UI_IDE_EXPANDED_DIRS_SETTING_KEY = "ui.ideExpandedDirs";
+
+/**
+ * Setting key under which the IDE editor's open-mode preference is persisted.
+ *  - "tabs"    (default): each opened file accumulates as a tab in the editor
+ *               area; the user can have several files open and switch between
+ *               them.
+ *  - "replace": opening a file replaces whatever was previously open, so at
+ *               most one file is ever shown (simpler, lower-clutter).
+ * Persisted as one of the two literals; restored at boot.
+ */
+export const UI_IDE_EDITOR_MODE_SETTING_KEY = "ui.ideEditorMode";
+
+/** zod schema + TS union for the IDE editor open-mode preference. */
+export const IdeEditorModeSchema = z.enum(["tabs", "replace"]);
+export type IdeEditorMode = z.infer<typeof IdeEditorModeSchema>;
+
+/**
  * Permission mode literals accepted by the Claude Agent SDK's
  * `permissionMode` option (and the CLI's --permission-mode flag). Kept in
  * lock-step with the `PermissionMode` union in `./runtime.ts`; the renderer's
@@ -325,7 +376,7 @@ export const SetThemeSchema = z.object({ theme: ThemeNameSchema });
 export type SetThemeInput = z.infer<typeof SetThemeSchema>;
 export type GetThemeResult = { theme: ThemeName; effective: EffectiveTheme };
 
-/* ── File read (on-demand, for diff rendering) ── */
+/* ── File operations (read / list dir / write) ── */
 
 /** Read a single file's current content as utf-8 text. The main handler
  *  resolves the path against the session's project cwd and refuses anything
@@ -337,6 +388,44 @@ export const FileReadSchema = z.object({
   filePath: z.string(),
 });
 export type FileReadInput = z.infer<typeof FileReadSchema>;
+
+/** One entry returned by `file.listDir`. `path` is the absolute filesystem
+ *  path (already validated to sit inside a project root); `name` is the base
+ *  name for display. `size` is only populated for files (bytes). */
+export interface FileTreeEntry {
+  name: string;
+  /** Absolute path (cwd-resolved + validated by main). */
+  path: string;
+  isDir: boolean;
+  /** File size in bytes (omitted for directories). */
+  size?: number;
+}
+
+/** List a single level of a directory (non-recursive). `dirPath` is relative
+ *  to `projectPath` (empty string = the project root itself). Main resolves
+ *  it, refuses escapes, filters out ignored entries (node_modules, .git, …),
+ *  and returns entries sorted directories-first then alphabetical. On any
+ *  read failure the handler returns `{ entries: [] }` so the tree degrades
+ *  gracefully rather than throwing into the renderer. */
+export const FileListDirSchema = z.object({
+  /** Absolute path of the project root the listing is scoped to. Must match a
+   *  persisted Project.path — main cross-checks this against ProjectRepo. */
+  projectPath: z.string(),
+  /** Directory to list, relative to projectPath. "" or "." = root. */
+  dirPath: z.string(),
+});
+export type FileListDirInput = z.infer<typeof FileListDirSchema>;
+
+/** Write utf-8 content to a file, creating it (and parent dirs) if absent.
+ *  Path must resolve inside a known project root (path-traversal guard,
+ *  same as readFile). Returns `{ ok }`; on refusal or failure `ok` is false
+ *  and the handler logs — the renderer surfaces a non-blocking error. */
+export const FileWriteSchema = z.object({
+  /** Absolute or cwd-relative path. Must resolve inside a known project root. */
+  filePath: z.string(),
+  content: z.string(),
+});
+export type FileWriteInput = z.infer<typeof FileWriteSchema>;
 
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
@@ -413,6 +502,10 @@ export interface RpcMap {
   "theme.set": (input: SetThemeInput) => Promise<GetThemeResult>;
   // File read (on-demand diff rendering)
   "file.readFile": (input: FileReadInput) => Promise<{ content: string }>;
+  /** List one level of a directory (non-recursive), scoped to a project root. */
+  "file.listDir": (input: FileListDirInput) => Promise<{ entries: FileTreeEntry[] }>;
+  /** Write content to a file (creates parents), scoped to a project root. */
+  "file.writeFile": (input: FileWriteInput) => Promise<{ ok: boolean }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -452,6 +545,9 @@ export const IPC = {
   THEME_SET: "theme:set",
   // File read (on-demand diff rendering)
   FILE_READ: "file:readFile",
+  // File tree listing + writing (P4 IDE right panel)
+  FILE_LIST_DIR: "file:listDir",
+  FILE_WRITE: "file:writeFile",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",

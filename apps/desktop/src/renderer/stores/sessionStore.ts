@@ -21,7 +21,14 @@ import {
   UI_CHAT_FONT_SIZE_SETTING_KEY,
   UI_USER_MSG_COLOR_SETTING_KEY,
   UI_ACCENT_COLOR_SETTING_KEY,
+  UI_RIGHT_PANEL_TAB_SETTING_KEY,
+  UI_IDE_OPEN_FILES_SETTING_KEY,
+  UI_IDE_ACTIVE_FILE_SETTING_KEY,
+  UI_IDE_EXPANDED_DIRS_SETTING_KEY,
+  UI_IDE_EDITOR_MODE_SETTING_KEY,
   type DisplayMode,
+  type RightPanelTab,
+  type IdeEditorMode,
 } from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
 
@@ -239,6 +246,47 @@ interface SessionState {
    *  `turn.rewound` for the same session. */
   turnFilesBySession: Record<string, TurnFileEntry[]>;
 
+  /* ── IDE right-panel state ──
+   *  Editor state (open files, active file, view mode, expanded tree dirs)
+   *  is PER-PROJECT: switching to project B shows B's open files, and
+   *  switching back to A restores A's. This mirrors the per-session bucket
+   *  pattern (messagesBySession, todosBySession). Keyed by projectId.
+   *
+   *  A few IDE prefs remain global (not per-project) because they express a
+   *  user preference, not project state: rightPanelTab, ideEditorMode,
+   *  ideFocusNonce. */
+  /** Active tab in the right panel. Persisted so reopening the app restores
+   *  the last-used inspector. Only "files" is implemented in P4; the other
+   *  three round-trip for forward-compat. */
+  rightPanelTab: RightPanelTab;
+  /** Per-project ordered list of absolute file paths open in the Monaco
+   *  editor area. Drives the OpenTabsBar. Persisted as a JSON object keyed
+   *  by projectId. */
+  ideOpenFilesByProject: Record<string, string[]>;
+  /** Per-project currently-active file (member of the project's open list,
+   *  or null). Persisted as a JSON object keyed by projectId. */
+  ideActiveFileByProject: Record<string, string | null>;
+  /** Per-project per-file view mode ("diff" shows before-vs-current; "edit"
+   *  is the normal editor). Outer key = projectId, inner key = filePath.
+   *  NOT persisted — resets each session, since the `before` snapshot only
+   *  exists for the latest turn anyway. */
+  ideFileViewModeByProject: Record<string, Record<string, "edit" | "diff">>;
+  /** How opening a file affects the open-file list:
+   *   - "tabs"    (default): each file accumulates as a tab.
+   *   - "replace": opening a file replaces whatever was open (≤1 file at a
+   *     time). Persisted in the settings table. Global (not per-project). */
+  ideEditorMode: IdeEditorMode;
+  /** Per-project absolute directory paths expanded in the file tree.
+   *  Persisted as a JSON object keyed by projectId so each project's tree
+   *  re-opens to where the user left it. */
+  ideExpandedDirsByProject: Record<string, string[]>;
+  /** Monotonically-increasing counter bumped whenever something requests the
+   *  right panel's attention (e.g. the 审查 button on a turn-files card).
+   *  App.tsx watches this via effect and opens the panel if collapsed —
+   *  decoupling the store (which can't reach into App's local state) from
+   *  the visibility toggle. */
+  ideFocusNonce: number;
+
   // actions
   init: () => Promise<void>;
   addProjectFromFolder: () => Promise<string | null>;
@@ -327,6 +375,32 @@ interface SessionState {
    *  to console and leave state untouched so the user can retry. */
   rewindTurn: () => Promise<void>;
   refreshClaudeHealth: () => Promise<void>;
+
+  /* ── IDE right-panel actions ── */
+  /** Switch the active right-panel tab. Persists to settings. */
+  setRightPanelTab: (tab: RightPanelTab) => void;
+  /** Open a file in the Monaco editor (dedup + append to ideOpenFiles, set
+   *  active). `opts.diff` opens it in diff mode (used by the 审查 button when
+   *  a before-snapshot exists). Also bumps ideFocusNonce so App opens the
+   *  right panel if it's collapsed. */
+  openFileInIde: (filePath: string, opts?: { diff?: boolean }) => void;
+  /** Remove a file from the editor's open list; active shifts to the
+   *  previous file (or next, or null). */
+  closeFileInIde: (filePath: string) => void;
+  /** Set the active file (must already be open). */
+  setIdeActiveFile: (filePath: string) => void;
+  /** Set a file's view mode (edit/diff). */
+  setIdeFileViewMode: (filePath: string, mode: "edit" | "diff") => void;
+  /** Switch the editor open-mode (tabs vs replace). Persists. When switching
+   *  to "replace", if more than one file is open, keeps only the active one. */
+  setIdeEditorMode: (mode: IdeEditorMode) => void;
+  /** Toggle a directory's expanded state in the file tree. Persists. */
+  toggleDirExpanded: (dirPath: string) => void;
+  /** Explicitly set a directory's expanded state. Persists. */
+  setDirExpanded: (dirPath: string, open: boolean) => void;
+  /** Write content to disk via file.writeFile. Returns ok. Does NOT touch
+   *  editor state — the caller (FileEditor) keeps its own dirty tracking. */
+  saveFileContent: (filePath: string, content: string) => Promise<boolean>;
 }
 
 /** Map of messageId → msg for fast delta accumulation. */
@@ -384,6 +458,37 @@ export const EMPTY_SUBAGENTS: SubagentSnapshot[] = [];
  * the "not in plan mode" placeholder returned by selectors. */
 export const EMPTY_PLAN: PlanDraft = { plan: "", phase: "cleared" };
 
+/**
+ * Persist the per-project IDE buckets (open files / active file / expanded
+ * dirs) to the settings table. Each is stored as a JSON object keyed by
+ * projectId. Called after every IDE action that mutates a bucket — the write
+ * is fire-and-forget (same pattern as setDisplayMode). `viewMode` is NOT
+ * persisted here (it's ephemeral — see the field doc).
+ *
+ * Takes the full state snapshot so callers can pass `get()` right after a
+ * `set()` without an extra read.
+ */
+function persistIdeBuckets(state: SessionState): void {
+  void api.setting
+    .set({
+      key: UI_IDE_OPEN_FILES_SETTING_KEY,
+      value: JSON.stringify(state.ideOpenFilesByProject),
+    })
+    .catch((err) => console.error("setting.set(ideOpenFiles) failed:", err));
+  void api.setting
+    .set({
+      key: UI_IDE_ACTIVE_FILE_SETTING_KEY,
+      value: JSON.stringify(state.ideActiveFileByProject),
+    })
+    .catch((err) => console.error("setting.set(ideActiveFile) failed:", err));
+  void api.setting
+    .set({
+      key: UI_IDE_EXPANDED_DIRS_SETTING_KEY,
+      value: JSON.stringify(state.ideExpandedDirsByProject),
+    })
+    .catch((err) => console.error("setting.set(ideExpandedDirs) failed:", err));
+}
+
 /** Min/max chat content font size (px). The slider in Settings uses the
  *  same bounds; setChatFontSize clamps to this range defensively. */
 export const CHAT_FONT_SIZE_MIN = 12;
@@ -399,6 +504,17 @@ export function clampFontSize(px: number): number {
  *  e.g. "124 58 237". Used to validate the user-message color setting
  *  (which feeds the --user-bubble CSS var). */
 const RGB_TRIPLET_RE = /^\s*(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})\s*$/;
+
+/** True if `abs` is inside `root` (prefix match on path segments, not a raw
+ *  string prefix — so "/foo/bar" doesn't match root "/foo/ba"). Renderer-side
+ *  mirror of main's `safeResolveOk`: used to filter persisted IDE paths at
+ *  hydration time. Handles the root === abs case (a file/dir AT the root). */
+function isPathWithinRoot(root: string, abs: string): boolean {
+  if (abs === root) return true;
+  // Ensure the root is a directory boundary in the comparison.
+  const r = root.endsWith("/") || root.endsWith("\\") ? root : root + "/";
+  return abs.startsWith(r);
+}
 
 /** Page size for the left-bar thread list. The first page is fetched on
  *  init / project expand; further pages are appended on "加载更多". */
@@ -441,6 +557,13 @@ function syncConfigFromSession(
     effort: sess.effort,
     permissionMode: sess.permissionMode,
     customModelId: sess.customModelId,
+    // Keep activeProjectId in lockstep with the active session's owning
+    // project. Without this, switching to a thread in project B while the
+    // activeProjectId still points at project A would leave the IDE file tree
+    // (and any project-scoped UI) showing the wrong project. Every entry
+    // point that activates a session (selectSession / openTab / rewindTurn)
+    // routes through this helper, so this single sync covers all of them.
+    activeProjectId: sess.projectId,
   });
 }
 
@@ -1080,8 +1203,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   pendingApprovals: [],
   pendingPlanApprovalBySession: {},
   turnFilesBySession: {},
+  // IDE right-panel. Editor state is per-project (keyed by projectId);
+  // init() hydrates from the settings table. rightPanelTab / ideEditorMode
+  // are global user prefs.
+  rightPanelTab: "files",
+  ideOpenFilesByProject: {},
+  ideActiveFileByProject: {},
+  ideFileViewModeByProject: {},
+  ideEditorMode: "tabs",
+  ideExpandedDirsByProject: {},
+  ideFocusNonce: 0,
 
   init: async () => {
+    // IDE hydration staging: parsed from settings above, applied after the
+    // project list loads so we can drop paths that belong to no project.
+    let ideHydrationPending: {
+      open: Record<string, string[]>;
+      active: Record<string, string | null>;
+      dirs: Record<string, string[]>;
+    } | null = null;
+
     // Per-thread config (model / effort / permissionMode / customModelId) is
     // hydrated by `selectSession` from the session row, not from a global
     // default. Initial slot values are placeholders for the brief moment
@@ -1133,8 +1274,94 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.error("setting.get(appearance) failed:", err);
     }
 
+    // Hydrate IDE right-panel prefs (active tab, open files, active file,
+    // expanded tree dirs). All are optional JSON-in-settings; missing/invalid
+    // values leave the defaults. Paths that don't belong to any persisted
+    // project are dropped on load (stale tabs from a removed project).
+    try {
+      const [tabRes, openRes, activeRes, dirsRes, modeRes] = await Promise.all([
+        api.setting.get({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY }),
+        api.setting.get({ key: UI_IDE_OPEN_FILES_SETTING_KEY }),
+        api.setting.get({ key: UI_IDE_ACTIVE_FILE_SETTING_KEY }),
+        api.setting.get({ key: UI_IDE_EXPANDED_DIRS_SETTING_KEY }),
+        api.setting.get({ key: UI_IDE_EDITOR_MODE_SETTING_KEY }),
+      ]);
+      if (
+        tabRes.value === "files" ||
+        tabRes.value === "git" ||
+        tabRes.value === "terminal" ||
+        tabRes.value === "browser"
+      ) {
+        set({ rightPanelTab: tabRes.value });
+      }
+      if (modeRes.value === "tabs" || modeRes.value === "replace") {
+        set({ ideEditorMode: modeRes.value });
+      }
+      // IDE editor state is persisted as per-project JSON objects (keyed by
+      // projectId). Parse them now; path validation happens after projects
+      // load (below). Legacy flat-array values (pre-per-project) are ignored
+      // — a benign one-time loss of "last open files".
+      const parseBucket = <T>(raw: string | null): Record<string, T> => {
+        if (!raw) return {};
+        try {
+          const obj = JSON.parse(raw);
+          if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj as Record<string, T>;
+        } catch {
+          /* malformed JSON — leave empty */
+        }
+        return {};
+      };
+      const parsedOpen = parseBucket<string[]>(openRes.value);
+      const parsedActive = parseBucket<string | null>(activeRes.value);
+      const parsedDirs = parseBucket<string[]>(dirsRes.value);
+      // Defer applying until we know the project roots — stash on a closure
+      // var the project-load block reads below.
+      ideHydrationPending = { open: parsedOpen, active: parsedActive, dirs: parsedDirs };
+    } catch (err) {
+      console.error("setting.get(ide) failed:", err);
+    }
+
     const { projects } = await api.project.list();
     set({ projects });
+
+    // Apply deferred IDE hydration now that we know the project roots.
+    // For each per-project bucket, drop paths that don't sit inside that
+    // project's root (stale tabs from a moved/removed folder, or paths from a
+    // different machine). Also drop buckets whose projectId no longer exists.
+    if (ideHydrationPending) {
+      const projectById = new Map(projects.map((p) => [p.id, p]));
+      const filterProjectPaths = (pid: string, paths: string[]) => {
+        const proj = projectById.get(pid);
+        if (!proj) return []; // project gone — drop all its paths
+        return paths.filter((p) => isPathWithinRoot(proj.path, p));
+      };
+      const openByProject: Record<string, string[]> = {};
+      const activeByProject: Record<string, string | null> = {};
+      const dirsByProject: Record<string, string[]> = {};
+      for (const pid of Object.keys(ideHydrationPending.open)) {
+        const filtered = filterProjectPaths(pid, ideHydrationPending.open[pid] ?? []);
+        if (filtered.length > 0) openByProject[pid] = filtered;
+      }
+      for (const pid of Object.keys(ideHydrationPending.active)) {
+        const proj = projectById.get(pid);
+        const active = ideHydrationPending.active[pid];
+        if (proj && active && isPathWithinRoot(proj.path, active)) {
+          // Only keep active if it's still in the (filtered) open list.
+          const open = openByProject[pid] ?? [];
+          activeByProject[pid] = open.includes(active) ? active : (open[0] ?? null);
+        }
+      }
+      for (const pid of Object.keys(ideHydrationPending.dirs)) {
+        const filtered = filterProjectPaths(pid, ideHydrationPending.dirs[pid] ?? []);
+        if (filtered.length > 0) dirsByProject[pid] = filtered;
+      }
+      set({
+        ideOpenFilesByProject: openByProject,
+        ideActiveFileByProject: activeByProject,
+        ideExpandedDirsByProject: dirsByProject,
+      });
+      ideHydrationPending = null;
+    }
 
     if (projects.length === 0) return;
 
@@ -1428,6 +1655,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete archivedByProject[id];
       delete totalByProject[id];
       delete hasMoreByProject[id];
+      // Scrub the deleted project's IDE editor buckets (open files / active
+      // file / view mode / expanded dirs) so they don't linger as orphans.
+      const ideOpenFilesByProject = { ...s.ideOpenFilesByProject };
+      const ideActiveFileByProject = { ...s.ideActiveFileByProject };
+      const ideFileViewModeByProject = { ...s.ideFileViewModeByProject };
+      const ideExpandedDirsByProject = { ...s.ideExpandedDirsByProject };
+      delete ideOpenFilesByProject[id];
+      delete ideActiveFileByProject[id];
+      delete ideFileViewModeByProject[id];
+      delete ideExpandedDirsByProject[id];
       const wasActive = s.activeProjectId === id;
       if (!wasActive) {
         // Still need to scrub any open tabs that belonged to the deleted
@@ -1440,6 +1677,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return {
           projects, sessionsByProject, archivedSessionsByProject: archivedByProject,
           sessionsTotalByProject: totalByProject, sessionsHasMoreByProject: hasMoreByProject,
+          ideOpenFilesByProject, ideActiveFileByProject, ideFileViewModeByProject, ideExpandedDirsByProject,
           openTabs, activeSessionId,
         };
       }
@@ -1456,6 +1694,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         archivedSessionsByProject: archivedByProject,
         sessionsTotalByProject: totalByProject,
         sessionsHasMoreByProject: hasMoreByProject,
+        ideOpenFilesByProject, ideActiveFileByProject, ideFileViewModeByProject, ideExpandedDirsByProject,
         activeProjectId: next?.id ?? null,
         sessions: nextSessions,
         activeSessionId: nextSession?.id ?? null,
@@ -2381,6 +2620,144 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   refreshClaudeHealth: async () => {
     const health = await api.claudeHealthCheck();
     set({ claudeInstalled: health.installed });
+  },
+
+  /* ─────────────────── IDE right-panel actions ─────────────────── */
+
+  setRightPanelTab: (tab) => {
+    set({ rightPanelTab: tab });
+    void api.setting.set({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY, value: tab }).catch((err) => {
+      console.error("setting.set(rightPanelTab) failed:", err);
+    });
+  },
+
+  openFileInIde: (filePath, opts) => {
+    const pid = get().activeProjectId;
+    if (!pid) return; // no active project — nothing to scope to
+    const prev = get().ideOpenFilesByProject[pid] ?? [];
+    const mode = get().ideEditorMode;
+    // In "replace" mode, opening a file discards everything else — at most
+    // one file is open at a time. In "tabs" mode, files accumulate (dedup:
+    // re-opening an already-open file just activates it).
+    const open = mode === "replace" ? [filePath] : prev.includes(filePath) ? prev : [...prev, filePath];
+    const prevViewMode = get().ideFileViewModeByProject[pid] ?? {};
+    const viewMode = { ...prevViewMode };
+    // Only set diff mode if requested AND not already set — don't clobber an
+    // explicit user choice made earlier for this file.
+    if (opts?.diff && viewMode[filePath] === undefined) viewMode[filePath] = "diff";
+    set((s) => ({
+      ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
+      ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: filePath },
+      ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
+      // Bump the focus nonce so App opens the right panel if collapsed.
+      ideFocusNonce: s.ideFocusNonce + 1,
+    }));
+    persistIdeBuckets(get());
+  },
+
+  closeFileInIde: (filePath) => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    const prev = get().ideOpenFilesByProject[pid] ?? [];
+    const idx = prev.indexOf(filePath);
+    if (idx === -1) return; // not open — nothing to do
+    const open = prev.filter((p) => p !== filePath);
+    // Active shifts to the previous file (or next, or null).
+    let active = get().ideActiveFileByProject[pid] ?? null;
+    if (active === filePath) {
+      active = open[idx - 1] ?? open[idx] ?? null;
+    }
+    // Clean up the per-file view mode for the closed file.
+    const prevViewMode = get().ideFileViewModeByProject[pid] ?? {};
+    const viewMode = { ...prevViewMode };
+    delete viewMode[filePath];
+    set((s) => ({
+      ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
+      ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: active },
+      ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
+    }));
+    persistIdeBuckets(get());
+  },
+
+  setIdeActiveFile: (filePath) => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    set((s) => ({
+      ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: filePath },
+    }));
+    persistIdeBuckets(get());
+  },
+
+  setIdeFileViewMode: (filePath, mode) => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    const prevViewMode = get().ideFileViewModeByProject[pid] ?? {};
+    const viewMode = { ...prevViewMode, [filePath]: mode };
+    set((s) => ({
+      ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
+    }));
+    // Not persisted (view mode is ephemeral — see the field doc).
+  },
+
+  setIdeEditorMode: (mode) => {
+    // When switching to "replace", collapse the ACTIVE project's open-file
+    // list to just the active file (if any) so the invariant "≤1 file open"
+    // holds immediately for the project the user is looking at.
+    if (mode === "replace") {
+      const pid = get().activeProjectId;
+      if (pid) {
+        const active = get().ideActiveFileByProject[pid] ?? null;
+        const open = active ? [active] : [];
+        set((s) => ({
+          ideEditorMode: mode,
+          ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
+        }));
+        persistIdeBuckets(get());
+      } else {
+        set({ ideEditorMode: mode });
+      }
+    } else {
+      set({ ideEditorMode: mode });
+    }
+    void api.setting
+      .set({ key: UI_IDE_EDITOR_MODE_SETTING_KEY, value: mode })
+      .catch((err) => console.error("setting.set(ideEditorMode) failed:", err));
+  },
+
+  toggleDirExpanded: (dirPath) => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    const prev = get().ideExpandedDirsByProject[pid] ?? [];
+    const open = prev.includes(dirPath) ? prev.filter((p) => p !== dirPath) : [...prev, dirPath];
+    set((s) => ({
+      ideExpandedDirsByProject: { ...s.ideExpandedDirsByProject, [pid]: open },
+    }));
+    persistIdeBuckets(get());
+  },
+
+  setDirExpanded: (dirPath, open) => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    const prev = get().ideExpandedDirsByProject[pid] ?? [];
+    const has = prev.includes(dirPath);
+    let next: string[];
+    if (open && !has) next = [...prev, dirPath];
+    else if (!open && has) next = prev.filter((p) => p !== dirPath);
+    else return; // already in the desired state
+    set((s) => ({
+      ideExpandedDirsByProject: { ...s.ideExpandedDirsByProject, [pid]: next },
+    }));
+    persistIdeBuckets(get());
+  },
+
+  saveFileContent: async (filePath, content) => {
+    try {
+      const { ok } = await api.file.writeFile({ filePath, content });
+      return ok;
+    } catch (err) {
+      console.error("file.writeFile failed:", err);
+      return false;
+    }
   },
 }));
 

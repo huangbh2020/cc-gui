@@ -80,12 +80,18 @@ const api = {
       ipcRenderer.invoke(IPC.THEME_SET, input)) as RpcMap["theme.set"],
   },
 
-  /** On-demand file read for diff rendering. Path must resolve inside a known
-   *  project root (main enforces this); returns empty content on refusal or
-   *  read failure so the caller degrades gracefully. */
+  /** Filesystem operations for the IDE right panel + diff rendering. Every
+   *  path must resolve inside a known project root (main enforces this);
+   *  read/list degrade to empty on refusal or failure, write returns ok:false. */
   file: {
     readFile: ((input) =>
       ipcRenderer.invoke(IPC.FILE_READ, input)) as RpcMap["file.readFile"],
+    /** List one level of a directory (non-recursive) for the file tree. */
+    listDir: ((input) =>
+      ipcRenderer.invoke(IPC.FILE_LIST_DIR, input)) as RpcMap["file.listDir"],
+    /** Write utf-8 content to a file (creates parent dirs). Returns ok. */
+    writeFile: ((input) =>
+      ipcRenderer.invoke(IPC.FILE_WRITE, input)) as RpcMap["file.writeFile"],
   },
 
   // ── Main-only helpers ──

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ThreePaneLayout } from "./components/layout/ThreePaneLayout.js";
 import { Titlebar } from "./components/layout/Titlebar.js";
 import { LeftBar } from "./components/layout/LeftBar.js";
@@ -10,6 +10,8 @@ import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
 import { useSessionStore } from "./stores/sessionStore.js";
 import { useTheme } from "./lib/theme.js";
 import { useChatAppearance } from "./lib/appearance.js";
+import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
+import { FileEditor } from "./components/ide/FileEditor.js";
 
 export function App() {
   // Subscribe to the claude event stream for the app's whole lifetime.
@@ -36,6 +38,14 @@ export function App() {
    *  Workspace-only — the settings view pins leftOpen=true / rightOpen=false. */
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
+
+  // Auto-open the right panel when something requests its attention (the
+  // 审查 button on a turn-files card, or any openFileInIde call). The store
+  // can't reach into this local state, so it bumps a nonce we watch here.
+  const ideFocusNonce = useSessionStore((s) => s.ideFocusNonce);
+  useEffect(() => {
+    if (ideFocusNonce > 0) setRightOpen(true);
+  }, [ideFocusNonce]);
 
   return (
     <div className="flex h-full w-full flex-col bg-surface text-content">
@@ -84,13 +94,44 @@ export function App() {
   );
 }
 
-/** Center pane router: chooses between single-session and tabbed layouts
- *  based on the user's `displayMode` preference. In `tabs` mode the
- *  SessionTabs strip sits above the active ChatPane. The active ChatPane
- *  is keyed on sessionId so switching tabs re-mounts (clean composer
- *  state, fresh scroll position) — see the design notes in
- *  docs/tech-stack.md. */
+/** Center pane router: a horizontal split between the chat column (left)
+ *  and the file-editor column (right). When no file is open the editor
+ *  column is omitted and the chat column takes the full width — the layout
+ *  the user sees when they haven't clicked any files yet.
+ *
+ *  The chat column chooses between single-session and tabbed layouts based
+ *  on the user's `displayMode` preference (see the design notes in
+ *  docs/tech-stack.md). The editor column hosts the Monaco FileEditor + its
+ *  tab bar, and is only rendered when `ideActiveFile` is non-null. */
 function CenterPane() {
+  // The active file is scoped to the active project — switching projects
+  // swaps to that project's open files (or hides the editor if none).
+  const activeProjectId = useSessionStore((s) => s.activeProjectId);
+  const activeFile = useSessionStore((s) =>
+    activeProjectId ? s.ideActiveFileByProject[activeProjectId] ?? null : null,
+  );
+
+  return (
+    <div className="flex h-full min-h-0">
+      {/* Chat column — takes full width when no file is open, otherwise 1/2. */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <ChatColumn />
+      </div>
+      {/* Editor column — only when a file is active. 1/2 width, left border
+          as the visual divider. */}
+      {activeFile && (
+        <div className="flex min-w-0 flex-1 flex-col border-l border-edge bg-surface">
+          <EditorColumn filePath={activeFile} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The chat half: SessionTabs strip (in tabs mode) + the active ChatPane.
+ *  Keyed on sessionId so switching tabs re-mounts (clean composer state,
+ *  fresh scroll position). */
+function ChatColumn() {
   const displayMode = useSessionStore((s) => s.displayMode);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   if (displayMode === "tabs") {
@@ -104,6 +145,34 @@ function CenterPane() {
     );
   }
   // single mode: legacy behavior — one ChatPane, swapped by activeSessionId.
-  // `null` sessionId tells ChatPane to render its empty-state placeholder.
   return <ChatPane key={activeSessionId ?? "empty"} sessionId={activeSessionId} />;
+}
+
+/** The editor half: OpenTabsBar (only in tabs mode) + the active FileEditor.
+ *  Resolves the project path from the active project so FileEditor can show
+ *  relative paths in its toolbar. */
+function EditorColumn({ filePath }: { filePath: string }) {
+  const editorMode = useSessionStore((s) => s.ideEditorMode);
+  const activeProjectId = useSessionStore((s) => s.activeProjectId);
+  const projects = useSessionStore((s) => s.projects);
+
+  const projectPath = useMemo(() => {
+    if (!activeProjectId) return null;
+    return projects.find((p) => p.id === activeProjectId)?.path ?? null;
+  }, [activeProjectId, projects]);
+
+  return (
+    <>
+      {editorMode === "tabs" && <OpenTabsBar />}
+      <div className="min-h-0 flex-1">
+        {projectPath ? (
+          <FileEditor key={filePath} filePath={filePath} projectPath={projectPath} />
+        ) : (
+          <div className="flex h-full items-center justify-center text-[11px] text-content-subtle">
+            无法解析项目路径
+          </div>
+        )}
+      </div>
+    </>
+  );
 }
