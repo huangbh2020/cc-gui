@@ -1,13 +1,29 @@
 import { useEffect, useRef, useState } from "react";
+import { cn } from "@renderer/lib/cn.js";
+import { Button } from "@renderer/components/ui/index.js";
+import {
+  IconAlertTriangle,
+  IconChevronDown,
+  IconCheck,
+  IconX,
+} from "@renderer/lib/icons.js";
 
 /**
- * Composer-area tool-approval overlay.
+ * Composer-area tool-approval card.
  *
- * Replaces the small amber chip above the composer. The version here is sized
- * to fully cover the textarea + toolbar underneath, with the textarea itself
- * disabled and pointer-blocked, so the user can't type a competing prompt
- * while a permission decision is pending. This matches Claude Code's own UI,
- * which also gates the input box on outstanding approvals.
+ * Sits inside the composer's width-constrained wrapper, so it inherits the
+ * same `px-8` + `mx-auto max-w-5xl` column as the input box — i.e. exactly
+ * as wide as the composer. The composer is disabled and pointer-blocked by
+ * the parent while a decision is pending, so the user can't type a
+ * competing prompt (matches Claude Code's own UI, which gates the input on
+ * outstanding approvals).
+ *
+ * Styling mirrors QuestionPrompt: a single rounded, bordered, elevated
+ * card on neutral surface tokens, with the `warning` (amber) token used
+ * sparingly for the accent/attention elements (header label, tool-name
+ * code, the "允许" primary button). Amber remains the semantic signal for
+ * "needs your permission", but the frame is otherwise neutral so the card
+ * reads cleanly in both light and dark themes. No violet/purple is used.
  *
  * Queuing: when several approval.request events arrive in quick succession
  * (e.g. the model wants to run three Bash commands in one turn), the store
@@ -19,9 +35,6 @@ import { useEffect, useRef, useState } from "react";
  * on mount so Enter works without an extra click. This is one-shot — when
  * the queue shifts, this card unmounts and the next one auto-focuses its
  * own button via the same effect.
- *
- * Amber theme distinguishes it from QuestionPrompt (info/blue) and
- * PlanApprovalPrompt (violet).
  */
 export function ApprovalPrompt({
   toolName,
@@ -81,16 +94,19 @@ export function ApprovalPrompt({
       ref={cardRef}
       role="alertdialog"
       aria-label="Claude 正在请求执行工具"
-      className="relative min-h-[120px] rounded-xl border border-warning/60 bg-warning/20 px-4 py-3 text-xs text-content shadow-lg backdrop-blur"
+      className={cn(
+        "rounded-2xl border border-edge-input bg-surface px-4 py-3 text-xs text-content shadow-2xl",
+        "animate-[qa-sheet-in_140ms_ease-out]",
+      )}
     >
       {/* Header */}
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-base" aria-hidden>⚠️</span>
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <IconAlertTriangle size={14} className="shrink-0 text-warning" />
           <span className="font-semibold text-warning">Claude 请求执行工具</span>
           {queueTotal > 1 && (
             <span
-              className="rounded-full border border-warning/60 bg-warning/30 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-warning"
+              className="rounded-full border border-warning/60 bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-warning"
               title={`队列中还有 ${queueTotal - queuePosition} 个待审批`}
             >
               {queuePosition} / {queueTotal}
@@ -98,18 +114,28 @@ export function ApprovalPrompt({
           )}
         </div>
         <button
+          type="button"
           onClick={() => setOpen((v) => !v)}
-          className="rounded px-1.5 py-0.5 text-[10px] text-warning hover:bg-warning/30"
+          className={cn(
+            "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+            "text-content-muted hover:bg-surface-hover hover:text-content",
+          )}
           title={open ? "收起详情" : "查看工具输入"}
         >
-          {open ? "▾ 收起" : "▸ 详情"}
+          <IconChevronDown
+            size={12}
+            className={cn("transition-transform", open && "rotate-180")}
+          />
+          {open ? "收起" : "详情"}
         </button>
       </div>
 
       {/* Tool name + summary */}
-      <div className="mb-2 rounded-md border border-warning/60 bg-surface/50 px-3 py-2">
+      <div className="mb-2.5 rounded-lg border border-edge bg-surface-muted/40 px-3 py-2">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <code className="font-mono text-[12px] font-semibold text-warning">{toolName}</code>
+          <code className="rounded bg-warning/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-warning">
+            {toolName}
+          </code>
           {summary && (
             <span className="line-clamp-2 break-all text-content-muted">{summary}</span>
           )}
@@ -119,18 +145,17 @@ export function ApprovalPrompt({
 
       {/* Expandable input */}
       {open && (
-        <div className="mb-2">
-          <div className="mb-0.5 text-[10px] uppercase text-content-subtle">Input</div>
-          <pre className="max-h-40 overflow-auto rounded bg-surface/70 p-2 text-[11px] text-content-muted">
+        <div className="mb-2.5">
+          <div className="mb-0.5 text-[10px] uppercase tracking-wide text-content-subtle">Input</div>
+          <pre className="max-h-40 overflow-auto rounded-lg bg-surface-muted/60 p-2 text-[11px] text-content-muted">
             {safeStringify(input)}
           </pre>
         </div>
       )}
 
       {/* Footer: always-allow checkbox + buttons. Stays on a single row at
-          the bottom of the overlay so the rest of the card area is taken up
-          by the tool-summary block (visually replaces the textarea space). */}
-      <div className="flex items-center justify-between gap-2 border-t border-warning/60 pt-2">
+          the bottom of the card. */}
+      <div className="flex items-center justify-between gap-2 border-t border-edge pt-2.5">
         <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-content-muted">
           <input
             type="checkbox"
@@ -141,19 +166,30 @@ export function ApprovalPrompt({
           本会话内始终允许 {toolName}
         </label>
         <div className="flex items-center gap-1.5">
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => decide(false)}
-            className="rounded-md bg-surface-muted px-3 py-1 text-content-muted transition-colors hover:bg-surface-hover"
             title="拒绝 (Esc)"
           >
+            <IconX size={12} />
             拒绝
-          </button>
+          </Button>
+          {/* Primary confirm action uses the warning token (amber) to keep the
+              "permission grant" semantic distinct from QuestionPrompt's green
+              submit — the Button component has no warning variant, so this is
+              a single purpose-built button rather than <Button variant>. */}
           <button
             ref={allowRef}
+            type="button"
             onClick={() => decide(true)}
-            className="rounded-md bg-warning px-3 py-1 font-medium text-surface transition-colors hover:bg-warning focus:outline-none focus:ring-2 focus:ring-warning/60"
             title="允许 (Enter)"
+            className={cn(
+              "inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium transition-colors",
+              "bg-warning text-surface hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning/50",
+            )}
           >
+            <IconCheck size={12} />
             允许
           </button>
         </div>

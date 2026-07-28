@@ -72,6 +72,9 @@ export {
   IconFileText,
   IconFolder,
   IconFolderOpen,
+  // Editing / actions
+  IconPencil,
+  IconRocket,
   // Communication
   IconMessage,
   IconMessages,
