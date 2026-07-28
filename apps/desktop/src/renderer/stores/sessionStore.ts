@@ -31,7 +31,46 @@ export type Block =
   | { kind: "thinking"; text: string }
   | { kind: "tool_use"; toolCallId: string; toolName: string; input: unknown; status: "running" | "done" | "error"; result?: unknown }
   | { kind: "error"; message: string }
-  | { kind: "attachment"; preview: string; content: string };
+  | { kind: "attachment"; preview: string; content: string }
+  | {
+      kind: "plan";
+      /** Stable id for the in-turn live plan block — "current" while the turn
+       *  is streaming (single live plan per turn). Lets the store upsert /
+       *  replace on each plan.update without spawning duplicate blocks. When
+       *  the turn ends the block is frozen in place (its planId stays). */
+      planId: string;
+      /** The plan markdown text drafted by the model (EnterPlanMode →
+       *  ExitPlanMode). Empty during the initial drafting phase before the
+       *  model has produced any plan content. */
+      plan: string;
+      /** Lifecycle phase mirrored from PlanUpdateEvent: "drafting" while the
+       *  model is still composing, "ready" once ExitPlanMode is approved,
+       *  "cleared" is transient (handled as a remove, never persisted on a
+       *  frozen block). */
+      phase: PlanUpdateEvent["phase"];
+      /** True while an ExitPlanMode approval is pending — drives the 待审阅
+       *  badge on the inline card so it mirrors the composer approval sheet. */
+      hasApproval?: boolean;
+    }
+  | {
+      kind: "turn-files";
+      /** Stable id for the in-turn live turn-files block — "current" while the
+       *  turn is streaming. Same pattern as the plan block's planId: lets the
+       *  store upsert/replace on each turn.files event without spawning
+       *  duplicates. Stays on the block after the turn freezes. */
+      filesId: string;
+      /** Files touched in this turn (filePath / kind / adds / dels / before).
+       *  Mirrors TurnFileEntry verbatim — the same shape crosses the
+       *  turn.files event, the persisted block, and the TurnFilesCard props,
+       *  so the card renders identically live and from-DB. */
+      files: TurnFileEntry[];
+      /** True ONLY on the LATEST turn's card — gates whether the 撤销本轮
+       *  button renders. The most recent completed turn's card keeps this
+       *  true (rewindable via the in-memory FileSnapshot); every older turn's
+       *  card is read-only (historical snapshot, no rewind). Demoted to false
+       *  the moment a new turn opens. */
+      isLatestTurn?: boolean;
+    };
 
 /** Turn-level timing metadata. Attached to the FIRST assistant message of
  *  a turn (the one created when the first text.delta / thinking / tool.use
@@ -490,6 +529,328 @@ function hydrateTurnFiles(
   });
 }
 
+/* ──────────────── Plan block helpers (inline plan in the message stream) ────────────────
+ *
+ * The plan is rendered as a `kind: "plan"` block attached to the CURRENT
+ * turn's trailing assistant message, rather than a session-global footer card.
+ * This keeps each turn's plan frozen in its place in history — different turns
+ * produce different plans, none overwriting another.
+ *
+ * All four plan-aware code paths (plan.update, plan.approval_request,
+ * turn.done, submitPlanApproval) funnel through `upsertLivePlanBlock` /
+ * `freezeOrPrunePlanBlocks` so the message-array surgery stays in one place.
+ */
+
+/** Find the index of the trailing assistant message of the currently-open
+ *  turn (the LAST assistant message whose turnMeta has no endedAt), or -1 if
+ *  no open-turn assistant message exists. Used to locate where the live plan
+ *  block should be attached / removed. */
+function findOpenTurnTrailingAssistant(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** The planId used for the single "live" plan block within the current turn.
+ *  There is at most one live plan per turn at a time (the model calls
+ *  EnterPlanMode once, drafts, then ExitPlanMode). Frozen historical blocks
+ *  retain this same id — it only needs to be unique within a message, and a
+ *  frozen turn's trailing assistant message carries at most one plan block. */
+const LIVE_PLAN_ID = "current";
+
+/** Upsert (or remove) the live plan block on the current turn's trailing
+ *  assistant message. Used while the turn is streaming:
+ *  - phase "cleared" → remove any live plan block (plan mode exited / denied).
+ *  - otherwise → insert-or-replace the live plan block with the given text /
+ *    phase / hasApproval.
+ *
+ *  If the current turn has no assistant message yet (plan.update often
+ *  arrives before any text/tool block), a new trailing assistant message is
+ *  created and stamped with the current turn's `turnMeta` — mirroring the
+ *  tool.use branch's "new turn" detection so we don't double-open a turn.
+ *
+ *  Returns the new messages array; pure (no store mutation). */
+function upsertLivePlanBlock(
+  messages: ChatMessage[],
+  plan: string,
+  phase: PlanUpdateEvent["phase"],
+  hasApproval: boolean,
+): ChatMessage[] {
+  if (phase === "cleared") {
+    // Remove any live plan block from the current turn's trailing assistant
+    // message. Frozen blocks (on closed turns) are untouched.
+    return removeLivePlanBlock(messages);
+  }
+  const block: Block = {
+    kind: "plan",
+    planId: LIVE_PLAN_ID,
+    plan,
+    phase,
+    hasApproval,
+  };
+  let next = messages;
+  const targetIndex = findOpenTurnTrailingAssistant(next);
+  if (targetIndex === -1) {
+    // No open-turn assistant message exists yet. Plan events commonly arrive
+    // before any text/tool block, so we open the turn here — same heuristic
+    // as the tool.use branch: a turn is "open" while any assistant message
+    // has turnMeta.endedAt === undefined; if none, this starts a new turn.
+    const isNewTurn = !next.some(
+      (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
+    );
+    const msg: ChatMessage = {
+      id: `plan_${Date.now()}`,
+      sessionId: "",
+      role: "assistant",
+      blocks: [block],
+      createdAt: Date.now(),
+      ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
+    };
+    next = [...next, msg];
+    // A new plan-mode turn is opening → demote any prior latest turn-files
+    // card to read-only (mirrors upsertLiveTurnFilesBlock's new-turn branch).
+    if (isNewTurn) next = demotePreviousLatestTurnFiles(next);
+    return next;
+  }
+  const target = next[targetIndex];
+  const existingIdx = target.blocks.findIndex(
+    (b) => b.kind === "plan" && b.planId === LIVE_PLAN_ID,
+  );
+  let blocks: Block[];
+  if (existingIdx >= 0) {
+    blocks = target.blocks.map((b, i) => (i === existingIdx ? block : b));
+  } else {
+    blocks = [...target.blocks, block];
+  }
+  next = next.map((m, i) => (i === targetIndex ? { ...m, blocks } : m));
+  return next;
+}
+
+/** Remove the live plan block from the current turn's trailing assistant
+ *  message. Drops the assistant message too if it would end up empty (no
+ *  other blocks), so a plan-only message doesn't linger as a blank row. */
+function removeLivePlanBlock(messages: ChatMessage[]): ChatMessage[] {
+  let next = messages;
+  const targetIndex = findOpenTurnTrailingAssistant(next);
+  if (targetIndex === -1) return next;
+  const target = next[targetIndex];
+  const filtered = target.blocks.filter(
+    (b) => !(b.kind === "plan" && b.planId === LIVE_PLAN_ID),
+  );
+  if (filtered.length === target.blocks.length) return next; // nothing to remove
+  if (filtered.length === 0) {
+    // Drop the now-empty assistant message entirely.
+    next = next.filter((_, i) => i !== targetIndex);
+  } else {
+    next = next.map((m, i) => (i === targetIndex ? { ...m, blocks: filtered } : m));
+  }
+  return next;
+}
+
+/** Called from turn.done: freeze or prune plan blocks on the JUST-cLOSED turn.
+ *  The closing turn's assistant messages were just stamped with endedAt, so we
+ *  can't use the "open turn" heuristic — we key off messages whose turnMeta
+ *  endedAt matches `endedAt`.
+ *
+ *  - A plan block with phase "ready" and non-empty text is KEPT (frozen as a
+ *    historical card) — the user approved this plan; it stays in the stream.
+ *  - Any other plan block (drafting / cleared / empty) is REMOVED — these are
+ *    in-progress or rejected drafts that shouldn't leave a trace.
+ *  - An assistant message left with zero blocks after pruning is dropped. */
+function freezeOrPrunePlanBlocks(messages: ChatMessage[], endedAt: number): ChatMessage[] {
+  let next = messages.map((m) => {
+    if (!m.turnMeta || m.turnMeta.endedAt !== endedAt) return m;
+    if (!m.blocks.some((b) => b.kind === "plan")) return m;
+    const kept = m.blocks.filter((b) => {
+      if (b.kind !== "plan") return true;
+      return b.phase === "ready" && b.plan.trim().length > 0;
+    });
+    return { ...m, blocks: kept };
+  });
+  // Drop any assistant messages that became empty (a plan-only message whose
+  // plan was pruned). Keep user / non-empty messages untouched.
+  next = next.filter(
+    (m) => m.role !== "assistant" || m.blocks.length > 0,
+  );
+  return next;
+}
+
+/* ──────────────── Turn-files block helpers (inline "本轮修改" card) ────────────────
+ *
+ * Mirrors the plan-block pattern: the per-turn modified-files card renders as
+ * a `kind: "turn-files"` block attached to its turn's trailing assistant
+ * message, frozen in place when the turn ends. Each turn that touched files
+ * keeps its own card in history — new turns add new cards, old cards are
+ * never deleted (only demoted to read-only once a newer turn supersedes them
+ * as "the latest rewindable turn").
+ *
+ * Only the LATEST turn's card is rewindable (`isLatestTurn === true`); the
+ * rewind itself still goes through the in-memory FileSnapshot (cleared per
+ * turn), so older turns are display-only snapshots. Historical cards persist
+ * to the messages table via the normal blocks round-trip (toRecords /
+ * fromRecords) — no DB schema change.
+ */
+
+/** The filesId used for the single "live" turn-files block within the current
+ *  turn. Same rationale as LIVE_PLAN_ID: at most one live block per turn. */
+const LIVE_FILES_ID = "current";
+
+/** Upsert the live turn-files block on the current turn's trailing assistant
+ *  message. Called from the turn.files handler.
+ *
+ *  If the current turn has no assistant message yet, a new trailing assistant
+ *  message is created (same "new turn" heuristic as the plan / tool.use
+ *  helpers) AND any previously-latest turn-files card is demoted to read-only
+ *  (a new turn is opening → the old latest is no longer the latest).
+ *
+ *  Returns the new messages array; pure (no store mutation). */
+function upsertLiveTurnFilesBlock(messages: ChatMessage[], files: TurnFileEntry[]): ChatMessage[] {
+  const block: Block = {
+    kind: "turn-files",
+    filesId: LIVE_FILES_ID,
+    files,
+    isLatestTurn: true,
+  };
+  let next = messages;
+  const targetIndex = findOpenTurnTrailingAssistant(next);
+  if (targetIndex === -1) {
+    // No open-turn assistant message exists yet — turn.files normally arrives
+    // at the very end of the stream (flushFinal, just before turn.done), so
+    // an open turn almost always exists. Defensively open one here, mirroring
+    // the plan/tool.use helpers, and demote any prior latest card since a new
+    // turn is opening.
+    const isNewTurn = !next.some(
+      (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
+    );
+    const msg: ChatMessage = {
+      id: `files_${Date.now()}`,
+      sessionId: "",
+      role: "assistant",
+      blocks: [block],
+      createdAt: Date.now(),
+      ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
+    };
+    next = [...next, msg];
+    if (isNewTurn) next = demotePreviousLatestTurnFiles(next);
+    return next;
+  }
+  const target = next[targetIndex];
+  const existingIdx = target.blocks.findIndex(
+    (b) => b.kind === "turn-files" && b.filesId === LIVE_FILES_ID,
+  );
+  let blocks: Block[];
+  if (existingIdx >= 0) {
+    blocks = target.blocks.map((b, i) => (i === existingIdx ? block : b));
+  } else {
+    blocks = [...target.blocks, block];
+  }
+  next = next.map((m, i) => (i === targetIndex ? { ...m, blocks } : m));
+  // This turn's card is now the latest → demote every OTHER turn's card to
+  // read-only. (Without this, a brief window between turn.files and turn.done
+  // would show two cards with the rewind button: the previous turn's frozen
+  // card and this turn's new one.) The current turn's block stays true because
+  // demotePreviousLatestTurnFiles runs BEFORE we re-stamped it above — but to
+  // be safe we re-stamp the target's own block as true after demoting.
+  next = demotePreviousLatestTurnFiles(next);
+  next = next.map((m, i) => {
+    if (i !== targetIndex) return m;
+    if (!m.blocks.some((b) => b.kind === "turn-files")) return m;
+    return {
+      ...m,
+      blocks: m.blocks.map((b) =>
+        b.kind === "turn-files" ? { ...b, isLatestTurn: true } : b,
+      ),
+    };
+  });
+  return next;
+}
+
+/** Remove the LATEST turn's turn-files block (called from the turn.rewound
+ *  handler — the user rewound the latest turn, so its card should disappear).
+ *
+ *  Rewind happens AFTER the turn has ended (the user clicks 撤销本轮 on the
+ *  frozen card), so the block lives on a CLOSED turn's message — we can't use
+ *  findOpenTurnTrailingAssistant here. Instead we target the block marked
+ *  `isLatestTurn === true`, which is exactly the rewindable card. Frozen
+ *  historical blocks (isLatestTurn false/undefined) are untouched. Drops the
+ *  assistant message too if it would be empty. */
+function removeLiveTurnFilesBlock(messages: ChatMessage[]): ChatMessage[] {
+  // Find the message carrying the latest-turn card (search from the end — the
+  // latest turn is the last one with a turn-files block).
+  let targetIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.blocks.some((b) => b.kind === "turn-files" && b.isLatestTurn)) {
+      targetIndex = i;
+      break;
+    }
+  }
+  if (targetIndex === -1) return messages;
+  let next = messages;
+  const target = next[targetIndex]!;
+  const filtered = target.blocks.filter(
+    (b) => !(b.kind === "turn-files" && b.isLatestTurn),
+  );
+  if (filtered.length === target.blocks.length) return next; // nothing to remove
+  if (filtered.length === 0) {
+    next = next.filter((_, i) => i !== targetIndex);
+  } else {
+    next = next.map((m, i) => (i === targetIndex ? { ...m, blocks: filtered } : m));
+  }
+  return next;
+}
+
+/** Demote EVERY turn-files block's `isLatestTurn` to false. Called when a new
+ *  turn opens (the previous "latest" card is no longer the latest — only the
+ *  most recent completed turn is rewindable). The new turn's own card, once it
+ *  arrives via turn.files, sets isLatestTurn=true on insert. */
+function demotePreviousLatestTurnFiles(messages: ChatMessage[]): ChatMessage[] {
+  let changed = false;
+  const next = messages.map((m) => {
+    if (!m.blocks.some((b) => b.kind === "turn-files" && b.isLatestTurn)) return m;
+    changed = true;
+    return {
+      ...m,
+      blocks: m.blocks.map((b) =>
+        b.kind === "turn-files" && b.isLatestTurn ? { ...b, isLatestTurn: false } : b,
+      ),
+    };
+  });
+  return changed ? next : messages;
+}
+
+/** Called from turn.done: finalize the just-closed turn's turn-files block.
+ *  The block is already attached (turn.files arrived just before turn.done);
+ *  here we only need to ensure it's marked isLatestTurn=true (it IS the latest
+ *  completed turn now) and demote all earlier turns' cards to read-only.
+ *
+ *  Unlike plan blocks, turn-files blocks are NEVER pruned — every turn that
+ *  touched files keeps its card in history. (Empty turns never produced a
+ *  block in the first place, so there's nothing to clean up.) Keyed off
+ *  endedAt so we only touch THIS turn's messages. */
+function freezeLatestTurnFilesBlock(messages: ChatMessage[], endedAt: number): ChatMessage[] {
+  // First demote all older turn-files cards to read-only.
+  let next = demotePreviousLatestTurnFiles(messages);
+  // Then mark this turn's turn-files block(s) as the latest (rewindable).
+  // There is at most one live block per turn; a turn's assistant messages all
+  // share the same endedAt stamp, so keying off endedAt catches them all.
+  next = next.map((m) => {
+    if (!m.turnMeta || m.turnMeta.endedAt !== endedAt) return m;
+    if (!m.blocks.some((b) => b.kind === "turn-files")) return m;
+    return {
+      ...m,
+      blocks: m.blocks.map((b) =>
+        b.kind === "turn-files" ? { ...b, isLatestTurn: true } : b,
+      ),
+    };
+  });
+  return next;
+}
+
 /* ──────────────── Delta buffer (performance: batch text.delta per rAF) ────────────────
  *
  * Each `text.delta` / `thinking` event from the stream triggers a full `setState`
@@ -610,6 +971,11 @@ function flushDeltas(): void {
             ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
           };
           next = [...next, msg];
+          // A new turn is opening → demote the previous "latest" turn-files
+          // card to read-only (it's no longer the latest rewindable turn).
+          // The new turn's own card, if any, sets isLatestTurn=true on insert
+          // and gets re-promoted at turn.done via freezeLatestTurnFilesBlock.
+          if (isNewTurn) next = demotePreviousLatestTurnFiles(next);
         } else {
           // Message already exists — we'll replace it below.
         }
@@ -1422,15 +1788,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set((s) => ({ todosBySession: { ...s.todosBySession, [sid]: e.todos } }));
       return;
     }
-    // plan.update: drives the Plan section of the activity capsule. Phase
-    // "cleared" with empty plan = not in plan mode (capsule hides section).
+    // plan.update: drives BOTH the activity capsule (planBySession) AND the
+    // inline `kind: "plan"` block on the current turn's trailing assistant
+    // message. The inline block is what the user actually reads in the
+    // message stream — it stays put per-turn (different turns → different
+    // plan blocks in history), unlike the old footer card which was a single
+    // session-global slot that got overwritten each turn.
+    //   phase "drafting" → live card with 草拟中 badge, content streams in.
+    //   phase "ready"    → card freezes as 已就绪 after ExitPlanMode approval.
+    //   phase "cleared"  → remove the live block (plan mode exited / denied).
     if (e.type === "plan.update") {
-      set((s) => ({
-        planBySession: {
-          ...s.planBySession,
-          [sid]: { plan: e.plan, phase: e.phase },
-        },
-      }));
+      set((s) => {
+        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        const hasApproval = !!s.pendingPlanApprovalBySession[sid];
+        const next = upsertLivePlanBlock(list, e.plan, e.phase, hasApproval);
+        return {
+          planBySession: {
+            ...s.planBySession,
+            [sid]: { plan: e.plan, phase: e.phase },
+          },
+          messagesBySession: next === list
+            ? s.messagesBySession
+            : { ...s.messagesBySession, [sid]: next },
+        };
+      });
       return;
     }
     // mode.change: the model (or host) flipped the session's effective
@@ -1487,24 +1868,65 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // ExitPlanMode: the model drafted a plan and is awaiting the user's
       // approve/reject decision. One-at-a-time per session (the model calls
       // ExitPlanMode once per plan). REPLACE so a re-emit doesn't stack.
-      set((s) => ({
-        pendingPlanApprovalBySession: {
-          ...s.pendingPlanApprovalBySession,
-          [sid]: e,
-        },
-      }));
+      // Also refresh the inline plan block's hasApproval flag → true so its
+      // badge flips to 待审阅, mirroring the composer approval sheet.
+      set((s) => {
+        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        // The plan text on the approval request is the model's ExitPlanMode
+        // payload — re-sync the inline block so it shows exactly what the
+        // user is being asked to approve (phase stays "ready" per the prior
+        // plan.update emitted by the adapter on ExitPlanMode).
+        const next = upsertLivePlanBlock(list, e.plan, "ready", true);
+        return {
+          pendingPlanApprovalBySession: {
+            ...s.pendingPlanApprovalBySession,
+            [sid]: e,
+          },
+          messagesBySession: next === list
+            ? s.messagesBySession
+            : { ...s.messagesBySession, [sid]: next },
+        };
+      });
       return;
     }
     if (e.type === "turn.files") {
-      // Per-session bucket: a turn.files event for session A does not
-      // clobber session B's rewind card. Replaces only the entry for
-      // this session.
-      set((s) => ({ turnFilesBySession: { ...s.turnFilesBySession, [sid]: e.files } }));
+      // Drives TWO things:
+      //  1. turnFilesBySession[sid] — the in-memory mirror of the LATEST
+      //     turn's files (used by rewindTurn's empty-check + the Write-diff
+      //     beforeMap until the block freezes). Kept as a single slot since
+      //     only the latest turn is rewindable.
+      //  2. A `kind: "turn-files"` block on the current turn's trailing
+      //     assistant message — the per-turn card the user actually sees in
+      //     the stream. Frozen in place at turn.done, persisted via the
+      //     blocks round-trip, so every turn keeps its own card in history.
+      set((s) => {
+        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        const next = upsertLiveTurnFilesBlock(list, e.files);
+        return {
+          turnFilesBySession: { ...s.turnFilesBySession, [sid]: e.files },
+          messagesBySession: next === list
+            ? s.messagesBySession
+            : { ...s.messagesBySession, [sid]: next },
+        };
+      });
       return;
     }
     if (e.type === "turn.rewound") {
-      // Clear only this session's rewind card. Other tabs keep theirs.
-      set((s) => ({ turnFilesBySession: { ...s.turnFilesBySession, [sid]: [] } }));
+      // The user rewound the LATEST turn — clear its in-memory mirror AND
+      // remove its live turn-files block from the stream (the card vanishes
+      // with the rewind). Frozen historical cards on prior turns are
+      // untouched. turnFilesBySession is also cleared so rewindTurn's
+      // empty-check correctly reports "nothing to rewind" afterwards.
+      set((s) => {
+        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        const next = removeLiveTurnFilesBlock(list);
+        return {
+          turnFilesBySession: { ...s.turnFilesBySession, [sid]: [] },
+          messagesBySession: next === list
+            ? s.messagesBySession
+            : { ...s.messagesBySession, [sid]: next },
+        };
+      });
       return;
     }
 
@@ -1561,6 +1983,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
             };
             next = [...next, lastAssistant];
+            // A new turn opened (no prior assistant message at all) — demote
+            // any previous latest turn-files card to read-only.
+            if (isNewTurn) next = demotePreviousLatestTurnFiles(next);
           }
           const block: Block = { kind: "tool_use", toolCallId: e.toolCallId, toolName: e.toolName, input: e.input, status: "running" };
           const updated = { ...lastAssistant, blocks: [...lastAssistant.blocks, block] };
@@ -1621,6 +2046,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               ? { ...m, turnMeta: { ...m.turnMeta, endedAt } }
               : m,
           );
+          // Freeze or prune the inline plan block(s) on this just-closed turn.
+          // An approved plan (phase "ready" + non-empty text) stays as a frozen
+          // historical card in the stream; drafting / cleared / empty plans are
+          // removed (they represent an in-progress or rejected draft). A plan-
+          // only assistant message that prunes to empty is dropped entirely.
+          // Keyed off endedAt so we touch only THIS turn's messages.
+          next = freezeOrPrunePlanBlocks(next, endedAt);
+          // Finalize the just-closed turn's turn-files block: mark it
+          // isLatestTurn=true (it's now the latest rewindable turn) and demote
+          // every earlier turn's card to read-only. turn-files blocks are
+          // never pruned — each turn that touched files keeps its card in
+          // history. Keyed off endedAt so only THIS turn's messages are
+          // promoted; older turns get demoted by demotePreviousLatestTurnFiles.
+          next = freezeLatestTurnFilesBlock(next, endedAt);
           // Any pending approvals are stale: the turn ended, the SDK won't
           // be waiting on them anymore. Drop the queue for this session so
           // a stale card doesn't linger in another tab's composer.
@@ -1901,7 +2340,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.claude.respondPlanApproval({ sessionId, requestId, approved, editedPlan, reason });
       set((s) => {
         const { [sessionId]: _drop, ...rest } = s.pendingPlanApprovalBySession;
-        return { pendingPlanApprovalBySession: rest };
+        // Drop the 待审阅 badge on the inline plan block now that the user
+        // has decided. On approve the adapter will follow up with a
+        // plan.update phase:"ready" (block stays, freezes at turn.done);
+        // on reject it emits phase:"cleared" which removes the block. Either
+        // way we flip hasApproval off immediately so the badge doesn't linger.
+        const list = s.messagesBySession[sessionId] ?? EMPTY_MESSAGES;
+        const next = upsertLivePlanBlock(list, pending.plan, "ready", false);
+        return {
+          pendingPlanApprovalBySession: rest,
+          messagesBySession: next === list
+            ? s.messagesBySession
+            : { ...s.messagesBySession, [sessionId]: next },
+        };
       });
     } catch (err) {
       console.error("claude.respondPlanApproval failed:", err);

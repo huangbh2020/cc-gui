@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { lineDiff } from "@renderer/lib/lineDiff.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { Button } from "@renderer/components/ui/index.js";
 import {
   IconChevronDown,
@@ -15,9 +16,11 @@ import {
 import { DiffView } from "./DiffView.js";
 
 /**
- * "本轮修改" card — rendered at the END of the message stream (after the last
- * assistant message) when a turn completes. Lists every file Edit/Write
- * touched in that turn with per-file change tallies and a one-click rewind.
+ * "本轮修改" card — rendered INLINE in the message stream as a per-turn
+ * trailing `kind: "turn-files"` block. Each turn that touched files keeps its
+ * own card frozen in history (new turns add new cards; old cards stay as
+ * read-only snapshots and are never deleted). On session reopen every
+ * historical card is restored from the persisted message snapshot.
  *
  * Two expand levels:
  *  1. Card folded → "本轮修改了 N 个文件  +总A -总D". Expand to see the rows.
@@ -26,18 +29,33 @@ import { DiffView } from "./DiffView.js";
  *     current on-disk content via `api.file.readFile` and diff against the
  *     snapshotted `before`).
  *
+ * Rewind: only the LATEST turn's card (`isLatestTurn === true`) renders the
+ * 撤销本轮 button — it restores files via the in-memory FileSnapshot (cleared
+ * per turn, so only the most recent turn is rewindable). Older cards are
+ * display-only; their rewind button is hidden. The rewind action is pulled
+ * from the store directly (the card is the sole consumer), keeping the block
+ * rendering path prop-free.
+ *
  * Theme: neutral surface/edge tokens (no accent) — these are *completed*
  * file ops, not pending approvals. The +/- tallies keep accent/danger for
  * semantic color (green=added, red=deleted).
  */
 export function TurnFilesCard({
   files,
-  onRewind,
+  isLatestTurn,
 }: {
   files: TurnFileEntry[];
-  onRewind: () => void | Promise<void>;
+  /** True only on the latest turn's card — gates the 撤销本轮 button.
+   *  Undefined/false on historical cards (read-only snapshots). */
+  isLatestTurn?: boolean;
 }) {
-  const [open, setOpen] = useState(true);
+  // Default expand state by lifecycle: the latest turn expands so the user
+  // sees the fresh changes + rewind affordance; historical cards collapse to
+  // a one-line summary (keeps the scroll-back history calm).
+  const [open, setOpen] = useState(!!isLatestTurn);
+  // rewindTurn comes from the store — only invoked when isLatestTurn, so the
+  // historical cards never trigger it.
+  const rewindTurn = useSessionStore((s) => s.rewindTurn);
   // Local rewind-in-flight flag so the button is disabled while the
   // IPC call is in progress (main also clears the card on its
   // `turn.rewound` event, but that takes a tick after the IPC resolves).
@@ -51,7 +69,7 @@ export function TurnFilesCard({
     if (rewinding) return;
     setRewinding(true);
     try {
-      await onRewind();
+      await rewindTurn();
       setDone(true);
     } finally {
       setRewinding(false);
@@ -102,14 +120,19 @@ export function TurnFilesCard({
             >
               收起
             </button>
-            <button
-              onClick={handleRewind}
-              disabled={rewinding || done}
-              className="rounded-md bg-surface-hover px-3 py-1 font-medium text-content transition-colors hover:bg-edge disabled:cursor-not-allowed disabled:text-content-subtle"
-              title="把本轮所有文件恢复为轮开始前的状态"
-            >
-              {done ? "已撤销 ✓" : rewinding ? "撤销中…" : "撤销本轮"}
-            </button>
+            {/* Only the LATEST turn is rewindable (in-memory FileSnapshot is
+                cleared per turn). Historical cards render read-only — the
+                rewind button is hidden, leaving just 收起. */}
+            {isLatestTurn && (
+              <button
+                onClick={handleRewind}
+                disabled={rewinding || done}
+                className="rounded-md bg-surface-hover px-3 py-1 font-medium text-content transition-colors hover:bg-edge disabled:cursor-not-allowed disabled:text-content-subtle"
+                title="把本轮所有文件恢复为轮开始前的状态"
+              >
+                {done ? "已撤销 ✓" : rewinding ? "撤销中…" : "撤销本轮"}
+              </button>
+            )}
           </div>
         </div>
       )}

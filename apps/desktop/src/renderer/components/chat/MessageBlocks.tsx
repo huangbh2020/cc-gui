@@ -13,6 +13,8 @@ import {
 import type { Block } from "@renderer/stores/sessionStore.js";
 import { Markdown } from "./Markdown.js";
 import { DiffView } from "./DiffView.js";
+import { PlanStreamBlock } from "./PlanStreamBlock.js";
+import { TurnFilesCard } from "./TurnFilesCard.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
 
 /** Map of absolute file path → its pre-turn content. Built from the
@@ -245,6 +247,30 @@ const BlockView = memo(function BlockView({
           <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
           <span>{block.message}</span>
         </div>
+      );
+
+    case "plan":
+      // Inline read-only plan card that lives in the message stream as a
+      // per-turn trailing block (drafting → 待审阅 → 已就绪). The actionable
+      // approve/reject sheet stays above the composer in PlanApprovalPrompt;
+      // this block is purely the reading view.
+      return (
+        <PlanStreamBlock
+          plan={block.plan}
+          phase={block.phase}
+          hasApproval={block.hasApproval}
+        />
+      );
+
+    case "turn-files":
+      // Inline "本轮修改" card that lives in the message stream as a per-turn
+      // trailing block. Frozen at turn.done so each turn keeps its own card in
+      // history (new turns add new cards; old cards stay read-only). Only the
+      // LATEST turn's card (isLatestTurn) shows the 撤销本轮 button; older
+      // cards are display-only snapshots. TurnFilesCard pulls rewindTurn from
+      // the store itself and gates the button on isLatestTurn.
+      return (
+        <TurnFilesCard files={block.files} isLatestTurn={block.isLatestTurn} />
       );
   }
 });

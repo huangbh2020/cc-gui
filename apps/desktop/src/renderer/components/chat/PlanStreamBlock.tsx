@@ -39,10 +39,14 @@ export function PlanStreamBlock({
    *  label on this card so the user knows an action is awaiting them. */
   hasApproval?: boolean;
 }) {
-  // Default to collapsed for substantive plans; short stubs auto-expand.
-  const [expanded, setExpanded] = useState(plan.length <= 200);
-
   const isDrafting = phase === "drafting";
+  // Default expand state by lifecycle:
+  //   drafting / 待审阅 → expanded (user is actively watching the plan form /
+  //     reviewing it for approval, so show the content up front).
+  //   ready → collapsed (the plan is frozen history; the header + char count
+  //     is enough at a glance, expand on demand to avoid flooding the stream).
+  const [expanded, setExpanded] = useState(isDrafting || !!hasApproval);
+
   const label = hasApproval ? "待审阅" : isDrafting ? "草拟中" : "已就绪";
 
   return (

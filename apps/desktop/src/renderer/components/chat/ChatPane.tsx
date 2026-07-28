@@ -12,7 +12,7 @@ import {
   IconCheck,
   IconLoader2,
 } from "@renderer/lib/icons.js";
-import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, EMPTY_TURN_FILES, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
+import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import { api } from "@renderer/lib/api.js";
 import {
@@ -26,9 +26,7 @@ import { ComposerToolbar } from "./ComposerToolbar.js";
 import { QuestionPrompt } from "./QuestionPrompt.js";
 import { ApprovalPrompt } from "./ApprovalPrompt.js";
 import { PlanApprovalPrompt } from "./PlanApprovalPrompt.js";
-import { PlanStreamBlock } from "./PlanStreamBlock.js";
 import { ContentTagChip } from "./ContentTagChip.js";
-import { TurnFilesCard } from "./TurnFilesCard.js";
 import { TagPopover } from "./TagPopover.js";
 import { StatusCapsule } from "./StatusCapsule.js";
 import { MessageTimeline, type UserItemIndexMap } from "./MessageTimeline.js";
@@ -318,20 +316,23 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     (s) => s.pendingPlanApprovalBySession[sessionId] ?? null,
   );
   const submitPlanApproval = useSessionStore((s) => s.submitPlanApproval);
-  // Per-turn "本轮文件" rewind card. Sourced from the per-session
-  // bucket; turnFilesBySession is replaced on each turn.files event,
-  // cleared on turn.rewound (or in error path).
-  const turnFiles = useSessionStore((s) => s.turnFilesBySession[sessionId] ?? EMPTY_TURN_FILES);
-  const rewindTurn = useSessionStore((s) => s.rewindTurn);
-  // Pre-turn file contents for the Write-tool diff. Built once per render
-  // from the turn.files payload (filePath → before). Empty while the turn
-  // is still running (no turn.files yet) or after a rewind — Write cards
-  // then fall back to a plain new-content preview.
+  // Pre-turn file contents for the Write-tool diff. Built from the per-turn
+  // `kind: "turn-files"` blocks in the message stream — each turn records the
+  // `before` of every file it touched, so scanning all of them (later turns
+  // overwrite earlier ones per filePath) yields the most recent pre-turn
+  // content for each path. This is exactly what the Write card's before/after
+  // diff wants. Empty until the first turn.files block arrives.
   const beforeMap = useMemo<BeforeContentMap>(() => {
     const m: BeforeContentMap = new Map();
-    for (const f of turnFiles) m.set(f.filePath, f.before);
+    for (const msg of messages) {
+      for (const b of msg.blocks) {
+        if (b.kind === "turn-files") {
+          for (const f of b.files) m.set(f.filePath, f.before);
+        }
+      }
+    }
     return m;
-  }, [turnFiles]);
+  }, [messages]);
   // The textarea is blocked while a turn is running, a backgrounded subagent
   // is still in flight, or a tool approval is awaiting the user's decision —
   // the approval panel takes the place of the input area entirely so the user
@@ -526,28 +527,14 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     [beforeMap],
   );
 
-  // Footer content rendered after all message items.
-  const listFooter = useMemo(() => {
-    const showPlan = (plan.plan && plan.phase !== "cleared") || pendingPlanApproval;
-    const showTurnFiles = turnFiles.length > 0 && !isRunning;
-    if (!showPlan && !showTurnFiles) return null;
-    return (
-      <div className="px-8">
-        <div className="mx-auto max-w-5xl py-2">
-          {showPlan && (
-            <PlanStreamBlock
-              plan={pendingPlanApproval?.plan ?? plan.plan}
-              phase={plan.phase}
-              hasApproval={!!pendingPlanApproval}
-            />
-          )}
-          {showTurnFiles && (
-            <TurnFilesCard files={turnFiles} onRewind={() => void rewindTurn()} />
-          )}
-        </div>
-      </div>
-    );
-  }, [plan, pendingPlanApproval, turnFiles, isRunning, rewindTurn]);
+  // Footer content rendered after all message items. Both the plan card and
+  // the per-turn modified-files card used to live here as session-global
+  // singletons; both now render INLINE in the stream as per-turn blocks
+  // (kind: "plan" and kind: "turn-files" — see MessageBlocks + the store's
+  // plan.update / turn.files handlers). There is nothing left to render in
+  // the footer, so it stays null. Kept as a stable null to avoid churning
+  // the LegendList prop on every render.
+  const listFooter = null;
 
   return (
     <div className="relative flex h-full flex-col">
