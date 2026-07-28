@@ -1,21 +1,107 @@
-import { useState, type ReactNode } from "react";
+/**
+ * Markdown rendering with syntax highlighting (Shiki + codeDiffs),
+ * KaTeX math, and code-block output caching (FNV-1a + LRU).
+ *
+ * Performance layering:
+ *  - react-markdown for the base markdown→React pipeline.
+ *  - remark-math + rehype-katex for LaTeX math ($...$ / $$...$$).
+ *  - Shiki for fenced-code-block highlighting (+ diff annotations via
+ *    transformerNotationDiff).
+ *  - code-html cache (fnv1a hash → shiki HTML) to avoid re-highlighting.
+ *  - useDeferredValue is applied at the MessageBlocks layer, not here.
+ *
+ * Security: react-markdown escapes raw HTML by default, so we never need
+ * DOMPurify. The only `dangerouslySetInnerHTML` usage is for shiki-generated
+ * code-block HTML, which is produced from known content (the code text) and
+ * is thus safe by construction.
+ */
+import { memo, useState, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { cn } from "@renderer/lib/cn.js";
 import { IconCheck, IconCopy } from "@renderer/lib/icons.js";
 import type { Components } from "react-markdown";
+import { codeCacheKey, getCodeHtml, setCodeHtml } from "@renderer/lib/markdownCache.js";
+
+// ── Lazy highlighter singleton ────────────────────────────────────────
+// Initialised on first encounter of a fenced code block; kept alive for the
+// lifetime of the page. Dual-theme (light / dark) resolved via CSS class.
+import { createHighlighter, type Highlighter, type BundledLanguage, type BundledTheme } from "shiki";
+import { transformerNotationDiff } from "@shikijs/transformers";
+
+type ShikiHighlighter = Highlighter;
+
+let highlighterPromise: Promise<ShikiHighlighter> | null = null;
+let highlighterInstance: ShikiHighlighter | null = null;
+
+/** Languages we bundle eagerly (the ones Claude uses most). */
+const EAGER_LANGS: BundledLanguage[] = [
+  "typescript", "javascript", "jsx", "tsx",
+  "python", "bash", "shell",
+  "json", "markdown", "md", "yaml", "yml",
+  "html", "css", "scss", "less", "sql", "xml", "diff",
+  "vue", "svelte",
+  "rust", "go", "java", "c", "cpp", "csharp",
+  "ruby", "php", "swift", "kotlin",
+  "docker", "dockerfile",
+  "graphql", "gql",
+  "ini", "toml", "makefile",
+];
 
 /**
- * Render claude's markdown output (code blocks, lists, tables, emphasis). The
- * raw text was previously shown via whitespace-pre-wrap, which dropped all
- * structure — claude's answers are markdown-heavy, so this is the single
- * biggest readability win.
- *
- * Code blocks get a header (language + copy button) instead of full syntax
- * highlighting — keeps the bundle small; highlighting can be layered on later.
+ * Map common language aliases used in markdown fences to canonical Shiki
+ * language ids. When a `resolveLang` falls back to "text" the code block
+ * is rendered as plain monospace (no highlighting) instead of crashing.
  */
+const LANG_ALIAS: Record<string, string> = {
+  sh: "shell", zsh: "shell", fish: "shell",
+  powershell: "shell", ps: "shell", cmd: "shell", dos: "shell", batch: "shell",
+  mjs: "javascript", cjs: "javascript", es: "javascript", es6: "javascript",
+  ts: "typescript",
+  py: "python",
+  mdx: "markdown",
+  jsonc: "json", json5: "json",
+  yml: "yaml",
+  scss: "css", less: "css", sass: "css", stylus: "css",
+  cc: "cpp", cxx: "cpp", hh: "cpp", hpp: "cpp",
+  h: "c",
+  containerfile: "dockerfile",
+};
 
-/** Pull a plain-text string out of a React node tree (for the copy button). */
+/** Resolve a markdown code-fence language tag to a Shiki language id.
+ *  Falls back to "text" when the language is unknown, effectively disabling
+ *  highlighting for that block. */
+function resolveLang(tag: string): string {
+  if (!tag || tag === "text" || tag === "none" || tag === "plain") return "text";
+  if (EAGER_LANGS.includes(tag as BundledLanguage)) return tag;
+  return LANG_ALIAS[tag] ?? "text";
+}
+
+function ensureHighlighter(): Promise<ShikiHighlighter> {
+  if (highlighterInstance) return Promise.resolve(highlighterInstance);
+  if (!highlighterPromise) {
+    highlighterPromise = createHighlighter({
+      themes: ["github-light", "github-dark"],
+      langs: EAGER_LANGS,
+    }).then((hl) => {
+      highlighterInstance = hl;
+      return hl;
+    });
+  }
+  return highlighterPromise;
+}
+
+function currentTheme(): BundledTheme {
+  if (typeof document !== "undefined") {
+    return document.documentElement.classList.contains("dark") ? "github-dark" : "github-light";
+  }
+  return "github-dark";
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
 function extractText(node: unknown): string {
   if (node == null || node === false) return "";
   if (typeof node === "string" || typeof node === "number") return String(node);
@@ -25,6 +111,22 @@ function extractText(node: unknown): string {
   }
   return "";
 }
+
+function extractLanguage(className?: string): string {
+  const match = /language-(\w+)/.exec(className ?? "");
+  return match?.[1] ?? "text";
+}
+
+function isFencedCode(className?: string): boolean {
+  return /language-\w+/.test(className ?? "");
+}
+
+/** Minimal HTML entity escaping for the safe fallback path. */
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ── Copy button ───────────────────────────────────────────────────────
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -42,20 +144,17 @@ function CopyButton({ text }: { text: string }) {
       )}
       title="Copy code"
     >
-      {copied ? (
-        <><IconCheck size={10} /> copied</>
-      ) : (
-        <><IconCopy size={10} /> copy</>
-      )}
+      {copied ? (<><IconCheck size={10} /> copied</>) : (<><IconCopy size={10} /> copy</>)}
     </button>
   );
 }
 
+// ── react-markdown component overrides ────────────────────────────────
+
 const components: Components = {
-  // Inline code only — fenced blocks are handled by `pre` below (cleaner than
-  // sniffing inline/block inside `code`, and avoids double-wrapping).
+  // Inline code — styled inline, no highlighting needed.
   code({ className, children }) {
-    const isInline = !/language-/.test(className || "");
+    const isInline = !isFencedCode(className);
     if (isInline) {
       return (
         <code className="rounded bg-surface-muted/80 px-1 py-0.5 font-mono text-[0.85em] text-accent">
@@ -65,28 +164,82 @@ const components: Components = {
     }
     return <code className="font-mono">{children}</code>;
   },
-  // Fenced code block: extract the raw text + language from the child <code>
-  // element and render a container with a language label + copy button.
+
+  // Fenced code block: highlighted via shiki with copy button + lang label.
+  // Falls back to plain code when highlighting fails (unknown language etc.).
   pre({ children }) {
-    // children is the <code> React element rendered above.
     const child = Array.isArray(children) ? children[0] : children;
-    const childProps = (child as { props?: { className?: string; children?: ReactNode } })?.props;
+    const childProps = (child as { props?: { className?: string; children?: unknown } })?.props;
     const className = childProps?.className ?? "";
-    const match = /language-(\w+)/.exec(className);
-    const lang = match?.[1] ?? "text";
-    const raw = extractText(childProps?.children);
+    const rawCode = extractText(childProps?.children);
+    const lang = resolveLang(extractLanguage(className));
+
+    // Lazy-init highlighter on first encounter of a fenced block.
+    const [ready, setReady] = useState(!!highlighterInstance);
+    useMemo(() => {
+      if (!highlighterInstance) {
+        ensureHighlighter().then(() => setReady(true));
+      }
+    }, []);
+
+    const html = useMemo(() => {
+      if (!rawCode) return null;
+
+      const key = codeCacheKey(rawCode, lang);
+      // Cache hit?
+      const cached = getCodeHtml(key);
+      if (cached) return { __html: cached, key };
+
+      // Highlighter ready?
+      if (highlighterInstance) {
+        // Helper: attempt highlighting with a given language, returning null
+        // on any error instead of throwing.
+        const tryHighlight = (tryLang: string): string | null => {
+          try {
+            return highlighterInstance!.codeToHtml(rawCode, {
+              lang: tryLang,
+              theme: currentTheme(),
+              transformers: [transformerNotationDiff()],
+            });
+          } catch {
+            return null; // Language not found or other error — caller handles.
+          }
+        };
+
+        // First attempt: requested language.
+        let highlighted = tryHighlight(lang);
+        // Fallback: "text" (always available, plain monospace).
+        if (!highlighted && lang !== "text") {
+          highlighted = tryHighlight("text");
+        }
+        if (highlighted) {
+          setCodeHtml(key, highlighted);
+          return { __html: highlighted, key };
+        }
+        // Both attempts failed — cache a safe placeholder.
+        setCodeHtml(key, `<pre class="shiki fallback"><code>${escapeHtml(rawCode)}</code></pre>`);
+      }
+
+      return null; // Not ready yet or highlight failed — show raw text.
+    }, [rawCode, lang, ready]);
+
     return (
       <pre className="my-2 overflow-hidden rounded-lg border border-edge/60 bg-surface/80">
         <div className="flex items-center justify-between border-b border-edge/60 bg-surface-muted/40 px-2 py-0.5 text-content-subtle [font-size:var(--chat-fs-xxs)]">
           <span className="font-mono">{lang}</span>
-          <CopyButton text={raw.replace(/\n$/, "")} />
+          <CopyButton text={rawCode.replace(/\n$/, "")} />
         </div>
-        <code className="block overflow-x-auto px-3 py-2 font-mono leading-relaxed text-content [font-size:var(--chat-fs-xs)]">
-          {childProps?.children}
-        </code>
+        {html ? (
+          <div className="overflow-x-auto px-3 py-2 [font-size:var(--chat-fs-xs)]" dangerouslySetInnerHTML={html} />
+        ) : (
+          <code className="block overflow-x-auto px-3 py-2 font-mono leading-relaxed text-content [font-size:var(--chat-fs-xs)]">
+            {childProps?.children as React.ReactNode}
+          </code>
+        )}
       </pre>
     );
   },
+
   a({ children, href }) {
     return (
       <a href={href} target="_blank" rel="noreferrer" className="text-info underline hover:text-info">
@@ -127,12 +280,12 @@ const components: Components = {
   },
 };
 
-export function Markdown({ children }: { children: string }) {
+export const Markdown = memo(function Markdown({ children }: { children: string }) {
   return (
     <div className="leading-relaxed text-content [font-size:var(--chat-font-size)] [&>p]:my-1.5 [&:first-child]:mt-0 [&:last-child]:mb-0">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components}>
         {children}
       </ReactMarkdown>
     </div>
   );
-}
+});

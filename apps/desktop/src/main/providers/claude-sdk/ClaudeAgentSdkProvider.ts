@@ -231,6 +231,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       }
 
       if (toolName === "ExitPlanMode") {
+        // Fallback path: newer SDK versions route ExitPlanMode approval through
+        // onUserDialog (request_user_dialog) instead of canUseTool, so this
+        // branch is typically NOT reached. It's kept as a defensive fallback
+        // for SDK versions / code paths that still use can_use_tool. The real
+        // handling lives in onUserDialog above.
+        ctx.log.info("canUseTool: ExitPlanMode fallback path hit (expected to be handled by onUserDialog)");
         // Plan mode: the model has drafted a plan and is asking the user to
         // approve it before execution. The plan text arrives in input.plan
         // (the SDK's ExitPlanModeInput type omits it, but it's present at
@@ -294,13 +300,61 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     options.canUseTool = canUseTool;
 
     // --- onUserDialog bridge ---
-    // Answer unrecognized dialog kinds as 'cancelled' (SDK requirement for
-    // kinds we don't render). AskUserQuestion no longer arrives as a dialog —
-    // it's fully handled by canUseTool above.
-    const onUserDialog: OnUserDialog = async () => ({
-      behavior: "cancelled" as const,
-    });
+    // SDK 0.3.x routes ExitPlanMode's user-approval step through
+    // `request_user_dialog` control requests (dialogKind-based), NOT through
+    // canUseTool. The CLI is fail-closed: it only emits a dialog kind declared
+    // in `supportedDialogKinds` — without the declaration the flow degrades to
+    // its no-dialog behavior (the turn aborts) and the approval UI never shows.
+    // See sdk.d.ts OnUserDialog / supportedDialogKinds docs.
+    //
+    // The exact dialogKind string for ExitPlanMode is an open union defined by
+    // the bundled CLI binary, so we declare the likely candidates and let the
+    // diagnostic log below surface the real value on first hit for future
+    // tightening. Any non-matching kind is answered `cancelled` per SDK spec.
+    const EXIT_PLAN_DIALOG_KINDS = new Set([
+      "exit_plan_mode",
+      "ExitPlanMode",
+      "plan_approval",
+    ]);
+    const onUserDialog: OnUserDialog = async (request, opts) => {
+      ctx.log.info(
+        `onUserDialog: dialogKind=${request.dialogKind} toolUseID=${request.toolUseID ?? "n/a"} payloadKeys=${JSON.stringify(Object.keys(request.payload ?? {}))}`,
+      );
+      // ExitPlanMode plan approval: route to the existing plan-approval bridge
+      // (renderer shows <PlanApprovalPrompt>). The model's plan text may live
+      // under payload.plan (canonical) or payload.input.plan (older shape).
+      if (EXIT_PLAN_DIALOG_KINDS.has(request.dialogKind) || typeof (request.payload as { plan?: unknown })?.plan === "string") {
+        if (!requestPlanApproval) {
+          return { behavior: "cancelled" as const };
+        }
+        const p = request.payload as { plan?: unknown; input?: { plan?: unknown } };
+        const plan = typeof p.plan === "string" ? p.plan
+          : typeof p.input?.plan === "string" ? p.input.plan
+          : "";
+        const requestId = request.toolUseID ?? randomUUID();
+        const decision = await requestPlanApproval({
+          requestId,
+          plan,
+          toolUseId: request.toolUseID,
+        });
+        if (decision.approved) {
+          const finalPlan = decision.editedPlan ?? plan;
+          return {
+            behavior: "completed" as const,
+            result: { approved: true, plan: finalPlan, message: "Plan approved by user" },
+          };
+        }
+        return {
+          behavior: "completed" as const,
+          result: { approved: false, reason: decision.reason ?? "Plan rejected by user" },
+        };
+      }
+      // Unrecognized dialog kind — SDK requires `cancelled` so the CLI applies
+      // its default behavior for that dialog.
+      return { behavior: "cancelled" as const };
+    };
     options.onUserDialog = onUserDialog;
+    options.supportedDialogKinds = Array.from(EXIT_PLAN_DIALOG_KINDS);
 
     // --- systemPrompt for AskUserQuestion fallback ---
     // When native AskUserQuestion tool is unavailable, inject the sentinel

@@ -7,7 +7,10 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconEye,
+  IconFile,
   IconLoader2,
+  IconPlus,
+  IconEdit,
 } from "@renderer/lib/icons.js";
 import { DiffView } from "./DiffView.js";
 
@@ -23,9 +26,9 @@ import { DiffView } from "./DiffView.js";
  *     current on-disk content via `api.file.readFile` and diff against the
  *     snapshotted `before`).
  *
- * Theme: accent (not warning) — these are *completed* file ops, not pending
- * approvals. The "审查" button is a placeholder for P4 review tooling; it
- * logs for now and does nothing functional.
+ * Theme: neutral surface/edge tokens (no accent) — these are *completed*
+ * file ops, not pending approvals. The +/- tallies keep accent/danger for
+ * semantic color (green=added, red=deleted).
  */
 export function TurnFilesCard({
   files,
@@ -66,13 +69,13 @@ export function TurnFilesCard({
   );
 
   return (
-    <div className="rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-content-muted backdrop-blur">
+    <div className="rounded-xl border border-edge bg-surface-muted/40 px-3 py-2 text-xs text-content-muted backdrop-blur">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 text-left"
       >
-        <span aria-hidden>📝</span>
-        <span className="font-semibold text-accent">
+        <IconFile size={14} className="shrink-0 text-content-subtle" />
+        <span className="font-semibold text-content-muted">
           本轮修改了 {files.length} 个文件
         </span>
         <span className="text-content-subtle">
@@ -88,7 +91,7 @@ export function TurnFilesCard({
         <span className="ml-auto text-content-subtle">{open ? "▾" : "▸"}</span>
       </button>
       {open && (
-        <div className="mt-2 space-y-1 border-t border-accent/30 pt-2">
+        <div className="mt-2 space-y-1 border-t border-edge pt-2">
           {files.map((f) => (
             <FileRow key={f.filePath} entry={f} />
           ))}
@@ -102,7 +105,7 @@ export function TurnFilesCard({
             <button
               onClick={handleRewind}
               disabled={rewinding || done}
-              className="rounded-md bg-accent px-3 py-1 font-medium text-surface transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle"
+              className="rounded-md bg-surface-hover px-3 py-1 font-medium text-content transition-colors hover:bg-edge disabled:cursor-not-allowed disabled:text-content-subtle"
               title="把本轮所有文件恢复为轮开始前的状态"
             >
               {done ? "已撤销 ✓" : rewinding ? "撤销中…" : "撤销本轮"}
@@ -132,8 +135,8 @@ function FileRow({ entry }: { entry: TurnFileEntry }) {
           <span className="shrink-0 text-content-subtle">
             {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
           </span>
-          <span aria-hidden title={isCreated ? "本轮新建" : "本轮修改"} className="shrink-0">
-            {isCreated ? "🆕" : "✎"}
+          <span aria-hidden title={isCreated ? "本轮新建" : "本轮修改"} className="shrink-0 text-content-subtle">
+            {isCreated ? <IconPlus size={12} /> : <IconEdit size={12} />}
           </span>
           <span className="truncate font-mono text-[11px]" title={entry.filePath}>
             {entry.filePath}

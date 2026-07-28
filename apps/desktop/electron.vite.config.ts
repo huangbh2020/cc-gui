@@ -47,6 +47,12 @@ export default defineConfig({
         "@renderer": resolve("src/renderer"),
       },
     },
-    plugins: [react()],
+    plugins: [
+      react({
+        babel: {
+          plugins: [["babel-plugin-react-compiler", {}]],
+        },
+      }),
+    ],
   },
 });

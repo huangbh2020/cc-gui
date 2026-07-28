@@ -1,4 +1,4 @@
-import { useState, useMemo, type ReactNode } from "react";
+import { memo, useState, useMemo, useDeferredValue, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconChevronDown,
@@ -7,6 +7,8 @@ import {
   IconLoader2,
   IconAlertTriangle,
   IconTools,
+  IconClipboard,
+  IconCopy,
 } from "@renderer/lib/icons.js";
 import type { Block } from "@renderer/stores/sessionStore.js";
 import { Markdown } from "./Markdown.js";
@@ -26,9 +28,10 @@ export type BeforeContentMap = Map<string, string>;
  *  into a single boxed `ProceduralGroup` so the message stream stays calm
  *  — one summary line instead of N cards. Text and error blocks render
  *  inline as before. */
-export function MessageBlocks({
+const MessageBlocks = memo(function MessageBlocks({
   blocks,
   beforeMap,
+  isStreamingTail,
 }: {
   blocks: Block[];
   /** Pre-turn file contents for Write-tool diffing. Forwarded down to any
@@ -36,6 +39,10 @@ export function MessageBlocks({
    *  path — the cluster path in ChatPane passes beforeMap directly to
    *  ProceduralGroup). */
   beforeMap?: BeforeContentMap;
+  /** When true, this message is the last one in the stream and is still
+   *  receiving content deltas. Instructs text blocks to skip expensive
+   *  Markdown parsing and render as raw text until streaming settles. */
+  isStreamingTail?: boolean;
 }) {
   if (blocks.length === 0) return null;
   const segments = groupBlocks(blocks);
@@ -43,14 +50,15 @@ export function MessageBlocks({
     <div className="space-y-2">
       {segments.map((seg, i) =>
         seg.kind === "single" ? (
-          <BlockView key={i} block={seg.block} beforeMap={beforeMap} />
+          <BlockView key={i} block={seg.block} beforeMap={beforeMap} isStreamingTail={isStreamingTail} />
         ) : (
           <ProceduralGroup key={i} blocks={seg.blocks} beforeMap={beforeMap} />
         ),
       )}
     </div>
   );
-}
+});
+export { MessageBlocks };
 
 export type ToolUseBlock = Extract<Block, { kind: "tool_use" }>;
 export type ThinkingBlock = Extract<Block, { kind: "thinking" }>;
@@ -177,18 +185,46 @@ export function ProceduralGroup({
   );
 }
 
-function BlockView({
+const BlockView = memo(function BlockView({
   block,
   defaultOpen = false,
   beforeMap,
+  isStreamingTail,
 }: {
   block: Block;
   defaultOpen?: boolean;
   beforeMap?: BeforeContentMap;
+  /** When true, the text block is still receiving deltas — skip the expensive
+   *  Markdown parse and render as cheap whitespace-pre-wrap until done. */
+  isStreamingTail?: boolean;
 }) {
   switch (block.kind) {
-    case "text":
-      return <Markdown>{block.text}</Markdown>;
+    case "text": {
+      // ── useDeferredValue: defer markdown parsing until text settles ──
+      // During streaming the text changes every delta (~60 Hz). Parsing
+      // markdown + syntax highlighting on every frame is wasteful. We create
+      // a deferred copy of the text that React may lag behind the real value;
+      // while they differ we render cheap white-space-pre-wrap, and only when
+      // the deffered value catches up (i.e. deltas have paused) do we run
+      // the full Markdown component. This keeps the UI responsive during
+      // long streaming turns.
+      //
+      // For the *streaming tail* (isStreamingTail=true) we always render raw
+      // text — the message is still actively receiving deltas so there's no
+      // point parsing markdown at all until the turn finishes.
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      const deferredText = useDeferredValue(block.text);
+      const isStale = deferredText !== block.text;
+
+      if (isStreamingTail || isStale) {
+        return (
+          <div className="whitespace-pre-wrap break-words leading-relaxed text-content [font-size:var(--chat-font-size)]">
+            {block.text}
+          </div>
+        );
+      }
+      return <Markdown>{deferredText}</Markdown>;
+    }
 
     case "thinking":
       return (
@@ -200,6 +236,9 @@ function BlockView({
     case "tool_use":
       return <ToolCard block={block} defaultOpen={defaultOpen} beforeMap={beforeMap} />;
 
+    case "attachment":
+      return <AttachmentCard preview={block.preview} content={block.content} />;
+
     case "error":
       return (
         <div className="flex items-start gap-1.5 rounded-md border border-danger bg-danger/30 px-3 py-2 text-danger [font-size:var(--chat-fs-sm)]">
@@ -208,6 +247,79 @@ function BlockView({
         </div>
       );
   }
+});
+export { BlockView };
+
+/** A pasted-content attachment shown as a chip-like card in the message
+ *  stream. Mirrors the composer's ContentTagChip visual language (accent
+ *  theme color, clipboard icon) so a paste reads the same before and after
+ *  sending. Collapsed: a one-line preview; expanded: the full content in a
+ *  scrollable box with a Copy button. Borderless to match the other
+ *  procedural cards.
+ *
+ *  Unlike the composer's TagPopover (fixed-positioned to the chip), this
+ *  expands inline — the message stream is the stable anchor here, so a
+ *  floating popover would be fragile on scroll. */
+function AttachmentCard({ preview, content }: { preview: string; content: string }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // clipboard unavailable (sandbox) — silently no-op
+    }
+  };
+
+  return (
+    <div className="[font-size:var(--chat-fs-sm)]">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title={open ? "收起内容" : "查看内容"}
+        className={cn(
+          "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition-colors",
+          open
+            ? "border-accent bg-accent/20 text-accent"
+            : "border-accent/40 bg-accent/10 text-accent hover:border-accent/70 hover:bg-accent/20",
+        )}
+      >
+        <IconClipboard size={12} className="opacity-80" />
+        <span className="max-w-[220px] truncate font-normal">{preview}</span>
+        <IconChevronDown
+          size={11}
+          className={cn("shrink-0 opacity-70 transition-transform", !open && "-rotate-90")}
+        />
+      </button>
+      {open && (
+        <div className="mt-1 space-y-1">
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-accent transition-colors hover:bg-accent/30"
+              title="复制完整内容"
+            >
+              {copied ? (
+                <>
+                  <IconCheck size={11} /> 已复制
+                </>
+              ) : (
+                <>
+                  <IconCopy size={11} /> Copy
+                </>
+              )}
+            </button>
+          </div>
+          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-surface/60 px-3 py-2 font-mono text-[11px] leading-relaxed text-content-muted">
+            {content}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Dispatcher for tool_use blocks. Edit and Write get dedicated renderers

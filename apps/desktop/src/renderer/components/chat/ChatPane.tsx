@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, memo, useCallback } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconPlayerStop,
@@ -26,11 +26,13 @@ import { ComposerToolbar } from "./ComposerToolbar.js";
 import { QuestionPrompt } from "./QuestionPrompt.js";
 import { ApprovalPrompt } from "./ApprovalPrompt.js";
 import { PlanApprovalPrompt } from "./PlanApprovalPrompt.js";
+import { PlanStreamBlock } from "./PlanStreamBlock.js";
 import { ContentTagChip } from "./ContentTagChip.js";
 import { TurnFilesCard } from "./TurnFilesCard.js";
 import { TagPopover } from "./TagPopover.js";
 import { StatusCapsule } from "./StatusCapsule.js";
-import { MessageTimeline, type RowRefMap } from "./MessageTimeline.js";
+import { MessageTimeline, type UserItemIndexMap } from "./MessageTimeline.js";
+import { LegendList, type LegendListRef } from "@legendapp/list/react";
 
 /**
  * Center pane: message stream + input box for a SINGLE session.
@@ -258,6 +260,14 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // Per-thread "is running" — only true when THIS thread has a turn in flight.
   // A different thread's running turn must not lock the composer here.
   const isRunning = useSessionStore((s) => !!s.runningBySession[sessionId]);
+  // Backgrounded subagents may still be running after the parent turn's
+  // stream closes (their lifecycle is independent). While any is running we
+  // keep the composer locked so the user can't start a competing prompt —
+  // the stop button stays available to interrupt.
+  const hasRunningSubagents = useSessionStore(
+    (s) => (s.subagentsBySession[sessionId] ?? EMPTY_SUBAGENTS).some((a) => a.status === "running"),
+  );
+  const sessionBusy = isRunning || hasRunningSubagents;
   // Merge consecutive purely-procedural assistant messages (thinking + tool
   // only, no text) into single render clusters so a multi-step turn reads
   // as one compact "思考 + N 个操作" card instead of N stacked cards.
@@ -322,14 +332,15 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     for (const f of turnFiles) m.set(f.filePath, f.before);
     return m;
   }, [turnFiles]);
-  // The textarea is blocked while either a turn is running or a tool approval
-  // is awaiting the user's decision — the approval panel takes the place of
-  // the input area entirely so the user can't type a competing prompt.
-  const inputBlocked = isRunning || !!headApproval;
+  // The textarea is blocked while a turn is running, a backgrounded subagent
+  // is still in flight, or a tool approval is awaiting the user's decision —
+  // the approval panel takes the place of the input area entirely so the user
+  // can't type a competing prompt.
+  const inputBlocked = sessionBusy || !!headApproval;
 
   const [value, setValue] = useState("");
   const [showJumpBottom, setShowJumpBottom] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualListRef = useRef<LegendListRef>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /** When set, an @ mention is pending a file picker; the number is the caret
    * index where the triggering "@" sits, so we can splice the path in there. */
@@ -348,15 +359,21 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // toggle time (not re-read every render) so the popover stays put even
   // if the chips row reflows while it's open.
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
-  // Map of user messageId → its row DOM element. The MessageTimeline reads
-  // each row's offsetTop to (a) highlight the dash whose message is in view
-  // and (b) scroll to that row on dash click. Stored in a ref (not state)
-  // because the timeline reads it inside its own scroll listener.
-  const userRowRefs = useRef<RowRefMap>(new Map());
-  const registerUserRow = (id: string) => (el: HTMLDivElement | null) => {
-    if (el) userRowRefs.current.set(id, el);
-    else userRowRefs.current.delete(id);
-  };
+  // User-message id → render-item index mapping for the virtual-list-based
+  // MessageTimeline. Built once per renderItems change from the grouped data.
+  const userMsgToRenderIndex = useMemo<Map<string, number>>(() => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < renderItems.length; i++) {
+      const item = renderItems[i];
+      if (item.kind === "single" && item.msg.role === "user") {
+        m.set(item.msg.id, i);
+      }
+    }
+    return m;
+  }, [renderItems]);
+  // Current virtual-list scroll offset, updated on each scroll event.
+  // Used by MessageTimeline to compute which user message is active.
+  const [virtualScrollTop, setVirtualScrollTop] = useState(0);
 
   // Auto-resize the textarea to fit its content. Resets height to "auto"
   // first so scrollHeight measures the full content, then sets an explicit
@@ -412,60 +429,56 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // Track whether the user is near the bottom, so we only auto-scroll on new
   // messages when they're already following along (don't yank them down while
   // they're reading older history). Also drives the "jump to bottom" button.
-  const updateJumpState = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    // Show the button as soon as the user scrolls up at all from the latest
-    // content. The 120px threshold (rather than 10px) prevents flicker when
-    // a new line is appended — the auto-scroll lands within a few pixels of
-    // the bottom and shouldn't pop the button in and out for that.
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  const updateJumpState = useCallback(() => {
+    const state = virtualListRef.current?.getState();
+    if (!state) return;
+    const scrollLength = state.scrollLength;
+    const scrollPos = state.scroll;
+    const nearBottom = scrollLength - scrollPos < 150;
     setShowJumpBottom(!nearBottom);
-  };
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.addEventListener("scroll", updateJumpState);
-    // Sync once on mount so a session resumed with history taller than the
-    // viewport shows the button immediately, without waiting for a scroll.
-    updateJumpState();
-    return () => el.removeEventListener("scroll", updateJumpState);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-evaluate after messages change: when the list grows the scroll height
-  // changes, so a position that was "near the bottom" may no longer be.
-  useEffect(() => {
-    updateJumpState();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages]);
-
-  // Auto-scroll to bottom as messages grow — but only if already at the bottom.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    if (nearBottom) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [messages]);
+  // Scroll callback from LegendList: update scroll position for MessageTimeline
+  // and jump-to-bottom button state.
+  const handleVirtualScroll = useCallback(() => {
+    const state = virtualListRef.current?.getState();
+    if (!state) return;
+    setVirtualScrollTop(state.scroll);
+    const nearBottom = state.scrollLength - state.scroll < 150;
+    setShowJumpBottom(!nearBottom);
+  }, []);
 
   const jumpToBottom = () => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    void virtualListRef.current?.scrollToEnd({ animated: true });
   };
 
   const handleSend = () => {
     const text = value.trim();
     // Nothing to send if both the textarea and the tag list are empty.
     if (!text && tags.length === 0) return;
-    if (isRunning) return;
+    // Don't allow sending while a turn (or a backgrounded subagent from a
+    // prior turn) is still in flight — the stop button is the only valid
+    // action in that state.
+    if (sessionBusy) return;
     // Compose the final prompt: typed text + each tag's content as a
     // delimited block (see composePromptWithTags).
     const prompt = composePromptWithTags(text, tags);
     if (!prompt) return;
-    void sendPrompt(prompt);
+    // Forward the tags as attachments so the sent user message keeps the
+    // same chip-card presentation in the stream as it had in the composer.
+    // displayText = just the typed text; the attachment content is shown
+    // via the cards, so we must NOT also inline it into the text block
+    // (the full prompt, with attachments inlined, is still sent to the SDK).
+    const attachments = tags.map((t) => ({ preview: t.preview, content: t.content }));
+    void sendPrompt(
+      prompt,
+      attachments.length > 0 ? attachments : undefined,
+      attachments.length > 0 ? text : undefined,
+    );
     setValue("");
     setTags([]);
     setOpenTagId(null);
+    setAnchorRect(null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -477,98 +490,116 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
 
   const empty = messages.length === 0;
 
+  // Render a single item for LegendList's renderItem.
+  const renderListItem = useCallback(
+    ({ item }: { item: RenderItem }) => {
+      if (item.kind === "single") {
+        const m = item.msg;
+        return (
+          <div className="px-8">
+            <div className="mx-auto max-w-5xl">
+              <MessageRow
+                msg={m}
+                isStreamingTail={item.isStreamingTail}
+                isLastCompletedAssistant={item.isLastCompletedAssistant}
+                beforeMap={beforeMap}
+              />
+            </div>
+          </div>
+        );
+      }
+      const blocks = flattenCluster(item.msgs);
+      return (
+        <div key={item.msgs[0].id} className="px-8">
+          <div className="mx-auto max-w-5xl">
+            {item.turnMeta && <TurnStatRow meta={item.turnMeta} />}
+            <ProceduralGroup blocks={blocks} beforeMap={beforeMap} />
+            {item.isStreamingTail && (
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <IconLoader2 size={12} className="animate-spin text-accent" />
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    },
+    [beforeMap],
+  );
+
+  // Footer content rendered after all message items.
+  const listFooter = useMemo(() => {
+    const showPlan = (plan.plan && plan.phase !== "cleared") || pendingPlanApproval;
+    const showTurnFiles = turnFiles.length > 0 && !isRunning;
+    if (!showPlan && !showTurnFiles) return null;
+    return (
+      <div className="px-8">
+        <div className="mx-auto max-w-5xl py-2">
+          {showPlan && (
+            <PlanStreamBlock
+              plan={pendingPlanApproval?.plan ?? plan.plan}
+              phase={plan.phase}
+              hasApproval={!!pendingPlanApproval}
+            />
+          )}
+          {showTurnFiles && (
+            <TurnFilesCard files={turnFiles} onRewind={() => void rewindTurn()} />
+          )}
+        </div>
+      </div>
+    );
+  }, [plan, pendingPlanApproval, turnFiles, isRunning, rewindTurn]);
+
   return (
     <div className="relative flex h-full flex-col">
-      {/* Message stream — wrapped so overlays (jump-to-bottom) can sit above
-          the scroll area but below the input box. When the session is empty
-          the wrapper collapses (contents hidden) so the input-box wrapper
-          below can take the full height and center vertically. */}
+      {/* Message stream area */}
       <div className={cn("relative flex min-h-0", empty ? "h-0" : "flex-1")}>
-      {/* Left-edge timeline of user messages — fixed cluster anchored to the
-          chat area's left-middle, does NOT scroll with content. Lives in the
-          overlay wrapper (outside the scroll container) so it stays put. */}
+      {/* Left-edge timeline of user messages */}
       {!empty && (
         <MessageTimeline
           messages={messages}
-          rowRefs={userRowRefs.current}
-          scrollRef={scrollRef}
+          scrollTop={virtualScrollTop}
+          userItemIndices={userMsgToRenderIndex}
+          onJumpToIndex={(index) => {
+            void virtualListRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0 });
+          }}
         />
       )}
-      {/* Message stream — scroll container, hidden when empty so the input
-          box can take the full height and center vertically. No border or
-          gap between the scroll area and the input box below. */}
-      <div
-        ref={scrollRef}
-        className={cn(
-          "relative w-full overflow-y-auto px-8",
-          empty ? "hidden" : "min-h-0 flex-1",
-        )}
-      >
-        {!empty && (
-          <>
-            {(todos.length > 0 || contextSnapshot || subagents.length > 0) && (
-              <div className="pointer-events-none sticky top-0 z-20 flex items-center justify-end gap-1.5 bg-gradient-to-b from-surface/80 to-transparent pb-2 pt-3 pr-2">
-                <StatusCapsule
-                  snapshot={contextSnapshot}
-                  subagents={subagents}
-                  todos={todos}
-                  plan={plan}
-                />
-              </div>
-            )}
-            <div className="mx-auto max-w-5xl space-y-2 pt-6">
-              {renderItems.map((item) => {
-                if (item.kind === "single") {
-                  const m = item.msg;
-                  return (
-                    <MessageRow
-                      key={m.id}
-                      msg={m}
-                      isStreamingTail={item.isStreamingTail}
-                      isLastCompletedAssistant={item.isLastCompletedAssistant}
-                      // User rows register their DOM element so the timeline
-                      // can locate them for highlight + jump. Assistant rows
-                      // pass nothing.
-                      registerRow={m.role === "user" ? registerUserRow(m.id) : undefined}
-                      beforeMap={beforeMap}
-                    />
-                  );
-                }
-                // Procedural cluster: consecutive thinking+tool messages of
-                // one turn merged into a single card. turnMeta (if any) drives
-                // the per-turn stat row above the card; the streaming loader
-                // shows at the bottom while the cluster is the live tail.
-                const blocks = flattenCluster(item.msgs);
-                return (
-                  <div key={item.msgs[0].id}>
-                    {item.turnMeta && <TurnStatRow meta={item.turnMeta} />}
-                    <ProceduralGroup blocks={blocks} beforeMap={beforeMap} />
-                    {item.isStreamingTail && (
-                      <div className="mt-1.5 flex items-center gap-1.5">
-                        <IconLoader2 size={12} className="animate-spin text-accent" />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {/* Per-turn modified-files card — sits at the END of the message
-                  stream (the turn's output tail), not above the input box, so
-                  it reads as part of the turn's result. Hidden while the turn
-                  is running (the card only makes sense once Edit/Write ops
-                  have settled) and when there are no files to show. */}
-              {turnFiles.length > 0 && !isRunning && (
-                <TurnFilesCard files={turnFiles} onRewind={() => void rewindTurn()} />
-              )}
+      {/* Virtual message list */}
+      {!empty && (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {/* StatusCapsule — sticky above the list */}
+          {(todos.length > 0 || contextSnapshot || subagents.length > 0) && (
+            <div className="pointer-events-none sticky top-0 z-20 flex items-center justify-end gap-1.5 bg-gradient-to-b from-surface/80 to-transparent pb-2 pt-3 pr-8">
+              <StatusCapsule
+                snapshot={contextSnapshot}
+                subagents={subagents}
+                todos={todos}
+                plan={plan}
+              />
             </div>
-          </>
-        )}
-      </div>
+          )}
+          <div className="min-h-0 flex-1" style={{ position: "relative" }}>
+            <LegendList
+              ref={virtualListRef}
+              data={renderItems}
+              renderItem={renderListItem}
+              keyExtractor={(item) => {
+                if (item.kind === "single") return item.msg.id;
+                return `cluster:${item.msgs[0].id}`;
+              }}
+              maintainScrollAtEnd
+              extraData={renderItems}
+              estimatedItemSize={80}
+              onScroll={handleVirtualScroll}
+              drawDistance={400}
+              ListFooterComponent={listFooter}
+              style={{ height: "100%", width: "100%" }}
+            />
+          </div>
+        </div>
+      )}
 
-      {/* Jump-to-bottom button — centered horizontally over the scroll area
-          (NOT the input box below), so it never covers the composer. Lives in
-          the wrapper that wraps only the scroll region, hence bottom-2 here
-          sits at the bottom of the message stream. Pointer events disabled on
-          the spacer so it never blocks scroll/click on underlying content. */}
+      {/* Jump-to-bottom button */}
       {showJumpBottom && (
         <div className="pointer-events-none absolute inset-x-0 bottom-2 z-30 flex justify-center">
           <button
@@ -664,7 +695,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
             />
             <div className="flex items-center justify-between gap-2 px-2 pb-1.5 pt-1">
               <ComposerToolbar />
-              {isRunning ? (
+              {sessionBusy ? (
                 <button
                   onClick={() => void interrupt()}
                   title="停止生成"
@@ -759,7 +790,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
  *  "开始 HH:MM:SS · 用时 12.3s" stat row ABOVE the content. The streaming
  *  tail (the last assistant message while a turn is running) shows a
  *  spinning loader at the bottom of the content. */
-function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, registerRow, beforeMap }: { msg: ChatMessage; isStreamingTail?: boolean; isLastCompletedAssistant?: boolean; registerRow?: (el: HTMLDivElement | null) => void; beforeMap?: BeforeContentMap }) {
+const MessageRow = memo(function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, beforeMap }: { msg: ChatMessage; isStreamingTail?: boolean; isLastCompletedAssistant?: boolean; beforeMap?: BeforeContentMap }) {
   const isUser = msg.role === "user";
   const copyText = useMemo(() => blocksToText(msg.blocks), [msg.blocks]);
   // Only show the copy button on messages with real text content — i.e. the
@@ -776,7 +807,7 @@ function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, registerRo
     ? hasTextContent && !!copyText
     : hasTextContent && !!copyText && isLastCompletedAssistant;
   return (
-    <div ref={registerRow} className={cn("group", isUser ? "flex justify-end" : "")}>
+    <div className={cn("group", isUser ? "flex justify-end" : "")}>
       <div className={isUser ? "max-w-[85%]" : "w-full"}>
         {/* Per-turn stat row — only on the first assistant message of a
             turn (the one carrying turnMeta). Sits above the content. */}
@@ -788,7 +819,7 @@ function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, registerRo
               : "text-content [font-size:var(--chat-font-size)]"
           }
         >
-          <MessageBlocks blocks={msg.blocks} beforeMap={beforeMap} />
+          <MessageBlocks blocks={msg.blocks} beforeMap={beforeMap} isStreamingTail={isStreamingTail} />
           {/* Streaming loader at the bottom of the content while this
               message is still receiving deltas. */}
           {isStreamingTail && (
@@ -803,7 +834,8 @@ function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, registerRo
       </div>
     </div>
   );
-}
+});
+export { MessageRow };
 
 /** Flatten a message's blocks into the plain-text payload that the copy
  *  button yields. text→text, thinking→quoted, tool_use→summary, errors
@@ -817,6 +849,10 @@ function blocksToText(blocks: Block[]): string {
     } else if (b.kind === "thinking") {
       const t = b.text.trim();
       if (t) out.push(`> ${t.replace(/\n/g, "\n> ")}`);
+    } else if (b.kind === "attachment") {
+      // Mirror the composer's delimited format so copied output matches
+      // what was actually sent to the model.
+      out.push(`--- pasted content (${b.content.length} chars) ---\n${b.content}\n--- end ---`);
     }
     // tool_use and error blocks are intentionally omitted — they're
     // procedural UI, not part of the conversational payload to copy.

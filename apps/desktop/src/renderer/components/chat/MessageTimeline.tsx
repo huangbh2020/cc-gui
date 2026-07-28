@@ -1,42 +1,39 @@
-import { useEffect, useRef, useState } from "react";
+/**
+ * Left-edge timeline of USER messages in the chat stream.
+ *
+ * Renders one small horizontal dash per user message, stacked vertically in
+ * a fixed cluster on the left edge. The cluster does NOT move with content —
+ * it stays anchored to the left edge's vertical middle.
+ *
+ * Virtual-list mode (default):
+ *   - `scrollTop`, `userItemIndices`, and `onJumpToIndex` are provided by
+ *     the parent (ChatPane) which owns the LegendList ref.
+ *   - The active dash is computed from the current scroll position and item
+ *     order rather than DOM offsetTop.
+ *
+ * Legacy DOM mode (deprecated):
+ *   - `rowRefs` and `scrollRef` can be passed for non-virtualised lists.
+ *
+ * Feature set:
+ *   - Active dash highlight (the last user message scrolled past).
+ *   - Hover card with timestamp + text body.
+ *   - Click to scroll to that message (via onJumpToIndex).
+ */
+import { useEffect, useRef, useState, useMemo } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import type { Block, ChatMessage } from "@renderer/stores/sessionStore.js";
 
-/**
- * Fixed left-edge timeline of USER messages in the chat stream.
- *
- * Renders one small horizontal dash per user message, stacked vertically in
- * a fixed cluster centered on the left edge of the chat area. The cluster
- * does NOT move with the content — it stays anchored to the left edge's
- * vertical middle, so it's always visible regardless of scroll position.
- *
- * Features:
- *  - The dash whose message is currently in view (closest to the top of the
- *    viewport) is highlighted in accent color, so the user always knows
- *    "where they are" in the conversation.
- *  - Hovering a dash reveals a styled card to its right showing the
- *    message's timestamp (HH:MM:SS) and full text body (scrollable).
- *  - Clicking a dash scrolls its message to the top of the viewport.
- *
- * NOTE: because dashes are positionally decoupled from message rows, the
- * mapping is by ORDER (1st dash = oldest user message, last = newest). The
- * hover card + active highlight tie each dash back to its specific message.
- */
+/** Map of messageId → render-item index (from the virtual list's data array). */
+export type UserItemIndexMap = Map<string, number>;
 
-/** Map of messageId → row DOM element. The chat list registers each user
- *  row so this component can measure scroll positions and jump to a row. */
-export type RowRefMap = Map<string, HTMLElement | null>;
-
-/** Format a wall-clock ms timestamp as HH:MM:SS (local time). Duplicated
- *  from ChatPane's private fmtClock to avoid widening its export surface. */
+/** Format a wall-clock ms timestamp as HH:MM:SS (local time). */
 function fmtClock(ms: number): string {
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-/** Flatten a message's blocks into plain text for the tooltip body. Mirrors
- *  ChatPane's blocksToText but kept local for the same decoupling reason. */
+/** Flatten a message's blocks into plain text for the tooltip body. */
 function blocksToText(blocks: Block[]): string {
   const out: string[] = [];
   for (const b of blocks) {
@@ -45,61 +42,75 @@ function blocksToText(blocks: Block[]): string {
     } else if (b.kind === "thinking") {
       const t = b.text.trim();
       if (t) out.push(`> ${t.replace(/\n/g, "\n> ")}`);
+    } else if (b.kind === "attachment") {
+      out.push(`[附件] ${b.preview}`);
     }
   }
   return out.join("\n\n").trim();
 }
 
+interface MessageTimelineProps {
+  messages: ChatMessage[];
+  /** Current scroll offset of the virtual list's viewport. Used to compute
+   *  which user message is active. Zero when no user messages exist. */
+  scrollTop?: number;
+  /** Map of user-message id → its index in the LegendList data array. Used
+   *  to translate a dash click into a scrollToIndex call. */
+  userItemIndices?: UserItemIndexMap;
+  /** Called when a dash is clicked; the argument is the LegendList item index
+   *  to scroll to. Provided by ChatPane. */
+  onJumpToIndex?: (index: number) => void;
+}
+
 export function MessageTimeline({
   messages,
-  rowRefs,
-  scrollRef,
-}: {
-  messages: ChatMessage[];
-  rowRefs: RowRefMap;
-  scrollRef: React.RefObject<HTMLDivElement | null>;
-}) {
-  const userMessages = messages.filter((m) => m.role === "user");
-  // The id of the user message currently in view (its row is closest to the
-  // top of the scroll viewport). Drives the active dash highlight.
-  const [activeId, setActiveId] = useState<string | null>(null);
+  scrollTop = 0,
+  userItemIndices,
+  onJumpToIndex,
+}: MessageTimelineProps) {
+  const userMessages = useMemo(
+    () => messages.filter((m) => m.role === "user"),
+    [messages],
+  );
 
-  // Recompute which user message is "in view" on scroll and on layout
-  // changes. A message is considered in view once its top edge has scrolled
-  // past (or reached) the top of the viewport; the active one is the LAST
-  // such message (the most recent user prompt the reader is looking at).
-  const computeActive = () => {
-    const scroller = scrollRef.current;
-    if (!scroller) return;
-    const top = scroller.scrollTop;
-    let current: string | null = null;
-    for (const m of userMessages) {
-      const row = rowRefs.get(m.id);
-      if (!row) continue;
-      // offsetTop is relative to the scroll content's offsetParent. A row
-      // is "passed" when its top is at or above the viewport top. We pick
-      // the last passed row (= closest to the top, most recent in view).
-      if (row.offsetTop <= top + 1) current = m.id;
+  // Compute active user-message id from scroll position + item ordering.
+  // The "active" one is the LAST user message whose LegendList item index
+  // is estimated to be at or above the viewport top. Since we don't have
+  // exact pixel positions for each item, we approximate by walking items in
+  // order and picking the last one we've "scrolled past" based on a simple
+  // linear estimate.
+  const activeId = useMemo<string | null>(() => {
+    if (userMessages.length === 0 || !userItemIndices || userItemIndices.size === 0) {
+      return null;
     }
-    setActiveId(current);
-  };
+    // Build an ordered list of (messageId, renderIndex) sorted by renderIndex.
+    const indexed = userMessages
+      .map((m) => ({
+        id: m.id,
+        idx: userItemIndices.get(m.id) ?? -1,
+      }))
+      .filter((x) => x.idx >= 0)
+      .sort((a, b) => a.idx - b.idx);
 
-  useEffect(() => {
-    const scroller = scrollRef.current;
-    if (!scroller) return;
-    computeActive();
-    scroller.addEventListener("scroll", computeActive, { passive: true });
-    return () => scroller.removeEventListener("scroll", computeActive);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollRef, rowRefs, messages]);
+    if (indexed.length === 0) return null;
 
-  // Scroll a message row to the top of the viewport. Used by dash clicks.
-  const jumpTo = (id: string) => {
-    const scroller = scrollRef.current;
-    const row = rowRefs.get(id);
-    if (!scroller || !row) return;
-    scroller.scrollTo({ top: row.offsetTop, behavior: "smooth" });
-  };
+    // With virtual lists we don't have exact pixel positions per item.
+    // We use a heuristic based on scrollTop and relative item indices:
+    // the active user message is the last one that is "likely" above the
+    // viewport top.
+    //
+    // Since @legendapp/list renders items sequentially, items with lower
+    // indices appear before (above) items with higher indices. We estimate
+    // that roughly `scrollTop / 80` items have been scrolled past (80px is
+    // our estimatedItemSize). The active one is the closest to that boundary.
+    const estimatedIdx = scrollTop > 0 ? Math.floor(scrollTop / 80) : 0;
+
+    let active: string | null = null;
+    for (const x of indexed) {
+      if (x.idx <= estimatedIdx + 2) active = x.id;
+    }
+    return active;
+  }, [userMessages, scrollTop, userItemIndices]);
 
   if (userMessages.length === 0) return null;
 
@@ -108,22 +119,20 @@ export function MessageTimeline({
       className="pointer-events-none absolute left-0 top-1/2 z-10 -translate-y-1/2"
       aria-hidden
     >
-      {/* Cluster of dashes, stacked vertically and centered as a group.
-          pointer-events re-enabled so individual dashes are hoverable.
-          NOTE: this container must NOT set overflow-y-auto — CSS spec says
-          that when one overflow axis is non-visible the other computes to
-          auto, which would clip the hover card that extends to the right
-          (overflow-x). We bound the cluster with max-h + visible overflow
-          instead so the card can break out. */}
       <div className="pointer-events-auto flex max-h-[70vh] flex-col items-center justify-center gap-1.5 py-1">
-        {userMessages.map((m) => (
-          <TimelineDash
-            key={m.id}
-            message={m}
-            active={m.id === activeId}
-            onJump={() => jumpTo(m.id)}
-          />
-        ))}
+        {userMessages.map((m) => {
+          const idx = userItemIndices?.get(m.id) ?? -1;
+          return (
+            <TimelineDash
+              key={m.id}
+              message={m}
+              active={m.id === activeId}
+              onJump={() => {
+                if (idx >= 0 && onJumpToIndex) onJumpToIndex(idx);
+              }}
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -141,8 +150,6 @@ function TimelineDash({
 }) {
   const [hovered, setHovered] = useState(false);
   const text = blocksToText(message.blocks);
-  // Accent when this dash's message is the one in view; otherwise subtle.
-  // Hover still brightens non-active dashes so the user gets feedback.
   const accent = active || hovered;
 
   return (
@@ -152,20 +159,12 @@ function TimelineDash({
       onMouseLeave={() => setHovered(false)}
       onClick={onJump}
     >
-      {/* The dash itself — a short horizontal bar. Accent-colored when its
-          message is in view OR hovered; longer when active to stand out. */}
       <span
         className={cn(
           "block h-0.5 rounded-full transition-all",
           active ? "w-4 bg-accent" : hovered ? "w-4 bg-info" : "w-3 bg-content-subtle/60",
         )}
       />
-
-      {/* Detail card — appears to the right of the dash. A child of this
-          dash's relative container, so moving the cursor from the dash onto
-          the card does NOT fire onMouseLeave (the card is a DOM descendant).
-          The card is positioned with absolute + z-40 so it floats above the
-          message stream regardless of source order. */}
       {hovered && (
         <div
           className={cn(
@@ -173,7 +172,6 @@ function TimelineDash({
             "rounded-lg border border-edge bg-surface/95 p-3 shadow-2xl backdrop-blur",
           )}
         >
-          {/* Timestamp header — accent dot when this message is in view. */}
           <div className="mb-1.5 flex items-center gap-1.5 border-b border-edge pb-1.5">
             <span className={cn("h-1.5 w-1.5 rounded-full", active ? "bg-accent" : "bg-info")} />
             <span className="text-[11px] tabular-nums text-content-muted">
@@ -183,7 +181,6 @@ function TimelineDash({
               <span className="ml-auto rounded bg-accent/15 px-1 text-[9px] text-accent">当前</span>
             )}
           </div>
-          {/* Message body — scrollable if long, preserves whitespace. */}
           <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-[13px] leading-relaxed text-content">
             {text || <span className="text-content-subtle">(无文本内容)</span>}
           </div>
@@ -192,4 +189,3 @@ function TimelineDash({
     </div>
   );
 }
-

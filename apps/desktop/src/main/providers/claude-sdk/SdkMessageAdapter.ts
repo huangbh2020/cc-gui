@@ -47,6 +47,9 @@ interface TaskStartedEnvelope {
   tool_use_id?: string;
   description?: string;
   subagent_type?: string;
+  /** SDK flag: when true the parent agent does not block on this task and it
+   *  may continue running after the parent turn's stream ends. */
+  is_backgrounded?: boolean;
 }
 
 interface TaskProgressEnvelope {
@@ -368,13 +371,24 @@ export class SdkMessageAdapter {
         phase: "cleared",
       } satisfies PlanUpdateEvent);
     }
-    // End-of-turn safety net: any subagent still in "running" is finished
-    // (the parent turn is over). Mark them as completed so the capsule
-    // stops animating. We only auto-complete — real task_updated events
-    // arriving earlier may have set failed/killed, which we preserve.
+    // End-of-turn safety net: any FOREGROUND subagent still in "running" is
+    // finished (the parent turn is over — it was blocking on it). Mark those
+    // completed so the capsule stops animating. We only auto-complete — real
+    // task_updated events arriving earlier may have set failed/killed, which
+    // we preserve.
+    //
+    // BACKGROUND subagents (is_backgrounded=true) are different: the parent
+    // agent did NOT block on them and they may still be running in the CLI
+    // after this turn's stream closes. We deliberately leave them in
+    // "running" so the renderer keeps the "busy" signal (locked composer,
+    // animated capsule) alive while they remain running. Their final
+    // task_updated may not arrive under single-turn query semantics, but
+    // preserving the running state here at least reflects "work was
+    // delegated and may still be in progress" instead of falsely showing
+    // completed.
     let subagentsChanged = false;
     for (const [id, s] of this.state.subagents) {
-      if (s.status === "running") {
+      if (s.status === "running" && !s.isBackgrounded) {
         this.state.subagents.set(id, { ...s, status: "completed", endedAt: s.endedAt ?? Date.now() });
         subagentsChanged = true;
       }
@@ -415,6 +429,7 @@ export class SdkMessageAdapter {
       description: m.description ?? "",
       subagentType: m.subagent_type,
       status: "running",
+      isBackgrounded: m.is_backgrounded ?? false,
     };
     this.state.subagents.set(m.task_id, snapshot);
     this.flushSubagents();
@@ -472,6 +487,7 @@ export class SdkMessageAdapter {
       description: patch.description ?? cur.description,
       endedAt: typeof patch.end_time === "number" ? patch.end_time : cur.endedAt,
       error: patch.error ?? cur.error,
+      isBackgrounded: patch.is_backgrounded ?? cur.isBackgrounded,
     });
     this.flushSubagents();
   }

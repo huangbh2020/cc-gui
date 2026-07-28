@@ -365,6 +365,12 @@ export interface SubagentSnapshot {
   endedAt?: number;
   /** Error message (task_updated.patch.error), if status=failed. */
   error?: string;
+  /** True when the SDK launched this task as backgrounded (the parent agent
+   *  does NOT block on it). Set from task_started/task_updated patch's
+   *  `is_backgrounded`. Backgrounded tasks outlive the parent turn's stream in
+   *  the CLI; the adapter avoids force-completing them at turn end so the
+   *  renderer can keep the "busy" signal alive while they remain running. */
+  isBackgrounded?: boolean;
 }
 
 /**

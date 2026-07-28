@@ -7,25 +7,26 @@ import {
   IconCheck,
   IconX,
 } from "@renderer/lib/icons.js";
-import { Markdown } from "./Markdown.js";
 
 /**
- * Floating plan-approval card shown above the composer when the model calls
- * ExitPlanMode in plan mode (per the Snowflake/SDK plan-mode flow).
+ * Compact plan-approval sheet shown above the composer when the model calls
+ * ExitPlanMode in plan mode.
  *
- * The model has drafted a plan and is waiting for the user to approve it
- * before executing. Approve → SDK exits plan mode and starts executing;
- * Reject → SDK stays in plan mode and the model can revise and re-request.
+ * The full plan text is shown inline in the message stream via PlanStreamBlock
+ * — this sheet is intentionally minimal so it doesn't obstruct the user's view
+ * of the plan or the conversation. It carries only the action row: edit (the
+ * one part that needs the plan text), reject (with optional reason), and
+ * approve.
  *
- * The user may edit the plan text before approving — the edited version is
- * passed back through `updatedInput.plan` so the SDK records what was actually
- * approved.
+ * - Default (idle): a single compact row — "计划已就绪 · 请审阅" + [编辑] [拒绝]
+ *   [批准并执行]. Takes one line, doesn't block reading the plan card.
+ * - Editing: expands a textarea for direct plan editing. "完成编辑" collapses
+ *   back to the compact row.
+ * - Rejecting: expands a reason input + confirm/cancel.
  *
- * Styling mirrors QuestionPrompt: a single rounded, bordered, elevated card
- * using the `accent` (emerald) token for emphasis — the header label, the
- * "批准" primary button — and neutral surface/edge tokens for the frame. The
- * card is wrapped in the same `px-8 + mx-auto max-w-5xl` column as the
- * composer so it matches the input-box width. No violet/purple is used.
+ * Styling: accent (emerald) token for the header label and approve button —
+ * this is the one actionable approval surface, so the accent signals "press
+ * this to proceed". Matches the composer's accent usage (send button etc.).
  */
 export function PlanApprovalPrompt({
   plan,
@@ -56,42 +57,39 @@ export function PlanApprovalPrompt({
   };
 
   return (
-    // Outer wrapper mirrors the composer's horizontal sizing so the card is
+    // Outer wrapper mirrors the composer's horizontal sizing so the sheet is
     // exactly as wide as the input box: `px-8` side gutters + `mx-auto
-    // max-w-5xl` centered inner column. `pb-2` lifts the card off whatever
-    // sits below it (the composer / QuestionPrompt sheet).
+    // max-w-5xl` centered inner column. `pb-2` lifts it off the composer.
     <div className="px-8 pb-2">
       <div
         className={cn(
-          "mx-auto max-w-5xl rounded-2xl border border-edge-input bg-surface px-4 py-3 text-xs text-content shadow-2xl",
+          "mx-auto max-w-5xl rounded-2xl border border-edge-input bg-surface px-4 py-2.5 text-xs text-content shadow-2xl",
           "animate-[qa-sheet-in_140ms_ease-out]",
         )}
       >
-        {/* Header */}
-        <div className="mb-2.5 flex items-center justify-between gap-2">
+        {/* Compact header — always visible */}
+        <div className="mb-2 flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">
             <IconRocket size={14} className="shrink-0 text-accent" />
             <span className="font-semibold text-accent">计划已就绪 · 请审阅</span>
           </div>
-          <span className="shrink-0 text-[10px] text-content-subtle">批准后将退出计划模式并开始执行</span>
+          <span className="shrink-0 text-[10px] text-content-subtle">
+            {edited ? "已编辑" : "批准后将退出计划模式并开始执行"}
+          </span>
         </div>
 
-        {/* Plan body: rendered Markdown by default, textarea when editing */}
-        <div className="mb-2.5 max-h-64 overflow-auto rounded-lg border border-edge bg-surface-muted/40 p-3">
-          {editing ? (
+        {/* Editing textarea — only shown when actively editing */}
+        {editing && (
+          <div className="mb-2.5">
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               autoFocus
-              className="min-h-32 w-full resize-y bg-transparent font-mono text-[11px] leading-relaxed text-content outline-none"
+              className="max-h-64 min-h-32 w-full resize-y overflow-auto rounded-lg border border-edge bg-surface-muted/40 p-3 font-mono text-[11px] leading-relaxed text-content outline-none"
               placeholder="编辑计划内容…"
             />
-          ) : (
-            <div className="prose-plan text-[11px] leading-relaxed text-content">
-              <Markdown>{plan || "_(计划为空)_"}</Markdown>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Reject reason input (collapsible) */}
         {rejecting && (
@@ -106,7 +104,7 @@ export function PlanApprovalPrompt({
         )}
 
         {/* Action footer */}
-        <div className="flex items-center justify-between gap-2 border-t border-edge pt-2.5">
+        <div className="flex items-center justify-between gap-2 border-t border-edge pt-2">
           <Button
             variant={editing ? "primary" : "ghost"}
             size="sm"

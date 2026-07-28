@@ -30,7 +30,8 @@ export type Block =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
   | { kind: "tool_use"; toolCallId: string; toolName: string; input: unknown; status: "running" | "done" | "error"; result?: unknown }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  | { kind: "attachment"; preview: string; content: string };
 
 /** Turn-level timing metadata. Attached to the FIRST assistant message of
  *  a turn (the one created when the first text.delta / thinking / tool.use
@@ -229,7 +230,16 @@ interface SessionState {
   archiveProject: (id: string, archived: boolean) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   archiveSession: (id: string, archived: boolean) => Promise<void>;
-  sendPrompt: (prompt: string) => Promise<void>;
+  sendPrompt: (
+    prompt: string,
+    attachments?: { preview: string; content: string }[],
+    /** Text shown in the user message's text block. Defaults to `prompt`,
+     *  but when attachments are present the caller passes just the typed
+     *  text (without the inlined attachment content) so the card + text
+     *  don't duplicate the same payload. The full `prompt` (with
+     *  attachments inlined) is still what gets sent to the SDK. */
+    displayText?: string,
+  ) => Promise<void>;
   interrupt: () => Promise<void>;
   ingestEvent: (e: RuntimeEvent) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -478,6 +488,191 @@ function hydrateTurnFiles(
     }
     return { turnFilesBySession: next };
   });
+}
+
+/* ──────────────── Delta buffer (performance: batch text.delta per rAF) ────────────────
+ *
+ * Each `text.delta` / `thinking` event from the stream triggers a full `setState`
+ * that rebuilds the messages array. During a long output this can happen thousands
+ * of times per second. The buffer accumulates raw deltas and flushes them on a
+ * `requestAnimationFrame` boundary (~60 Hz), collapsing many single-character
+ * deltas into one `setState` per frame.
+ *
+ * Terminal events (turn.done, error) force an immediate flush so no content is
+ * lost before the turn closes. The buffer is module-scoped, *not* inside the
+ * Zustand store, so it doesn't trigger React re-renders on accumulation.
+ */
+
+type DeltaEntry = {
+  sessionId: string;
+  messageId: string;
+  /** Accumulated text (via text.delta) */
+  text: string;
+  /** Accumulated thinking (via thinking delta) — only one of text/thinking is
+   *  populated per call, but we carry both to consolidate into one flush. */
+  thinking: string;
+};
+
+const deltaBuf = new Map<string, DeltaEntry>();
+
+let flushScheduled = false;
+
+/* ─── Adaptive throttling ───
+ *
+ * Instead of a fixed rAF cadence, we track the inter-arrival time of deltas
+ * via a sliding window and pick a flush strategy that balances throughput
+ * (batched during bursts) vs. responsiveness (near-immediate when sparse).
+ *
+ * Strategy matrix:
+ *   avg interval    method         delay
+ *   < 16ms          rAF            ~16ms (60 Hz batch)
+ *   16-100ms        timer + rAF    ~50ms (moderate batch)
+ *   > 100ms         microtask      0ms (flush on next tick)
+ *
+ * The sliding window keeps the last 5 deltas (by wall-clock ms). The window is
+ * module-scoped and never triggers React renders, exactly like deltaBuf itself.
+ */
+const deltaArrivals: number[] = [];
+const MAX_WINDOW = 5;
+
+function avgIntervalMs(): number {
+  if (deltaArrivals.length < 2) return 0;
+  const min = deltaArrivals[0];
+  const max = deltaArrivals[deltaArrivals.length - 1];
+  return (max - min) / (deltaArrivals.length - 1);
+}
+
+function recordDeltaArrival(): void {
+  const now = performance.now();
+  deltaArrivals.push(now);
+  if (deltaArrivals.length > MAX_WINDOW) deltaArrivals.shift();
+}
+
+function scheduleDeltaFlush(): void {
+  recordDeltaArrival();
+  if (flushScheduled) return;
+  flushScheduled = true;
+
+  const avg = avgIntervalMs();
+  if (avg > 100 && deltaArrivals.length >= 2) {
+    // Sparse deltas: flush on next microtask (near-immediate).
+    queueMicrotask(flushDeltas);
+  } else if (avg > 16) {
+    // Moderate pace: 50 ms timer for a modest batch window.
+    setTimeout(flushDeltas, 50);
+  } else {
+    // Dense burst: rAF (natural 60 Hz batch).
+    if (typeof requestAnimationFrame !== "undefined") {
+      requestAnimationFrame(flushDeltas);
+    } else {
+      setTimeout(flushDeltas, 16);
+    }
+  }
+}
+
+function flushDeltas(): void {
+  flushScheduled = false;
+  if (deltaBuf.size === 0) return;
+
+  // Snapshot the buffer and clear it atomically so new deltas that arrive
+  // during this flush start a fresh accumulation rather than being lost.
+  const entries = Array.from(deltaBuf.values());
+  deltaBuf.clear();
+
+  useSessionStore.setState((s) => {
+    // Group entries by sessionId so we only iterate each session's messages
+    // once per flush cycle.
+    const bySession = new Map<string, DeltaEntry[]>();
+    for (const e of entries) {
+      const arr = bySession.get(e.sessionId);
+      if (arr) arr.push(e);
+      else bySession.set(e.sessionId, [e]);
+    }
+
+    for (const [sid, sessionEntries] of bySession) {
+      const list = s.messagesBySession[sid] ?? [];
+      let next: typeof list = list;
+
+      for (const e of sessionEntries) {
+        let msg = findMsg(next, e.messageId);
+        if (!msg) {
+          // First delta for this message — create a new assistant message.
+          // Check if a turn is already open (assistant message without endedAt).
+          const isNewTurn = !next.some(
+            (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
+          );
+          msg = {
+            id: e.messageId,
+            sessionId: sid,
+            role: "assistant",
+            blocks: [],
+            createdAt: Date.now(),
+            ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
+          };
+          next = [...next, msg];
+        } else {
+          // Message already exists — we'll replace it below.
+        }
+
+        // Apply accumulated text
+        if (e.text) {
+          const blocks = msg.blocks;
+          const lastBlock = blocks[blocks.length - 1];
+          if (lastBlock && lastBlock.kind === "text") {
+            const updatedMsg = {
+              ...msg,
+              blocks: [...blocks.slice(0, -1), { ...lastBlock, text: lastBlock.text + e.text }],
+            };
+            next = next.map((m) => (m.id === msg!.id ? updatedMsg : m));
+          } else {
+            const updatedMsg = {
+              ...msg,
+              blocks: [...blocks, { kind: "text", text: e.text } as Block],
+            };
+            next = next.map((m) => (m.id === msg!.id ? updatedMsg : m));
+          }
+          msg = findMsg(next, e.messageId)!;
+        }
+
+        // Apply accumulated thinking
+        if (e.thinking) {
+          const blocks = msg!.blocks;
+          const lastBlock = blocks[blocks.length - 1];
+          if (lastBlock && lastBlock.kind === "thinking") {
+            const updatedMsg = {
+              ...msg,
+              blocks: [...blocks.slice(0, -1), { ...lastBlock, text: lastBlock.text + e.thinking }],
+            };
+            next = next.map((m) => (m.id === msg!.id ? updatedMsg : m));
+          } else {
+            const updatedMsg = {
+              ...msg,
+              blocks: [...blocks, { kind: "thinking", text: e.thinking } as Block],
+            };
+            next = next.map((m) => (m.id === msg!.id ? updatedMsg : m));
+          }
+        }
+      }
+
+      // Write back only if the session changed — avoid touching unrelated sessions.
+      if (next !== list) {
+        s.messagesBySession[sid] = next;
+      }
+    }
+
+    // Return a minimal diff — we mutated messagesBySession directly inside the
+    // setState callback (Zustand accepts this pattern because setState runs
+    // synchronously and can detect the mutation via its proxy).
+    return { messagesBySession: { ...s.messagesBySession } };
+  });
+}
+
+/** Flush any buffered deltas immediately (called before terminal events). */
+function forceDeltaFlush(): void {
+  if (deltaBuf.size === 0) return;
+  flushScheduled = false;
+  deltaArrivals.length = 0; // Reset the adaptive window.
+  flushDeltas();
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -1139,19 +1334,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  sendPrompt: async (prompt) => {
+  sendPrompt: async (prompt, attachments, displayText) => {
     const sessionId = get().activeSessionId;
     if (!sessionId || !prompt.trim()) return;
     // Per-thread guard: only block this thread from sending if IT is running.
     // Another thread's running turn shouldn't lock the composer in this one.
     if (get().runningBySession[sessionId]) return;
 
-    // 1. immediately show the user's message
+    // 1. immediately show the user's message. Attachments (pasted content
+    //    promoted to cards in the composer) render as attachment blocks
+    //    ABOVE the typed text, mirroring the composer's chip-above-textarea
+    //    layout. The text block shows only the typed text (displayText) —
+    //    the full `prompt` (with attachments inlined via
+    //    composePromptWithTags) is what the SDK receives, but showing it
+    //    here too would duplicate the attachment content as plain text.
+    const blocks: Block[] = [];
+    if (attachments) {
+      for (const a of attachments) {
+        blocks.push({ kind: "attachment", preview: a.preview, content: a.content });
+      }
+    }
+    blocks.push({ kind: "text", text: displayText ?? prompt });
     const userMsg: ChatMessage = {
       id: `u_${Date.now()}`,
       sessionId,
       role: "user",
-      blocks: [{ kind: "text", text: prompt }],
+      blocks,
       createdAt: Date.now(),
     };
     set((s) => ({
@@ -1202,6 +1410,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   ingestEvent: (e) => {
     const sid = e.sessionId;
 
+    // Terminal events: flush any buffered deltas before processing the
+    // turn-end event so no content is lost when the stream closes.
+    if (e.type === "turn.done" || e.type === "error") {
+      forceDeltaFlush();
+    }
+
     // todo.update is an independent state slice — handle and skip the
     // message-accumulation logic below.
     if (e.type === "todo.update") {
@@ -1217,6 +1431,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sid]: { plan: e.plan, phase: e.phase },
         },
       }));
+      return;
+    }
+    // mode.change: the model (or host) flipped the session's effective
+    // permission mode mid-turn (e.g. EnterPlanMode / ExitPlanMode after
+    // approval). Sync the composer chip for the ACTIVE session so it
+    // reflects runtime reality instead of the stale startup mode. Only the
+    // active session's chip is updated — other tabs keep their own config.
+    // Persist fire-and-forget so a resumed turn starts in the right mode.
+    if (e.type === "mode.change") {
+      if (sid === get().activeSessionId) {
+        set({ permissionMode: e.mode });
+        void api.session.updateSettings({ sessionId: sid, permissionMode: e.mode }).catch((err) => {
+          console.error("updateSettings(mode.change) failed:", err);
+        });
+      }
       return;
     }
     // subagent.update: REPLACE semantics — swap the full roster.
@@ -1285,73 +1514,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       switch (e.type) {
         case "text.delta": {
-          let msg = findMsg(next, e.messageId);
-          if (!msg) {
-            // Is this the first assistant block of a new turn? If the last
-            // message is a user prompt (or there are no assistant messages
-            // yet), stamp turnMeta so the renderer can show the per-turn
-            // "started at · duration" row above this message.
-            // Is this the first assistant block of a NEW turn? A turn is
-            // "open" while any assistant message has a turnMeta with no
-            // endedAt (i.e. turn.done hasn't landed yet). If no open turn
-            // exists, this delta starts a fresh one — stamp turnMeta so
-            // the renderer shows the per-turn stat row above this message.
-            // Past turns' messages still carry their (now-ended) turnMeta,
-            // so we must check endedAt, not just presence.
-            const isNewTurn = !next.some(
-              (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
-            );
-            msg = {
-              id: e.messageId,
-              sessionId: sid,
-              role: "assistant",
-              blocks: [],
-              createdAt: Date.now(),
-              ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
-            };
-            next = [...next, msg];
-          }
-          const lastBlock = msg.blocks[msg.blocks.length - 1];
-          if (lastBlock && lastBlock.kind === "text") {
-            const updatedMsg = { ...msg, blocks: [...msg.blocks.slice(0, -1), { ...lastBlock, text: lastBlock.text + e.text }] };
-            next = next.map((m) => (m.id === msg!.id ? updatedMsg : m));
+          // Buffer the delta — flushDeltas will apply accumulated text in a
+          // single rAF-bound setState, collapsing many single-char deltas into
+          // one React update per frame (~60 Hz instead of per-char).
+          const key = `${sid}:${e.messageId}`;
+          const existing = deltaBuf.get(key);
+          if (existing) {
+            existing.text += e.text;
           } else {
-            const updatedMsg = { ...msg, blocks: [...msg.blocks, { kind: "text", text: e.text } as Block] };
-            next = next.map((m) => (m.id === msg!.id ? updatedMsg : m));
+            deltaBuf.set(key, { sessionId: sid, messageId: e.messageId, text: e.text, thinking: "" });
           }
+          scheduleDeltaFlush();
+          // Don't add to `next` — flushDeltas mutates the store directly.
           break;
         }
         case "thinking": {
-          let msg = findMsg(next, e.messageId);
-          if (!msg) {
-            // Is this the first assistant block of a NEW turn? A turn is
-            // "open" while any assistant message has a turnMeta with no
-            // endedAt (i.e. turn.done hasn't landed yet). If no open turn
-            // exists, this delta starts a fresh one — stamp turnMeta so
-            // the renderer shows the per-turn stat row above this message.
-            // Past turns' messages still carry their (now-ended) turnMeta,
-            // so we must check endedAt, not just presence.
-            const isNewTurn = !next.some(
-              (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
-            );
-            msg = {
-              id: e.messageId,
-              sessionId: sid,
-              role: "assistant",
-              blocks: [],
-              createdAt: Date.now(),
-              ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
-            };
-            next = [...next, msg];
-          }
-          const lastBlock = msg.blocks[msg.blocks.length - 1];
-          if (lastBlock && lastBlock.kind === "thinking") {
-            const updatedMsg = { ...msg, blocks: [...msg.blocks.slice(0, -1), { ...lastBlock, text: lastBlock.text + e.text }] };
-            next = next.map((m) => (m.id === msg!.id ? updatedMsg : m));
+          const key = `${sid}:${e.messageId}`;
+          const existing = deltaBuf.get(key);
+          if (existing) {
+            existing.thinking += e.text;
           } else {
-            const updatedMsg = { ...msg, blocks: [...msg.blocks, { kind: "thinking", text: e.text } as Block] };
-            next = next.map((m) => (m.id === msg!.id ? updatedMsg : m));
+            deltaBuf.set(key, { sessionId: sid, messageId: e.messageId, text: "", thinking: e.text });
           }
+          scheduleDeltaFlush();
           break;
         }
         case "tool.use": {
@@ -1453,12 +1638,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // next turn starts with a clean capsule.
           set((s) => {
             const { [sid]: _dropPlan, ...restPlanApprovals } = s.pendingPlanApprovalBySession;
+            // If any subagent is still `running` (typically a backgrounded task
+            // whose lifecycle outlives this turn's stream), KEEP the roster so
+            // the renderer can keep the composer locked + show the task as
+            // in-progress. Only clear when nothing is running (the normal
+            // case — foreground tasks were force-completed by the adapter).
+            const curAgents = s.subagentsBySession[sid] ?? [];
+            const hasRunning = curAgents.some((a) => a.status === "running");
             return {
               runningBySession: { ...s.runningBySession, [sid]: false },
               pendingApprovals: s.pendingApprovals.filter((p) => p.sessionId !== sid),
               pendingPlanApprovalBySession: restPlanApprovals,
-              planBySession: { ...s.planBySession, [sid]: { plan: "", phase: "cleared" } },
-              subagentsBySession: { ...s.subagentsBySession, [sid]: [] },
+              // Keep the plan card visible when the plan was APPROVED (phase
+              // "ready" with non-empty text) so it persists in the message
+              // stream after the turn ends and across thread reopen. Clear
+              // drafting / empty / cleared plans — those represent an
+              // unapproved draft or the absence of a plan.
+              planBySession: {
+                ...s.planBySession,
+                [sid]: (s.planBySession[sid]?.phase === "ready" && s.planBySession[sid]?.plan)
+                  ? s.planBySession[sid]
+                  : { plan: "", phase: "cleared" },
+              },
+              subagentsBySession: hasRunning
+                ? s.subagentsBySession
+                : { ...s.subagentsBySession, [sid]: [] },
             };
           });
           break;
