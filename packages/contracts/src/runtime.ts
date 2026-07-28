@@ -195,11 +195,35 @@ export interface TurnDoneEvent {
 }
 
 /**
+ * One file touched by a turn. Shared shape across the `turn.files` event
+ * payload, the persisted `Session.turnFiles` column, and the renderer's
+ * `turnFilesBySession` bucket — defined once here so the three never drift.
+ *
+ * - `filePath`: absolute (cwd-resolved by main).
+ * - `kind`: "created" = file did not exist before the turn (rewind unlinks);
+ *   "modified" = it existed (rewind writes `before` back).
+ * - `adds` / `dels`: line-level change tallies computed by `FileSnapshot.freeze`
+ *   (LCS over `before` vs the on-disk post-turn content). The folded card shows
+ *   these directly without computing a full diff; `0` for unreadable/binary.
+ * - `before`: the file's pre-turn content (the empty string for created files).
+ *   Crosses IPC so the renderer can compute a full line diff on demand by
+ *   reading the current on-disk content and diffing against this.
+ */
+export interface TurnFileEntry {
+  filePath: string;
+  kind: TurnFileKind;
+  adds: number;
+  dels: number;
+  before: string;
+}
+
+/** Whether a turn-touched file existed before the turn. */
+export type TurnFileKind = "modified" | "created";
+
+/**
  * Emitted at the end of a turn listing the files Edit/Write touched in
  * that turn. Renderer uses this to render the "本轮文件" card with the
- * per-file diff and a rewind button. The pre-turn file *content* lives
- * only in main process memory (FileSnapshot); only the paths and
- * existence flags cross the IPC boundary.
+ * per-file diff and a rewind button.
  *
  * `kind: "created"` means the file did not exist before the turn —
  * rewinding will unlink it. `kind: "modified"` means it existed —
@@ -208,7 +232,7 @@ export interface TurnDoneEvent {
 export interface TurnFilesEvent {
   type: "turn.files";
   sessionId: string;
-  files: Array<{ filePath: string; kind: "modified" | "created" }>;
+  files: TurnFileEntry[];
 }
 
 /** Emitted by main after a renderer-initiated rewind completes. The

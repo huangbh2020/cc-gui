@@ -325,6 +325,19 @@ export const SetThemeSchema = z.object({ theme: ThemeNameSchema });
 export type SetThemeInput = z.infer<typeof SetThemeSchema>;
 export type GetThemeResult = { theme: ThemeName; effective: EffectiveTheme };
 
+/* ── File read (on-demand, for diff rendering) ── */
+
+/** Read a single file's current content as utf-8 text. The main handler
+ *  resolves the path against the session's project cwd and refuses anything
+ *  that escapes it (path-traversal guard) — the renderer (contextIsolation)
+ *  has no filesystem access of its own. Used by the turn-files diff card to
+ *  fetch the post-turn content to diff against the snapshotted `before`. */
+export const FileReadSchema = z.object({
+  /** Absolute or cwd-relative path. Must resolve inside a known project root. */
+  filePath: z.string(),
+});
+export type FileReadInput = z.infer<typeof FileReadSchema>;
+
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
 export interface ClaudeEventMessage {
@@ -398,6 +411,8 @@ export interface RpcMap {
   // Theme / color scheme
   "theme.get": () => Promise<GetThemeResult>;
   "theme.set": (input: SetThemeInput) => Promise<GetThemeResult>;
+  // File read (on-demand diff rendering)
+  "file.readFile": (input: FileReadInput) => Promise<{ content: string }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -435,6 +450,8 @@ export const IPC = {
   // Theme / color scheme
   THEME_GET: "theme:get",
   THEME_SET: "theme:set",
+  // File read (on-demand diff rendering)
+  FILE_READ: "file:readFile",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",

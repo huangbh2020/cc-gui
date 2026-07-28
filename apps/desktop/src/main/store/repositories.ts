@@ -14,7 +14,7 @@ import type {
   SessionTodoItem,
   SessionPlanDraft,
 } from "@contracts/session";
-import type { ContextSnapshot, SubagentSnapshot } from "@contracts/runtime";
+import type { ContextSnapshot, SubagentSnapshot, TurnFileEntry } from "@contracts/runtime";
 import { getDb, persist } from "./db.js";
 
 /* sql.js binds `?` params positionally as an array. Values must be
@@ -119,6 +119,7 @@ interface SessionRow {
   todos: string | null;
   subagents: string | null;
   plan_draft: string | null;
+  turn_files: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -140,6 +141,7 @@ function rowToSession(r: SessionRow): Session {
     todos: (r.todos ? safeJson(r.todos) : null) as SessionTodoItem[] | null,
     subagents: (r.subagents ? safeJson(r.subagents) : null) as SubagentSnapshot[] | null,
     planDraft: (r.plan_draft ? safeJson(r.plan_draft) : null) as SessionPlanDraft | null,
+    turnFiles: (r.turn_files ? safeJson(r.turn_files) : null) as TurnFileEntry[] | null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -149,8 +151,8 @@ export const SessionRepo = {
   create(s: Session): void {
     getDb().run(
       `INSERT INTO sessions
-       (id, project_id, provider_id, claude_session_id, title, status, model, effort, permission_mode, custom_model_id, archived, context_snapshot, todos, subagents, plan_draft, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, project_id, provider_id, claude_session_id, title, status, model, effort, permission_mode, custom_model_id, archived, context_snapshot, todos, subagents, plan_draft, turn_files, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         v(s.id),
         v(s.projectId),
@@ -167,6 +169,7 @@ export const SessionRepo = {
         v(s.todos ? JSON.stringify(s.todos) : null),
         v(s.subagents ? JSON.stringify(s.subagents) : null),
         v(s.planDraft ? JSON.stringify(s.planDraft) : null),
+        v(s.turnFiles ? JSON.stringify(s.turnFiles) : null),
         v(s.createdAt),
         v(s.updatedAt),
       ],
@@ -290,6 +293,18 @@ export const SessionRepo = {
   updatePlanDraft(id: string, plan: SessionPlanDraft): void {
     getDb().run("UPDATE sessions SET plan_draft = ?, updated_at = ? WHERE id = ?", [
       v(JSON.stringify(plan)),
+      v(Date.now()),
+      v(id),
+    ]);
+    persist();
+  },
+
+  /** Persist the most recent turn's modified-files snapshot (the "本轮修改"
+   *  card). Pass null to clear it (e.g. after a rewind) so the card doesn't
+   *  reappear on session reopen. */
+  updateTurnFiles(id: string, files: TurnFileEntry[] | null): void {
+    getDb().run("UPDATE sessions SET turn_files = ?, updated_at = ? WHERE id = ?", [
+      v(files ? JSON.stringify(files) : null),
       v(Date.now()),
       v(id),
     ]);

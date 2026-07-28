@@ -4,10 +4,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ThreePaneLayout } from "@renderer/components/layout/ThreePaneLayout.js";
 import { ClaudePathPanel } from "./ClaudePathPanel.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
-import { DisplayModePanel } from "./DisplayModePanel.js";
-import { ChatAppearancePanel } from "./ChatAppearancePanel.js";
-import { AccentPanel } from "./AccentPanel.js";
-import { ThemePanel } from "./ThemePanel.js";
+import { AppearancePanel } from "./AppearancePanel.js";
 
 /**
  * Settings page with a left functional menu + right content panel layout.
@@ -20,8 +17,8 @@ import { ThemePanel } from "./ThemePanel.js";
  * Available sections:
  *  - 通用           (placeholder)
  *  - Claude CLI 路径 (ClaudePathPanel)
- *  - 自定义模型      (CustomModelsPanel)
- *  - 外观           (ThemePanel + DisplayModePanel + ChatAppearancePanel)
+ *  - 模型配置        (CustomModelsPanel — two-column: provider list + config form)
+ *  - 外观           (AppearancePanel — flat one-row-per-feature list)
  *  - 关于           (placeholder)
  *
  * Panels are conditionally rendered (mount/unmount on nav switch) rather than
@@ -38,7 +35,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { id: "general", label: "通用" },
   { id: "claude-path", label: "Claude CLI 路径" },
-  { id: "custom-models", label: "自定义模型" },
+  { id: "custom-models", label: "模型配置" },
   { id: "appearance", label: "外观" },
   { id: "about", label: "关于" },
 ];
@@ -89,17 +86,7 @@ export function SettingsPage() {
           )}
           {active === "claude-path" && <ClaudePathPanel />}
           {active === "custom-models" && <CustomModelsPanel />}
-          {active === "appearance" && (
-            <div className="space-y-6">
-              <ThemePanel />
-              <div className="border-t border-edge" />
-              <DisplayModePanel />
-              <div className="border-t border-edge" />
-              <ChatAppearancePanel />
-              <div className="border-t border-edge" />
-              <AccentPanel />
-            </div>
-          )}
+          {active === "appearance" && <AppearancePanel />}
           {active === "about" && (
             <PlaceholderPanel title="关于" desc="版本信息、开源协议与更新检查(开发中)。" />
           )}

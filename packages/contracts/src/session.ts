@@ -8,6 +8,7 @@ import type {
   ContextSnapshot,
   SubagentSnapshot,
   PlanUpdateEvent,
+  TurnFileEntry,
 } from "./runtime.js";
 
 /** A single todo item (mirrors the renderer's TodoItem; kept here so the
@@ -67,6 +68,10 @@ export interface Session {
   todos: SessionTodoItem[] | null;
   subagents: SubagentSnapshot[] | null;
   planDraft: SessionPlanDraft | null;
+  /** Files touched by the most recent turn (persisted so the "本轮修改" card
+   *  survives a session reopen). Null for sessions that never saw a file edit.
+   *  Cleared (set to null) after a rewind. JSON-serialized in the DB. */
+  turnFiles: TurnFileEntry[] | null;
   createdAt: number;
   updatedAt: number;
 }

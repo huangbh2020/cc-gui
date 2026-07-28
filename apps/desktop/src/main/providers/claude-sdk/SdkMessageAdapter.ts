@@ -338,13 +338,16 @@ export class SdkMessageAdapter {
   /** Call once the generator completes (or after a catch). Emits a fallback
    * turn.done if none was already emitted, plus a `turn.files` event
    * listing every file Edit/Write touched in this turn (so the renderer
-   * can show the "本轮文件" card with a rewind button). */
-  flushFinal(): void {
+   * can show the "本轮文件" card with per-file tallies + a rewind button).
+   *
+   * Async because freeze() now reads each file's post-turn on-disk content
+   * to compute the +N -M tallies and carry the pre-turn `before` payload. */
+  async flushFinal(): Promise<void> {
     // Freeze and emit the snapshot list regardless of whether result
     // arrived. After freeze(), the snapshot is "frozen" — late
     // tool_use events for this adapter instance (shouldn't happen,
     // but defensively) will be ignored by recordPre.
-    const files = this.snapshots.freeze();
+    const files = await this.snapshots.freeze();
     if (files.length > 0) {
       this.ctx.emit({
         type: "turn.files",

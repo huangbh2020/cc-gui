@@ -1,17 +1,31 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { api } from "@renderer/lib/api.js";
+import { lineDiff } from "@renderer/lib/lineDiff.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
+import { Button } from "@renderer/components/ui/index.js";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconEye,
+  IconLoader2,
+} from "@renderer/lib/icons.js";
+import { DiffView } from "./DiffView.js";
 
 /**
- * "本轮文件" card — rendered at the bottom of the message stream after
- * a turn completes. Lists every file Edit/Write touched in that turn
- * and offers a one-click rewind. The actual file *content* diffs are
- * already shown in the per-tool EditToolCard / WriteToolCard inside
- * the stream, so this card is the *entry point + rewind action*, not a
- * diff viewer.
+ * "本轮修改" card — rendered at the END of the message stream (after the last
+ * assistant message) when a turn completes. Lists every file Edit/Write
+ * touched in that turn with per-file change tallies and a one-click rewind.
  *
- * Theme: accent (not warning) — these are *completed* file ops, not
- * pending approvals. Visually distinct from ApprovalPrompt (warning)
- * and PlanApprovalPrompt (violet).
+ * Two expand levels:
+ *  1. Card folded → "本轮修改了 N 个文件  +总A -总D". Expand to see the rows.
+ *  2. Per-file row → path + `+a -d` + a placeholder "审查" button. Expand the
+ *     row to see that file's full line diff (computed on demand: read the
+ *     current on-disk content via `api.file.readFile` and diff against the
+ *     snapshotted `before`).
+ *
+ * Theme: accent (not warning) — these are *completed* file ops, not pending
+ * approvals. The "审查" button is a placeholder for P4 review tooling; it
+ * logs for now and does nothing functional.
  */
 export function TurnFilesCard({
   files,
@@ -45,6 +59,11 @@ export function TurnFilesCard({
   // (创建 X · 修改 Y)".
   const created = files.filter((f) => f.kind === "created").length;
   const modified = files.length - created;
+  // Aggregate tallies across all files for the folded badge.
+  const totals = useMemo(
+    () => files.reduce((acc, f) => ({ adds: acc.adds + f.adds, dels: acc.dels + f.dels }), { adds: 0, dels: 0 }),
+    [files],
+  );
 
   return (
     <div className="rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-content-muted backdrop-blur">
@@ -60,6 +79,11 @@ export function TurnFilesCard({
           ({created > 0 ? `创建 ${created}` : ""}
           {created > 0 && modified > 0 ? " · " : ""}
           {modified > 0 ? `修改 ${modified}` : ""})
+        </span>
+        {/* Aggregate change tallies — the headline number reviewers care about. */}
+        <span className="ml-2 inline-flex items-center gap-1 rounded bg-surface/60 px-1.5 py-0.5 font-mono text-[10px] tabular-nums">
+          <span className="text-accent">+{totals.adds}</span>
+          <span className="text-danger">-{totals.dels}</span>
         </span>
         <span className="ml-auto text-content-subtle">{open ? "▾" : "▸"}</span>
       </button>
@@ -90,19 +114,101 @@ export function TurnFilesCard({
   );
 }
 
-/** One row in the file list. Path is shown as a fixed-width monospace
- *  string; the cwd-prefix is highlighted in a slightly brighter color
- *  so the project root jumps out. */
+/** One row in the file list. Collapsed: path + per-file tallies + 审查 button +
+ *  expand arrow. Expanded: the full line diff (loaded on demand). */
 function FileRow({ entry }: { entry: TurnFileEntry }) {
+  const [expanded, setExpanded] = useState(false);
   const isCreated = entry.kind === "created";
+
   return (
-    <div className="flex items-center gap-2 font-mono text-[11px]">
-      <span aria-hidden title={isCreated ? "本轮新建" : "本轮修改"}>
-        {isCreated ? "🆕" : "✎"}
-      </span>
-      <span className="truncate" title={entry.filePath}>
-        {entry.filePath}
-      </span>
+    <div className="rounded-md bg-surface/40">
+      <div className="flex items-center gap-2 px-1.5 py-1">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          title={expanded ? "收起 diff" : "展开 diff"}
+        >
+          <span className="shrink-0 text-content-subtle">
+            {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+          </span>
+          <span aria-hidden title={isCreated ? "本轮新建" : "本轮修改"} className="shrink-0">
+            {isCreated ? "🆕" : "✎"}
+          </span>
+          <span className="truncate font-mono text-[11px]" title={entry.filePath}>
+            {entry.filePath}
+          </span>
+        </button>
+        {/* Per-file change tallies. */}
+        <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] tabular-nums">
+          {entry.adds > 0 && <span className="text-accent">+{entry.adds}</span>}
+          {entry.dels > 0 && <span className="text-danger">-{entry.dels}</span>}
+          {entry.adds === 0 && entry.dels === 0 && (
+            <span className="text-content-subtle">无变化</span>
+          )}
+        </span>
+        {/* Placeholder review button — P4 will wire this to a review flow.
+            For now it just logs so the click is observable without effect. */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0 gap-1 px-1.5"
+          title="审查(P4)"
+          onClick={() => console.log("[review] (placeholder)", entry.filePath)}
+        >
+          <IconEye size={11} />
+          审查
+        </Button>
+      </div>
+      {expanded && <FileDiff entry={entry} />}
+    </div>
+  );
+}
+
+/** Lazy-loaded per-file diff. Reads the current on-disk content on mount and
+ *  diffs it against the snapshotted `before`. Loading shows a spinner; a read
+ *  failure (file gone / binary) shows the before-only diff gracefully. */
+function FileDiff({ entry }: { entry: TurnFileEntry }) {
+  // Read the post-turn content once on mount. The component unmounts on
+  // collapse (parent drops it), so a re-expand re-reads — which is what we
+  // want (the file may have changed again in the meantime).
+  const [state, setState] = useState<"loading" | "ready">("loading");
+  const [after, setAfter] = useState<string>("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setState("loading");
+    api.file
+      .readFile({ filePath: entry.filePath })
+      .then(({ content }) => {
+        if (cancelled) return;
+        setAfter(content);
+        setState("ready");
+      })
+      .catch(() => {
+        // readFile degrades to "" on failure in main, but defend here too.
+        if (cancelled) return;
+        setAfter("");
+        setState("ready");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.filePath]);
+
+  if (state === "loading") {
+    return (
+      <div className="flex items-center gap-1.5 px-3 py-2 text-[11px] text-content-subtle">
+        <IconLoader2 size={12} className="animate-spin" />
+        读取改动…
+      </div>
+    );
+  }
+
+  const diff = lineDiff(entry.before, after);
+  return (
+    <div className="px-1.5 pb-1.5">
+      <DiffView diff={diff} />
     </div>
   );
 }

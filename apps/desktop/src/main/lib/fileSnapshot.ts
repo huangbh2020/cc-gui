@@ -26,6 +26,7 @@
  */
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import type { TurnFileEntry } from "@contracts/runtime";
 
 /** Internal record per snapshotted file. */
 interface FileRecord {
@@ -41,10 +42,9 @@ interface FileRecord {
   content: string;
 }
 
-export interface FrozenFile {
-  filePath: string;
-  kind: "modified" | "created";
-}
+/** @deprecated Use {@link TurnFileEntry} — kept as an alias so existing
+ *  imports keep compiling during the payload expansion. */
+export type FrozenFile = TurnFileEntry;
 
 export class FileSnapshot {
   private originals = new Map<string, FileRecord>();
@@ -85,17 +85,36 @@ export class FileSnapshot {
     }
   }
 
-  /** Freeze and return the list of files for the renderer. The records
-   *  STAY in memory so a subsequent restore() can use them — clear()
-   *  is what actually frees them, and the runtime calls it either
-   *  after a successful restore or at the start of the next turn. */
-  freeze(): FrozenFile[] {
+  /** Freeze and return the list of files for the renderer, enriched with
+   *  per-file change tallies (`adds` / `dels`) and the pre-turn `before`
+   *  content. The records STAY in memory so a subsequent restore() can use
+   *  them — clear() is what actually frees them, and the runtime calls it
+   *  either after a successful restore or at the start of the next turn.
+   *
+   *  Async because we read each file's current on-disk content to diff
+   *  against the snapshotted `before`. Read failures (deleted mid-turn,
+   *  binary, permission) degrade gracefully to adds=dels=0 and before=""
+   *  so a single bad file never blocks the whole turn-files event. */
+  async freeze(): Promise<TurnFileEntry[]> {
     this.frozen = true;
-    const out: FrozenFile[] = [];
+    const out: TurnFileEntry[] = [];
     for (const rec of this.originals.values()) {
+      const before = rec.exists ? rec.content : "";
+      let after = "";
+      try {
+        after = await readFile(rec.absPath, "utf-8");
+      } catch {
+        // File is unreadable (gone, binary, EACCES, …). Fall back to an
+        // empty "after" so the tallies show the whole `before` as deleted.
+        after = "";
+      }
+      const { adds, dels } = countLineDiff(before, after);
       out.push({
         filePath: rec.absPath,
         kind: rec.exists ? "modified" : "created",
+        adds,
+        dels,
+        before,
       });
     }
     return out;
@@ -150,10 +169,12 @@ export class FileSnapshot {
 }
 
 /* ──────────────────────────── path safety ──────────────────────────── */
+/* Exported so the on-demand file-read IPC handler reuses the exact same
+   cwd-escape guard the snapshot uses, rather than re-implementing it. */
 
 /** Resolve `filePath` against `cwd` and refuse any path that escapes.
  *  Returns null if the path is unsafe (caller should skip silently). */
-function safeResolve(cwd: string, filePath: string): string | null {
+export function safeResolve(cwd: string, filePath: string): string | null {
   let abs: string;
   try {
     abs = resolve(cwd, filePath);
@@ -166,10 +187,79 @@ function safeResolve(cwd: string, filePath: string): string | null {
 /** Re-check that an already-resolved absolute path stays within cwd.
  *  Used by restore() to defend against the cwd changing between
  *  recordPre and restore. */
-function safeResolveOk(cwd: string, abs: string): boolean {
+export function safeResolveOk(cwd: string, abs: string): boolean {
   // path.relative with the second arg outside cwd returns a path
   // starting with "..". On Windows an absolute result also means
-  // "different root" (different drive).
+  //  "different root" (different drive).
   const rel = relative(cwd, abs);
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/* ──────────────────────────── line counting ──────────────────────────── */
+
+/** Split text into lines, dropping a single trailing empty produced by a
+ *  final `\n` (matches the renderer's lineDiff.splitLines so before/after
+ *  are counted on the same basis). */
+function splitLines(s: string): string[] {
+  if (s === "") return [];
+  const parts = s.split("\n");
+  if (parts.length > 0 && parts[parts.length - 1] === "" && s.endsWith("\n")) {
+    parts.pop();
+  }
+  return parts;
+}
+
+/** Tally added/deleted line counts between two texts via an LCS table walk.
+ *  A counting-only sibling of the renderer's `lineDiff` — we don't need the
+ *  actual diff *lines* in main, just the `+N -M` numbers for the folded card,
+ *  so this stays allocation-light (one Int32Array, no output array). */
+function countLineDiff(oldText: string, newText: string): { adds: number; dels: number } {
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
+  const m = oldLines.length;
+  const n = newLines.length;
+  // Fast paths: identical, or one side empty.
+  if (m === 0) return { adds: n, dels: 0 };
+  if (n === 0) return { adds: 0, dels: m };
+
+  const cols = n + 1;
+  const lcs = new Int32Array((m + 1) * cols);
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (oldLines[i - 1] === newLines[j - 1]) {
+        lcs[i * cols + j] = lcs[(i - 1) * cols + (j - 1)] + 1;
+      } else {
+        const up = lcs[(i - 1) * cols + j];
+        const left = lcs[i * cols + (j - 1)];
+        lcs[i * cols + j] = up > left ? up : left;
+      }
+    }
+  }
+  // Walk back to count deletes/inserts (same logic as lineDiff, but tally
+  // instead of push).
+  let adds = 0;
+  let dels = 0;
+  let i = m;
+  let j = n;
+  while (i > 0 && j > 0) {
+    if (oldLines[i - 1] === newLines[j - 1]) {
+      i--;
+      j--;
+    } else if (lcs[(i - 1) * cols + j] >= lcs[i * cols + (j - 1)]) {
+      dels++;
+      i--;
+    } else {
+      adds++;
+      j--;
+    }
+  }
+  while (i > 0) {
+    dels++;
+    i--;
+  }
+  while (j > 0) {
+    adds++;
+    j--;
+  }
+  return { adds, dels };
 }

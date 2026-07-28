@@ -21,7 +21,7 @@ import {
   makeContentTag,
   shouldPromoteToTag,
 } from "@renderer/lib/contentTag.js";
-import { MessageBlocks } from "./MessageBlocks.js";
+import { MessageBlocks, ProceduralGroup, type ProceduralBlock, type BeforeContentMap } from "./MessageBlocks.js";
 import { ComposerToolbar } from "./ComposerToolbar.js";
 import { QuestionPrompt } from "./QuestionPrompt.js";
 import { ApprovalPrompt } from "./ApprovalPrompt.js";
@@ -96,6 +96,103 @@ function TurnStatRow({ meta }: { meta: TurnMeta }) {
   );
 }
 
+/** A "purely procedural" assistant message is one whose blocks are all
+ *  thinking and/or tool_use — no text reply, no error. The SDK splits a
+ *  single multi-step turn into many such messages (one per content-block
+ *  group); without merging they'd each render as a separate "思考 + N 个操作"
+ *  card stacked down the stream. We group consecutive ones into a single
+ *  cluster so a whole turn reads as one compact card. */
+function isProceduralMessage(m: ChatMessage): boolean {
+  if (m.role !== "assistant") return false;
+  if (m.blocks.length === 0) return false;
+  return m.blocks.every((b) => b.kind === "thinking" || b.kind === "tool_use");
+}
+
+/** Render item after grouping: either a standalone message (user prompts,
+ *  assistant text replies, error bubbles) or a cluster of consecutive
+ *  procedural messages that belong to the same turn. The precomputed
+ *  isStreamingTail / isLastCompletedAssistant flags carry the original
+ *  per-message tail/last semantics into the grouped dimension — a cluster
+ *  is "streaming tail" when its LAST member was the streaming tail in the
+ *  raw stream. */
+type RenderItem =
+  | {
+      kind: "single";
+      msg: ChatMessage;
+      isStreamingTail: boolean;
+      isLastCompletedAssistant: boolean;
+    }
+  | {
+      kind: "proceduralCluster";
+      msgs: ChatMessage[];
+      turnMeta?: TurnMeta;
+      isStreamingTail: boolean;
+      isLastCompletedAssistant: boolean;
+    };
+
+/** Flatten a cluster's messages into a single procedural-block stream for
+ *  ProceduralGroup. All members are guaranteed procedural by
+ *  isProceduralMessage, so a flat concat yields one contiguous
+ *  thinking+tool sequence. */
+function flattenCluster(msgs: ChatMessage[]): ProceduralBlock[] {
+  const out: ProceduralBlock[] = [];
+  for (const m of msgs) {
+    for (const b of m.blocks) {
+      if (b.kind === "thinking" || b.kind === "tool_use") out.push(b);
+    }
+  }
+  return out;
+}
+
+/** Group the raw message stream into render items, merging consecutive
+ *  purely-procedural assistant messages into a single cluster. Pure
+ *  function over the message list — no store mutation. */
+function groupMessagesForRender(
+  messages: ChatMessage[],
+  isRunning: boolean,
+): RenderItem[] {
+  const items: RenderItem[] = [];
+  let run: ChatMessage[] = [];
+
+  const flush = () => {
+    if (run.length === 0) return;
+    // The cluster's tail/last flags follow its LAST member — that's the
+    // message that was at the end of the raw stream.
+    const lastInRun = run[run.length - 1];
+    const tailIndex = messages.indexOf(lastInRun);
+    const isStreamingTail =
+      isRunning && lastInRun.role === "assistant" && tailIndex === messages.length - 1;
+    const isLastCompletedAssistant =
+      !isRunning && lastInRun.role === "assistant" && tailIndex === messages.length - 1;
+    // turnMeta: take the first member that carries one (the turn-opener).
+    const turnMeta = run.find((m) => m.turnMeta)?.turnMeta;
+    items.push({
+      kind: "proceduralCluster",
+      msgs: run,
+      turnMeta,
+      isStreamingTail,
+      isLastCompletedAssistant,
+    });
+    run = [];
+  };
+
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    const isStreamingTail = isRunning && m.role === "assistant" && i === messages.length - 1;
+    const isLastCompletedAssistant =
+      !isRunning && m.role === "assistant" && i === messages.length - 1;
+
+    if (isProceduralMessage(m)) {
+      run.push(m);
+    } else {
+      flush();
+      items.push({ kind: "single", msg: m, isStreamingTail, isLastCompletedAssistant });
+    }
+  }
+  flush();
+  return items;
+}
+
 export function ChatPane({ sessionId }: { sessionId: string | null }) {
   // `sessionId` is the prop — store lookups go through it directly, not
   // through `activeSessionId`. The store still tracks `activeSessionId`
@@ -161,6 +258,13 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // Per-thread "is running" — only true when THIS thread has a turn in flight.
   // A different thread's running turn must not lock the composer here.
   const isRunning = useSessionStore((s) => !!s.runningBySession[sessionId]);
+  // Merge consecutive purely-procedural assistant messages (thinking + tool
+  // only, no text) into single render clusters so a multi-step turn reads
+  // as one compact "思考 + N 个操作" card instead of N stacked cards.
+  const renderItems = useMemo(
+    () => groupMessagesForRender(messages, isRunning),
+    [messages, isRunning],
+  );
   const sendPrompt = useSessionStore((s) => s.sendPrompt);
   const interrupt = useSessionStore((s) => s.interrupt);
   const claudeInstalled = useSessionStore((s) => s.claudeInstalled);
@@ -209,6 +313,15 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // cleared on turn.rewound (or in error path).
   const turnFiles = useSessionStore((s) => s.turnFilesBySession[sessionId] ?? EMPTY_TURN_FILES);
   const rewindTurn = useSessionStore((s) => s.rewindTurn);
+  // Pre-turn file contents for the Write-tool diff. Built once per render
+  // from the turn.files payload (filePath → before). Empty while the turn
+  // is still running (no turn.files yet) or after a rewind — Write cards
+  // then fall back to a plain new-content preview.
+  const beforeMap = useMemo<BeforeContentMap>(() => {
+    const m: BeforeContentMap = new Map();
+    for (const f of turnFiles) m.set(f.filePath, f.before);
+    return m;
+  }, [turnFiles]);
   // The textarea is blocked while either a turn is running or a tool approval
   // is awaiting the user's decision — the approval panel takes the place of
   // the input area entirely so the user can't type a competing prompt.
@@ -227,6 +340,14 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   const [tags, setTags] = useState<ContentTag[]>([]);
   // Which tag's preview popover is open (by id); null = none.
   const [openTagId, setOpenTagId] = useState<string | null>(null);
+  // Refs to each chip's DOM node, keyed by tag id. Used to measure the
+  // clicked chip's bounding box so the preview popover can anchor to its
+  // top-right corner.
+  const chipRefs = useRef<Map<string, HTMLSpanElement>>(new Map());
+  // Bounding box of the chip that opened the current popover. Captured at
+  // toggle time (not re-read every render) so the popover stays put even
+  // if the chips row reflows while it's open.
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   // Map of user messageId → its row DOM element. The MessageTimeline reads
   // each row's offsetTop to (a) highlight the dash whose message is in view
   // and (b) scroll to that row on dash click. Stored in a ref (not state)
@@ -395,29 +516,49 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 />
               </div>
             )}
-            <div className="mx-auto max-w-5xl space-y-5 pt-6">
-              {messages.map((m, i) => {
-                const isStreamingTail =
-                  isRunning &&
-                  m.role === "assistant" &&
-                  i === messages.length - 1;
-                const isLastCompletedAssistant =
-                  !isRunning &&
-                  m.role === "assistant" &&
-                  i === messages.length - 1;
+            <div className="mx-auto max-w-5xl space-y-2 pt-6">
+              {renderItems.map((item) => {
+                if (item.kind === "single") {
+                  const m = item.msg;
+                  return (
+                    <MessageRow
+                      key={m.id}
+                      msg={m}
+                      isStreamingTail={item.isStreamingTail}
+                      isLastCompletedAssistant={item.isLastCompletedAssistant}
+                      // User rows register their DOM element so the timeline
+                      // can locate them for highlight + jump. Assistant rows
+                      // pass nothing.
+                      registerRow={m.role === "user" ? registerUserRow(m.id) : undefined}
+                      beforeMap={beforeMap}
+                    />
+                  );
+                }
+                // Procedural cluster: consecutive thinking+tool messages of
+                // one turn merged into a single card. turnMeta (if any) drives
+                // the per-turn stat row above the card; the streaming loader
+                // shows at the bottom while the cluster is the live tail.
+                const blocks = flattenCluster(item.msgs);
                 return (
-                  <MessageRow
-                    key={m.id}
-                    msg={m}
-                    isStreamingTail={isStreamingTail}
-                    isLastCompletedAssistant={isLastCompletedAssistant}
-                    // User rows register their DOM element so the timeline
-                    // can locate them for highlight + jump. Assistant rows
-                    // pass nothing.
-                    registerRow={m.role === "user" ? registerUserRow(m.id) : undefined}
-                  />
+                  <div key={item.msgs[0].id}>
+                    {item.turnMeta && <TurnStatRow meta={item.turnMeta} />}
+                    <ProceduralGroup blocks={blocks} beforeMap={beforeMap} />
+                    {item.isStreamingTail && (
+                      <div className="mt-1.5 flex items-center gap-1.5">
+                        <IconLoader2 size={12} className="animate-spin text-accent" />
+                      </div>
+                    )}
+                  </div>
                 );
               })}
+              {/* Per-turn modified-files card — sits at the END of the message
+                  stream (the turn's output tail), not above the input box, so
+                  it reads as part of the turn's result. Hidden while the turn
+                  is running (the card only makes sense once Edit/Write ops
+                  have settled) and when there are no files to show. */}
+              {turnFiles.length > 0 && !isRunning && (
+                <TurnFilesCard files={turnFiles} onRewind={() => void rewindTurn()} />
+              )}
             </div>
           </>
         )}
@@ -456,9 +597,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           : "shrink-0 pb-3",
       )}>
         <div className={cn("w-full", empty ? "max-w-3xl" : "mx-auto max-w-5xl pt-2")}>
-          {turnFiles.length > 0 && (
-            <TurnFilesCard files={turnFiles} onRewind={() => void rewindTurn()} />
-          )}
           {headApproval && (
             <ApprovalPrompt
               key={headApproval.requestId}
@@ -480,28 +618,33 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           )}
           <div className="relative flex flex-col rounded-xl border border-edge-input bg-surface-muted/30 focus-within:border-accent">
             {tags.length > 0 && (
-              <div className="relative flex flex-wrap gap-1 px-2 pt-2">
+              <div className="flex flex-wrap gap-1 px-2 pt-2">
                 {tags.map((tag) => (
                   <ContentTagChip
                     key={tag.id}
+                    ref={(el) => {
+                      if (el) chipRefs.current.set(tag.id, el);
+                      else chipRefs.current.delete(tag.id);
+                    }}
                     tag={tag}
                     open={openTagId === tag.id}
-                    onToggle={() =>
-                      setOpenTagId((cur) => (cur === tag.id ? null : tag.id))
-                    }
+                    onToggle={() => {
+                      setOpenTagId((cur) => {
+                        if (cur === tag.id) return null; // closing
+                        // Opening: capture this chip's box so the popover can
+                        // anchor to its top-right corner.
+                        const el = chipRefs.current.get(tag.id);
+                        if (el) setAnchorRect(el.getBoundingClientRect());
+                        return tag.id;
+                      });
+                    }}
                     onRemove={() => {
                       setTags((prev) => prev.filter((t) => t.id !== tag.id));
+                      chipRefs.current.delete(tag.id);
                       setOpenTagId((cur) => (cur === tag.id ? null : cur));
                     }}
                   />
                 ))}
-                {openTagId &&
-                  (() => {
-                    const t = tags.find((x) => x.id === openTagId);
-                    return t ? (
-                      <TagPopover tag={t} onClose={() => setOpenTagId(null)} />
-                    ) : null;
-                  })()}
               </div>
             )}
             <textarea
@@ -547,6 +690,25 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               )}
             </div>
           </div>
+          {/* Content-tag preview popover. Fixed-positioned to the clicked
+              chip's top-right; rendered outside the composer container so
+              it isn't clipped by overflow/border-radius. Anchored only while
+              open AND we have a captured chip rect. */}
+          {openTagId &&
+            anchorRect &&
+            (() => {
+              const t = tags.find((x) => x.id === openTagId);
+              return t ? (
+                <TagPopover
+                  tag={t}
+                  anchorRect={anchorRect}
+                  onClose={() => {
+                    setOpenTagId(null);
+                    setAnchorRect(null);
+                  }}
+                />
+              ) : null;
+            })()}
         </div>
       </div>
 
@@ -597,7 +759,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
  *  "开始 HH:MM:SS · 用时 12.3s" stat row ABOVE the content. The streaming
  *  tail (the last assistant message while a turn is running) shows a
  *  spinning loader at the bottom of the content. */
-function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, registerRow }: { msg: ChatMessage; isStreamingTail?: boolean; isLastCompletedAssistant?: boolean; registerRow?: (el: HTMLDivElement | null) => void }) {
+function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, registerRow, beforeMap }: { msg: ChatMessage; isStreamingTail?: boolean; isLastCompletedAssistant?: boolean; registerRow?: (el: HTMLDivElement | null) => void; beforeMap?: BeforeContentMap }) {
   const isUser = msg.role === "user";
   const copyText = useMemo(() => blocksToText(msg.blocks), [msg.blocks]);
   // Only show the copy button on messages with real text content — i.e. the
@@ -626,7 +788,7 @@ function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, registerRo
               : "text-content [font-size:var(--chat-font-size)]"
           }
         >
-          <MessageBlocks blocks={msg.blocks} />
+          <MessageBlocks blocks={msg.blocks} beforeMap={beforeMap} />
           {/* Streaming loader at the bottom of the content while this
               message is still receiving deltas. */}
           {isStreamingTail && (

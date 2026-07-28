@@ -114,6 +114,22 @@ function SelectPortal(
   return <BaseSelect.Portal {...props} />;
 }
 
+/* ───────── Positioner ───────── */
+
+/**
+ * Select Positioner — renders the popup's positioning wrapper. Base UI
+ * requires `Select.Popup` to live inside a `Select.Positioner` (the popup
+ * itself doesn't read the positioning context, so omitting this throws
+ * "SelectPositionerContext is missing"). Place within `<Select.Portal>`.
+ */
+export type SelectPositionerProps = React.ComponentPropsWithoutRef<
+  typeof BaseSelect.Positioner
+>;
+
+function SelectPositioner({ className, ...props }: SelectPositionerProps) {
+  return <BaseSelect.Positioner className={cn(className)} {...props} />;
+}
+
 /* ───────── List ───────── */
 
 export interface SelectListProps
@@ -229,6 +245,7 @@ export const Select = {
   Icon: SelectIcon,
   Popup: SelectPopup,
   Portal: SelectPortal,
+  Positioner: SelectPositioner,
   List: SelectList,
   Item: SelectItem,
   ItemText: SelectItemText,

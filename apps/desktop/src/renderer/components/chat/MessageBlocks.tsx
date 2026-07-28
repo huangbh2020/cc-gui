@@ -10,7 +10,15 @@ import {
 } from "@renderer/lib/icons.js";
 import type { Block } from "@renderer/stores/sessionStore.js";
 import { Markdown } from "./Markdown.js";
+import { DiffView } from "./DiffView.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
+
+/** Map of absolute file path → its pre-turn content. Built from the
+ *  `turn.files` event payload so the Write tool card can diff the new
+ *  `input.content` against what was on disk before the turn. Empty when
+ *  the turn is still running (no turn.files yet) or after a rewind — in
+ *  those cases Write falls back to a plain new-content preview. */
+export type BeforeContentMap = Map<string, string>;
 
 /** Render the content blocks of a message.
  *
@@ -18,28 +26,38 @@ import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
  *  into a single boxed `ProceduralGroup` so the message stream stays calm
  *  — one summary line instead of N cards. Text and error blocks render
  *  inline as before. */
-export function MessageBlocks({ blocks }: { blocks: Block[] }) {
+export function MessageBlocks({
+  blocks,
+  beforeMap,
+}: {
+  blocks: Block[];
+  /** Pre-turn file contents for Write-tool diffing. Forwarded down to any
+   *  procedural group rendered inside this message (the single-message
+   *  path — the cluster path in ChatPane passes beforeMap directly to
+   *  ProceduralGroup). */
+  beforeMap?: BeforeContentMap;
+}) {
   if (blocks.length === 0) return null;
   const segments = groupBlocks(blocks);
   return (
     <div className="space-y-2">
       {segments.map((seg, i) =>
         seg.kind === "single" ? (
-          <BlockView key={i} block={seg.block} />
+          <BlockView key={i} block={seg.block} beforeMap={beforeMap} />
         ) : (
-          <ProceduralGroup key={i} blocks={seg.blocks} />
+          <ProceduralGroup key={i} blocks={seg.blocks} beforeMap={beforeMap} />
         ),
       )}
     </div>
   );
 }
 
-type ToolUseBlock = Extract<Block, { kind: "tool_use" }>;
-type ThinkingBlock = Extract<Block, { kind: "thinking" }>;
+export type ToolUseBlock = Extract<Block, { kind: "tool_use" }>;
+export type ThinkingBlock = Extract<Block, { kind: "thinking" }>;
 /** Procedural blocks are the "model action" surface — thinking and tool
  *  calls. They get grouped together so a turn that thinks + fires off N
  *  tools reads as one compact card, not a wall of cards. */
-type ProceduralBlock = ThinkingBlock | ToolUseBlock;
+export type ProceduralBlock = ThinkingBlock | ToolUseBlock;
 type Segment =
   | { kind: "single"; block: Block }
   | { kind: "procedural"; blocks: ProceduralBlock[] };
@@ -98,7 +116,16 @@ function StatusIcon({ status }: { status: "running" | "done" | "error" }) {
  *  "N 个操作 · Bash ×2 · Read ×1" breakdown. Expanded: each child renders
  *  in its normal form (thinking as Collapsible, tool calls as ToolCard),
  *  all starting collapsed — the user drills in further only if they want. */
-function ProceduralGroup({ blocks }: { blocks: ProceduralBlock[] }) {
+export function ProceduralGroup({
+  blocks,
+  beforeMap,
+}: {
+  blocks: ProceduralBlock[];
+  /** Pre-turn file contents for Write-tool diffing. Optional — omitted in
+   *  the single-message (non-cluster) render path where diffs aren't
+   *  shown. Forwarded down to WriteToolCard. */
+  beforeMap?: BeforeContentMap;
+}) {
   const [open, setOpen] = useState(false);
 
   const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
@@ -128,10 +155,10 @@ function ProceduralGroup({ blocks }: { blocks: ProceduralBlock[] }) {
   }
 
   return (
-    <div className="rounded-md border border-edge bg-surface/40 [font-size:var(--chat-fs-sm)]">
+    <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/40"
+        className="flex w-full items-center gap-2 px-1 py-1.5 text-left hover:bg-surface-muted/40"
       >
         <StatusIcon status={aggregateStatus} />
         <IconTools size={14} className="shrink-0 text-content-muted" />
@@ -140,9 +167,9 @@ function ProceduralGroup({ blocks }: { blocks: ProceduralBlock[] }) {
         <Chevron open={open} />
       </button>
       {open && (
-        <div className="space-y-1.5 border-t border-edge px-3 py-2">
+        <div className="space-y-1.5 py-2 pl-5">
           {blocks.map((b, i) => (
-            <BlockView key={i} block={b} />
+            <BlockView key={i} block={b} beforeMap={beforeMap} />
           ))}
         </div>
       )}
@@ -150,7 +177,15 @@ function ProceduralGroup({ blocks }: { blocks: ProceduralBlock[] }) {
   );
 }
 
-function BlockView({ block, defaultOpen = false }: { block: Block; defaultOpen?: boolean }) {
+function BlockView({
+  block,
+  defaultOpen = false,
+  beforeMap,
+}: {
+  block: Block;
+  defaultOpen?: boolean;
+  beforeMap?: BeforeContentMap;
+}) {
   switch (block.kind) {
     case "text":
       return <Markdown>{block.text}</Markdown>;
@@ -163,7 +198,7 @@ function BlockView({ block, defaultOpen = false }: { block: Block; defaultOpen?:
       );
 
     case "tool_use":
-      return <ToolCard block={block} defaultOpen={defaultOpen} />;
+      return <ToolCard block={block} defaultOpen={defaultOpen} beforeMap={beforeMap} />;
 
     case "error":
       return (
@@ -183,9 +218,11 @@ function BlockView({ block, defaultOpen = false }: { block: Block; defaultOpen?:
 function ToolCard({
   block,
   defaultOpen = false,
+  beforeMap,
 }: {
   block: Extract<Block, { kind: "tool_use" }>;
   defaultOpen?: boolean;
+  beforeMap?: BeforeContentMap;
 }) {
   if (block.toolName === "Edit" && isEditInput(block.input)) {
     return (
@@ -207,6 +244,7 @@ function ToolCard({
         status={block.status}
         result={block.result}
         defaultOpen={defaultOpen}
+        beforeMap={beforeMap}
       />
     );
   }
@@ -238,10 +276,10 @@ function EditToolCard({
   const { adds, dels } = useMemo(() => diffSummary(diff), [diff]);
 
   return (
-    <div className="rounded-md border border-edge bg-surface-muted/60 [font-size:var(--chat-fs-sm)]">
+    <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/50"
+        className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/50"
       >
         <StatusIcon status={status} />
         <span className="font-medium text-content-muted">Edit</span>
@@ -253,7 +291,7 @@ function EditToolCard({
         </span>
       </button>
       {open && (
-        <div className="space-y-2 border-t border-edge px-3 py-2">
+        <div className="space-y-2 py-2 px-1">
           <DiffView diff={diff} />
           {result !== undefined && (
             <div>
@@ -269,67 +307,6 @@ function EditToolCard({
   );
 }
 
-/** Render a flat diff list as a monospace line column with per-op coloring.
- *  Includes gutter line numbers for old/new so reviewers can correlate
- *  changes. */
-function DiffView({ diff }: { diff: ReturnType<typeof lineDiff> }) {
-  if (diff.length === 0) {
-    return (
-      <div className="rounded bg-surface/60 p-2 text-content-subtle [font-size:var(--chat-fs-xs)]">
-        (no changes)
-      </div>
-    );
-  }
-  // Compute old/new line numbers in a single pass: an inserted line has
-  // no old-side number; a deleted line has no new-side; equal lines have
-  // both. Numbers give the user a stable "where am I" reference while
-  // reviewing the patch.
-  const rows = annotateDiffWithLineNumbers(diff);
-
-  return (
-    <div className="overflow-x-auto rounded bg-surface/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]">
-      {rows.map((d, i) => {
-        const opBg =
-          d.op === "delete"
-            ? "bg-danger/15 text-danger"
-            : d.op === "insert"
-            ? "bg-accent/15 text-accent"
-            : "text-content-muted";
-        return (
-          <div key={i} className={cn("flex items-start whitespace-pre", opBg)}>
-            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right text-content-subtle">
-              {d.oldNo ?? ""}
-            </span>
-            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right text-content-subtle">
-              {d.newNo ?? ""}
-            </span>
-            <span className="w-3 shrink-0 select-none pl-1 text-content-subtle">
-              {d.op === "delete" ? "−" : d.op === "insert" ? "+" : " "}
-            </span>
-            <span className="flex-1 pl-1 pr-2">{d.text || "\u00A0"}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** Build a per-line record with old/new line numbers. A single pass keeps
- *  the numbering correct regardless of which side contributes to each
- *  line. The accumulator is local so the function is safe to call from
- *  any render without stateful side effects. */
-function annotateDiffWithLineNumbers(
-  diff: ReturnType<typeof lineDiff>,
-): Array<ReturnType<typeof lineDiff>[number] & { oldNo: number | null; newNo: number | null }> {
-  let oldNo = 0;
-  let newNo = 0;
-  return diff.map((d) => {
-    const oldN = d.op === "insert" ? null : ++oldNo;
-    const newN = d.op === "delete" ? null : ++newNo;
-    return { ...d, oldNo: oldN, newNo: newN };
-  });
-}
-
 /** Write tool card: shows the new file content preview. No diff because
  *  Write is a full-file replace. Collapsed by default like the other cards —
  *  the user expands to see the content preview. */
@@ -339,38 +316,72 @@ function WriteToolCard({
   status,
   result,
   defaultOpen = false,
+  beforeMap,
 }: {
   filePath: string;
   content: string;
   status: "running" | "done" | "error";
   result?: unknown;
   defaultOpen?: boolean;
+  beforeMap?: BeforeContentMap;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const lineCount = content ? content.split("\n").length : 0;
 
+  // Look up the pre-turn content for this file. The turn.files payload
+  // carries absolute paths, but the Write tool's file_path may be relative
+  // — try an exact match first, then a suffix match (absolute path ending
+  // with the given path segments). Undefined → no before available (turn
+  // still running, or file is brand-new), and we fall back to a plain
+  // new-content preview instead of a diff.
+  const before = useMemo(() => {
+    if (!beforeMap || beforeMap.size === 0) return undefined;
+    if (beforeMap.has(filePath)) return beforeMap.get(filePath);
+    for (const [abs, b] of beforeMap) {
+      if (abs === filePath || abs.endsWith(filePath)) return b;
+    }
+    return undefined;
+  }, [beforeMap, filePath]);
+
+  // Diff old (pre-turn on-disk) vs new (Write input). Recomputed only when
+  // the inputs actually change. When `before` is undefined we render the
+  // raw new content preview instead.
+  const diff = useMemo(() => (before !== undefined ? lineDiff(before, content) : null), [before, content]);
+  const { adds, dels } = useMemo(() => (diff ? diffSummary(diff) : { adds: 0, dels: 0 }), [diff]);
+
   return (
-    <div className="rounded-md border border-edge bg-surface-muted/60 [font-size:var(--chat-fs-sm)]">
+    <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/50"
+        className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/50"
       >
         <StatusIcon status={status} />
         <span className="font-medium text-content-muted">Write</span>
         <span className="truncate font-mono text-content-subtle">{filePath}</span>
-        <span className="ml-auto flex items-center gap-1.5 text-content-subtle [font-size:var(--chat-fs-xxs)]">
-          {lineCount} 行
+        <span className="ml-auto flex items-center gap-1.5 [font-size:var(--chat-fs-xxs)]">
+          {diff && adds > 0 && <span className="text-accent">+{adds}</span>}
+          {diff && dels > 0 && <span className="text-danger">−{dels}</span>}
+          {!diff && <span className="text-content-subtle">{lineCount} 行</span>}
           <Chevron open={open} />
         </span>
       </button>
       {open && (
-        <div className="space-y-2 border-t border-edge px-3 py-2">
-          <div>
-            <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">New file content</div>
-            <pre className="max-h-80 overflow-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
-              {content || "(empty)"}
-            </pre>
-          </div>
+        <div className="space-y-2 py-2 px-1">
+          {diff ? (
+            <div>
+              <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">
+                {before === "" ? "New file" : "Diff vs pre-turn"}
+              </div>
+              <DiffView diff={diff} />
+            </div>
+          ) : (
+            <div>
+              <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">New file content</div>
+              <pre className="max-h-80 overflow-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
+                {content || "(empty)"}
+              </pre>
+            </div>
+          )}
           {result !== undefined && (
             <div>
               <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">Result</div>
@@ -396,10 +407,10 @@ function GenericToolCard({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div className="rounded-md border border-edge bg-surface-muted/60 [font-size:var(--chat-fs-sm)]">
+    <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-muted/50"
+        className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/50"
       >
         <StatusIcon status={block.status} />
         <span className="font-medium text-content-muted">{block.toolName}</span>
@@ -407,7 +418,7 @@ function GenericToolCard({
         <Chevron open={open} />
       </button>
       {open && (
-        <div className="space-y-2 border-t border-edge px-3 py-2">
+        <div className="space-y-2 py-2 px-1">
           <div>
             <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">Input</div>
             <pre className="overflow-x-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
@@ -442,17 +453,17 @@ function Collapsible({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-md border border-edge bg-surface/40 [font-size:var(--chat-fs-sm)]">
+    <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-content-muted hover:bg-surface-muted/40"
+        className="flex w-full items-center gap-2 py-1.5 text-left text-content-muted hover:bg-surface-muted/40"
       >
         <Chevron open={open} />
         <span className="font-medium text-content-muted">{label}</span>
         <span className="ml-1 truncate text-content-subtle">{hint}</span>
       </button>
       {open && (
-        <div className="border-t border-edge px-3 py-2 text-content-muted">
+        <div className="py-2 px-1 text-content-muted">
           <p className="whitespace-pre-wrap break-words">{children as unknown as string}</p>
         </div>
       )}

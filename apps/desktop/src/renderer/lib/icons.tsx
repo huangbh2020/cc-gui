@@ -70,6 +70,7 @@ export {
   IconTerminal2,
   IconFile,
   IconFileText,
+  IconClipboard,
   IconFolder,
   IconFolderOpen,
   // Editing / actions

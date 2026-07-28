@@ -13,13 +13,18 @@ function bgColor(): string {
 
 /** Title-bar overlay colour scheme that matches the app theme. The overlay sits
  *  behind the native min/max/close buttons when `titleBarStyle: 'hidden'` is
- *  active, so it must visually blend with the custom titlebar in the renderer. */
+ *  active, so it must visually blend with the custom titlebar in the renderer.
+ *
+ *  `height` must match the renderer titlebar's height (h-10 = 40px): Electron
+ *  draws the overlay aligned to the top of the window, and the buttons are
+ *  centered within `height`. If this is smaller than the bar (e.g. 32), the
+ *  buttons sit too high instead of being vertically centered. */
 function overlayColors() {
   const dark = getEffectiveTheme() === "dark";
   return {
     color: dark ? "#18181b" : "#ffffff",
     symbolColor: dark ? "#a1a1aa" : "#71717a",
-    height: 32,
+    height: 40,
   };
 }
 

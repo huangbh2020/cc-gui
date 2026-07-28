@@ -321,7 +321,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         for await (const m of q) {
           adapter.dispatch(m);
         }
-        adapter.flushFinal();
+        await adapter.flushFinal();
       } catch (err) {
         ctx.log.error(`claude SDK error: ${(err as Error).message}`);
         ctx.emit({

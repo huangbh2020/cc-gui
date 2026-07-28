@@ -68,6 +68,23 @@ class RuntimeManager {
         } catch (err) {
           log.error(`failed to persist plan draft: ${(err as Error).message}`);
         }
+      } else if (e.type === "turn.files") {
+        // Persist the per-turn modified-files snapshot so the "本轮修改" card
+        // survives a session reopen. The payload already carries adds/dels/before
+        // (computed in FileSnapshot.freeze), so we store it verbatim.
+        try {
+          SessionRepo.updateTurnFiles(session.id, e.files);
+        } catch (err) {
+          log.error(`failed to persist turn files: ${(err as Error).message}`);
+        }
+      } else if (e.type === "turn.rewound") {
+        // A rewind voids the last turn's edits — clear the persisted snapshot
+        // too, otherwise the card would reappear on reopen after being dismissed.
+        try {
+          SessionRepo.updateTurnFiles(session.id, null);
+        } catch (err) {
+          log.error(`failed to clear turn files after rewind: ${(err as Error).message}`);
+        }
       }
     };
 

@@ -30,6 +30,7 @@ export type {
   SelectTriggerProps,
   SelectValueProps,
   SelectPopupProps,
+  SelectPositionerProps,
   SelectListProps,
   SelectItemProps,
   SelectGroupProps,

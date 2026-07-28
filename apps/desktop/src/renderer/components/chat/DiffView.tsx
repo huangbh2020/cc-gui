@@ -1,0 +1,71 @@
+import { cn } from "@renderer/lib/cn.js";
+import type { lineDiff } from "@renderer/lib/lineDiff.js";
+
+/**
+ * Render a flat diff list as a monospace line column with per-op coloring.
+ * Includes gutter line numbers for old/new so reviewers can correlate changes.
+ *
+ * Shared by the per-tool EditToolCard (inside the message stream) and the
+ * turn-level TurnFilesCard (expanded per-file diff). Extracted from
+ * MessageBlocks.tsx so both call sites render diffs identically.
+ *
+ * The diff input is the return type of `lineDiff()` — typed via `typeof` to
+ * avoid a value import we don't need here (this component only renders).
+ */
+export function DiffView({ diff }: { diff: ReturnType<typeof lineDiff> }) {
+  if (diff.length === 0) {
+    return (
+      <div className="rounded bg-surface/60 p-2 text-content-subtle [font-size:var(--chat-fs-xs)]">
+        (no changes)
+      </div>
+    );
+  }
+  // Compute old/new line numbers in a single pass: an inserted line has
+  // no old-side number; a deleted line has no new-side; equal lines have
+  // both. Numbers give the user a stable "where am I" reference while
+  // reviewing the patch.
+  const rows = annotateDiffWithLineNumbers(diff);
+
+  return (
+    <div className="overflow-x-auto rounded bg-surface/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]">
+      {rows.map((d, i) => {
+        const opBg =
+          d.op === "delete"
+            ? "bg-danger/15 text-danger"
+            : d.op === "insert"
+            ? "bg-accent/15 text-accent"
+            : "text-content-muted";
+        return (
+          <div key={i} className={cn("flex items-start whitespace-pre", opBg)}>
+            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right text-content-subtle">
+              {d.oldNo ?? ""}
+            </span>
+            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right text-content-subtle">
+              {d.newNo ?? ""}
+            </span>
+            <span className="w-3 shrink-0 select-none pl-1 text-content-subtle">
+              {d.op === "delete" ? "−" : d.op === "insert" ? "+" : " "}
+            </span>
+            <span className="flex-1 pl-1 pr-2">{d.text || "\u00A0"}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Build a per-line record with old/new line numbers. A single pass keeps
+ *  the numbering correct regardless of which side contributes to each
+ *  line. The accumulator is local so the function is safe to call from
+ *  any render without stateful side effects. */
+export function annotateDiffWithLineNumbers(
+  diff: ReturnType<typeof lineDiff>,
+): Array<ReturnType<typeof lineDiff>[number] & { oldNo: number | null; newNo: number | null }> {
+  let oldNo = 0;
+  let newNo = 0;
+  return diff.map((d) => {
+    const oldN = d.op === "insert" ? null : ++oldNo;
+    const newN = d.op === "delete" ? null : ++newNo;
+    return { ...d, oldNo: oldN, newNo: newN };
+  });
+}

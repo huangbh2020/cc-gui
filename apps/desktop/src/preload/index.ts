@@ -80,6 +80,14 @@ const api = {
       ipcRenderer.invoke(IPC.THEME_SET, input)) as RpcMap["theme.set"],
   },
 
+  /** On-demand file read for diff rendering. Path must resolve inside a known
+   *  project root (main enforces this); returns empty content on refusal or
+   *  read failure so the caller degrades gracefully. */
+  file: {
+    readFile: ((input) =>
+      ipcRenderer.invoke(IPC.FILE_READ, input)) as RpcMap["file.readFile"],
+  },
+
   // ── Main-only helpers ──
   /** Open a native folder picker; returns the chosen path or null. */
   pickFolder: (): Promise<{ path: string | null }> =>

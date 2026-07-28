@@ -458,6 +458,28 @@ function hydrateCapsule(
   });
 }
 
+/** Hydrate the per-turn modified-files card from the session row. The card is
+ *  persisted so it survives a session reopen. An absent/empty turnFiles on the
+ *  row is cleared so switching FROM a session with a card TO one without
+ *  doesn't leave the old card up. Mirrors hydrateCapsule's pattern. */
+function hydrateTurnFiles(
+  set: (partial: Partial<SessionState> | ((s: SessionState) => Partial<SessionState>)) => void,
+  get: () => SessionState,
+  sessionId: string,
+): void {
+  const sess = findSession(get().sessionsByProject, get().archivedSessionsByProject, sessionId);
+  const turnFiles = sess?.turnFiles ?? null;
+  set((s) => {
+    const next = { ...s.turnFilesBySession };
+    if (turnFiles && Array.isArray(turnFiles) && turnFiles.length > 0) {
+      next[sessionId] = turnFiles;
+    } else {
+      delete next[sessionId];
+    }
+    return { turnFilesBySession: next };
+  });
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   projects: [],
   activeProjectId: null,
@@ -745,6 +767,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     syncConfigFromSession(set, get, sessionId);
     hydrateContextSnapshot(set, get, sessionId);
     hydrateCapsule(set, get, sessionId);
+    hydrateTurnFiles(set, get, sessionId);
     set({ activeSessionId: sessionId });
     if (get().messagesBySession[sessionId]) return;
     const { messages } = await api.session.messages({ sessionId });

@@ -104,6 +104,9 @@ function migrate(database: Database): void {
   addColumnIfMissing(database, "sessions", "plan_draft", "TEXT");
   addColumnIfMissing(database, "sessions", "custom_model_id", "TEXT");
   addColumnIfMissing(database, "sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
+  // Per-turn modified-files snapshot (the "本轮修改" card). JSON blob of
+  // TurnFileEntry[]; null after a rewind or for sessions that never edited.
+  addColumnIfMissing(database, "sessions", "turn_files", "TEXT");
   addColumnIfMissing(database, "projects", "archived", "INTEGER NOT NULL DEFAULT 0");
 }
 

@@ -16,8 +16,15 @@
 export const TAG_PREVIEW_CHARS = 24;
 
 /** Pasting a single-line shorter than this is left inline in the textarea
- *  (no chip). Anything over this OR any multi-line paste becomes a tag. */
+ *  (no chip). Anything over this OR a paste with more than
+ *  {@link TAG_THRESHOLD_LINES} lines becomes a tag. */
 export const TAG_THRESHOLD_CHARS = 200;
+
+/** A paste spanning more than this many lines is promoted to a tag even if
+ *  it's short — long logs / stack traces get chipped regardless of char
+ *  count. A 2-3 line snippet stays inline so the user isn't interrupted
+ *  for ordinary multi-line pastes. */
+export const TAG_THRESHOLD_LINES = 3;
 
 /** Source of the tag. Today only paste; future: file-drop, image-paste, etc. */
 export type ContentTagKind = "paste";
@@ -32,11 +39,18 @@ export interface ContentTag {
 }
 
 /** Decide whether a pasted string should become a tag rather than be
- *  inserted into the textarea. Empty / whitespace-only is never a tag. */
+ *  inserted into the textarea. Empty / whitespace-only is never a tag.
+ *  Promote only when the paste is genuinely bulky: over the char threshold
+ *  OR spanning more than the line threshold. Short multi-line snippets
+ *  (2-3 lines) stay inline so ordinary pastes aren't interrupted. */
 export function shouldPromoteToTag(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-  return t.length > TAG_THRESHOLD_CHARS || t.includes("\n");
+  if (t.length > TAG_THRESHOLD_CHARS) return true;
+  // Count lines: a string with N newlines has N+1 lines, but a trailing
+  // newline (already trimmed away) shouldn't inflate the count.
+  const lineCount = t.split("\n").length;
+  return lineCount > TAG_THRESHOLD_LINES;
 }
 
 /** Build a ContentTag from a raw pasted string. Trims and collapses
