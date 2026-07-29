@@ -376,17 +376,31 @@ function CommitBox({
 
   const handleGenerate = async () => {
     if (generating || disabled) return;
+    // commitGenModel is stored as "configId:roleKey" — split it back.
+    let customModelId: string | null = null;
+    let customModelRole: string | null = null;
+    if (commitGenModel) {
+      const colonIdx = commitGenModel.lastIndexOf(":");
+      if (colonIdx > 0) {
+        customModelId = commitGenModel.slice(0, colonIdx);
+        customModelRole = commitGenModel.slice(colonIdx + 1);
+      } else {
+        customModelId = commitGenModel;
+      }
+    }
+    if (!customModelId) return; // no model configured — no-op
+
     setGenerating(true);
     try {
       const res = await api.git.generateCommitMessage({
         repoPath,
-        customModelId: commitGenModel,
+        customModelId,
+        customModelRole,
         prompt: commitGenPrompt,
       });
       if (res.ok && res.message) {
         onChange(res.message);
       } else {
-        // Surface the error briefly by putting it in the input (user can edit/clear).
         onChange(res.error ?? "生成失败");
       }
     } catch {
@@ -398,34 +412,42 @@ function CommitBox({
 
   return (
     <div className="my-2 flex gap-1.5">
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && value.trim() && !disabled) {
-            void onCommit("commit");
-          }
-        }}
-        placeholder="提交信息…"
-        disabled={disabled || generating}
-        className="min-w-0 flex-1 rounded-md border border-edge-input bg-surface px-2 py-1 text-[11px] text-content outline-none focus:border-accent disabled:opacity-50"
-      />
-      {/* Generate button — uses the configured model + prompt to generate a
-          commit message from the staged diff. */}
-      <button
-        type="button"
-        onClick={handleGenerate}
-        disabled={disabled || generating}
-        title="使用 AI 生成提交信息"
-        className={cn(
-          "flex shrink-0 items-center gap-1 rounded-md border border-edge px-2 py-1 text-[11px] transition-colors",
-          "text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-40",
+      {/* Input with an inline generate icon on the right. The icon sits
+          inside a relative wrapper so it overlays the input's right padding. */}
+      <div className="relative min-w-0 flex-1">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && value.trim() && !disabled) {
+              void onCommit("commit");
+            }
+          }}
+          placeholder="提交信息…"
+          disabled={disabled || generating}
+          className="w-full rounded-md border border-edge-input bg-surface py-1 pl-2 pr-7 text-[11px] text-content outline-none focus:border-accent disabled:opacity-50"
+        />
+        {/* Generate icon — only shows when a model is configured. */}
+        {commitGenModel && (
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={disabled || generating}
+            title="使用 AI 生成提交信息"
+            className={cn(
+              "absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-content-subtle transition-colors",
+              "hover:bg-surface-hover hover:text-accent disabled:opacity-40",
+            )}
+          >
+            {generating ? (
+              <IconLoader2 size={12} className="animate-spin" />
+            ) : (
+              <IconSparkles size={12} />
+            )}
+          </button>
         )}
-      >
-        {generating ? <IconLoader2 size={11} className="animate-spin" /> : <IconSparkles size={11} />}
-        生成
-      </button>
+      </div>
       {/* Split button: main "提交" + dropdown for commit+push / commit+sync. */}
       <div className="flex shrink-0 overflow-hidden rounded-md">
         <button

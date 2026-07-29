@@ -373,7 +373,10 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
         let env: import("@anthropic-ai/claude-agent-sdk").Options["env"];
 
         if (input.customModelId) {
-          const cfg = CustomModelStore.resolveApiConfig(input.customModelId);
+          const cfg = CustomModelStore.resolveApiConfig(
+            input.customModelId,
+            input.customModelRole ?? undefined,
+          );
           if (!cfg) {
             return { ok: false, error: "找不到指定的模型配置" };
           }

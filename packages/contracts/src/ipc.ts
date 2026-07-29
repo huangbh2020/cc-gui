@@ -558,14 +558,17 @@ export const GitDiscardSchema = z.object({
 export type GitDiscardInput = z.infer<typeof GitDiscardSchema>;
 
 /** Generate a commit message from the staged diff using an LLM.
- *  `repoPath` scopes the diff; `customModelId` selects which custom-model
- *  config to use (must be a persisted config id); `prompt` is the user's
+ *  `repoPath` scopes the diff; `customModelId` + `customModelRole` select the
+ *  specific model (a config + its role binding); `prompt` is the user's
  *  configured prompt template. The handler collects the staged diff, feeds
  *  it to the model via a one-shot SDK query, and returns the generated text. */
 export const GitGenerateCommitSchema = z.object({
   repoPath: z.string(),
   /** Custom-model config id (from CustomModelStore). null = use built-in. */
   customModelId: z.string().nullable(),
+  /** Which role binding within the config to use (e.g. "sonnet"). Ignored
+   *  when customModelId is null. */
+  customModelRole: z.string().nullable(),
   /** The user's prompt template. The diff is appended after this. */
   prompt: z.string(),
 });
