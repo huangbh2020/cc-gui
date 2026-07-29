@@ -4,6 +4,7 @@ import {
   IconArrowLeft,
   IconLayoutSidebarLeftExpand,
   IconLayoutSidebarRightExpand,
+  IconTerminal2,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
@@ -16,8 +17,11 @@ interface Props {
   leftOpen: boolean;
   /** Right sidebar visibility (workspace mode only). */
   rightOpen: boolean;
+  /** Bottom terminal bar visibility (workspace mode only). */
+  bottomTerminalOpen: boolean;
   onToggleLeft?: () => void;
   onToggleRight?: () => void;
+  onToggleBottomTerminal?: () => void;
   /** Settings mode: returns to the workspace view. */
   onBack?: () => void;
 }
@@ -44,7 +48,16 @@ interface Props {
  *  sidebar strip reserves left padding; on Windows/Linux the titleBarOverlay
  *  controls (min/max/close) sit on the RIGHT, so the main strip reserves
  *  right padding. */
-export function Titlebar({ mode, leftOpen, rightOpen, onToggleLeft, onToggleRight, onBack }: Props) {
+export function Titlebar({
+  mode,
+  leftOpen,
+  rightOpen,
+  bottomTerminalOpen,
+  onToggleLeft,
+  onToggleRight,
+  onToggleBottomTerminal,
+  onBack,
+}: Props) {
   const isSettings = mode === "settings";
 
   return (
@@ -107,6 +120,21 @@ export function Titlebar({ mode, leftOpen, rightOpen, onToggleLeft, onToggleRigh
           <>
             <ActiveThreadTitle />
             <div className="flex-1" />
+            {/* Bottom terminal toggle — sits just left of the right-panel
+                toggle. Active state highlighted with the accent token. */}
+            <button
+              onClick={onToggleBottomTerminal}
+              className={cn(
+                "flex items-center justify-center rounded p-1.5 transition-colors",
+                bottomTerminalOpen
+                  ? "bg-surface-hover text-accent"
+                  : "text-content-muted hover:bg-surface-hover hover:text-content",
+              )}
+              title={bottomTerminalOpen ? "隐藏终端" : "显示终端"}
+              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+            >
+              <IconTerminal2 size={18} className="shrink-0" />
+            </button>
             <button
               onClick={onToggleRight}
               className={cn(

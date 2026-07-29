@@ -445,9 +445,15 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
         return { ok: false, error: "没有已暂存的更改可生成提交信息" };
       }
 
-      // 2. Build the full prompt: user's template + the diff.
-      const promptTemplate = input.prompt?.trim() || DEFAULT_COMMIT_PROMPT;
-      const fullPrompt = `${promptTemplate}\n\n--- git diff --cached ---\n${diff}\n--- end diff ---`;
+      // 2. Build the prompt. The *system* prompt carries the fixed output-shape
+      //    constraints (clean, diff-only message) and is never overridden by the
+      //    user. The *user* message carries the (optional) format/language
+      //    preference — labelled as such so it can't be mistaken for overriding
+      //    the core behavior — followed by the staged diff.
+      const formatPrompt = input.prompt?.trim() || DEFAULT_COMMIT_FORMAT_PROMPT;
+      const userPrompt =
+        `# 格式与语言偏好\n${formatPrompt}\n\n` +
+        `--- git diff --cached ---\n${diff}\n--- end diff ---`;
 
       // 3. Resolve the model config. If a customModelId is given, use that
       //    config's env + model; otherwise fall back to the built-in model.
@@ -472,12 +478,15 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
         }
 
         const q = query({
-          prompt: fullPrompt,
+          prompt: userPrompt,
           options: {
             abortController: ac,
             maxTurns: 1,
             model,
             env,
+            // Fixed system prompt guarantees clean, diff-only output. See
+            // COMMIT_GEN_SYSTEM_PROMPT — user's format prompt can't override it.
+            systemPrompt: COMMIT_GEN_SYSTEM_PROMPT,
             settingSources: ["project", "local"],
             includePartialMessages: false,
           },
@@ -526,12 +535,30 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   });
 }
 
-/** Default prompt used when the user hasn't configured a custom one. */
-const DEFAULT_COMMIT_PROMPT =
-  "请根据以下 git diff 生成一条简洁的提交信息。要求:\n" +
-  "1. 第一行是简短摘要(不超过 50 字符)\n" +
-  "2. 如果改动较复杂,空一行后写详细说明\n" +
-  "3. 只返回提交信息本身,不要包含多余的解释或代码块标记";
+/**
+ * Fixed system prompt for commit-message generation. NEVER overridden by user
+ * input — this is what guarantees clean, diff-only output regardless of the
+ * user's format/language prompt. The user's prompt (see
+ * {@link DEFAULT_COMMIT_FORMAT_PROMPT}) only steers formatting & language via
+ * the user message, not the system prompt.
+ */
+const COMMIT_GEN_SYSTEM_PROMPT = [
+  "你是一个 Git 提交信息生成器。你的唯一职责是根据给定的 `git diff --cached` 输出,生成一条与实际改动相关、可直接使用的提交信息。",
+  "",
+  "严格输出约束:",
+  "1. 只输出提交信息本身——不要任何前导语、问候、解释、分析、过程性文字(例如「这是你的提交信息:」「让我分析一下改动…」「根据以上 diff…」等一律禁止)。",
+  "2. 不要使用 Markdown 代码块标记(```...)或其他包裹符号。",
+  "3. 完全基于 diff 的实际内容生成;diff 中没有的改动不得臆造或补充。",
+  "4. 第一行是简短摘要(不超过 50 字符,祈使语气);若改动较复杂,空一行后再写详细说明正文。",
+  "5. 下方的「格式与语言偏好」仅影响提交信息的语言、措辞风格与规范格式(如 Conventional Commits、是否加 emoji 等),不得改变上述输出约束,也不得改变基于 diff 生成内容这一核心行为。",
+].join("\n");
+
+/**
+ * Default *format* prompt appended to the user message when the user hasn't
+ * configured a custom one. Only concerns language/convention — the fixed
+ * {@link COMMIT_GEN_SYSTEM_PROMPT} carries all output-shape constraints.
+ */
+const DEFAULT_COMMIT_FORMAT_PROMPT = "使用中文生成提交信息,默认遵循 Conventional Commits 规范。";
 
 /* ───────────────────────── history helpers ───────────────────────── */
 

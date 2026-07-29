@@ -1,3 +1,28 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  DndContext,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { Menu } from "@base-ui/react/menu";
+import { cn } from "@renderer/lib/cn.js";
+import {
+  IconChevronLeft,
+  IconChevronRight,
+  IconDotsVertical,
+  IconX,
+} from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Session } from "@contracts/session";
 
@@ -7,6 +32,16 @@ import type { Session } from "@contracts/session";
  *  button. Clicking the tab body activates it; the × button removes it
  *  from the strip (the session's in-flight turn is NOT cancelled — see
  *  `closeTab` in the store).
+ *
+ *  Interaction model (VS Code / browser-style tab bar):
+ *   - Drag a tab to reorder it (via @dnd-kit; a 6px activation distance
+ *     distinguishes a drag from a click).
+ *   - When tabs overflow, left/right chevron buttons scroll the strip; the
+ *     mouse wheel is also translated to horizontal scroll. The native
+ *     scrollbar is hidden (`no-scrollbar`); edge fades hint at more content.
+ *   - A `⋯` menu on the right lists every tab for quick jumping when the
+ *     strip overflows.
+ *   - Middle-click on a tab closes it.
  *
  *  Only renders anything when the store's `openTabs` list is non-empty.
  *  In `single` displayMode this component is never mounted (the
@@ -18,79 +53,378 @@ export function SessionTabs() {
   const runningBySession = useSessionStore((s) => s.runningBySession);
   const selectSession = useSessionStore((s) => s.selectSession);
   const closeTab = useSessionStore((s) => s.closeTab);
+  const reorderTab = useSessionStore((s) => s.reorderTab);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Maps a tab id → its DOM node, used to scrollIntoView the active tab.
+  const tabNodes = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const recomputeScrollState = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // 1px tolerance to avoid float-rounding flakiness at the right edge.
+    setCanScrollLeft(el.scrollLeft > 0);
+    setCanScrollRight(el.scrollLeft < el.scrollWidth - el.clientWidth - 1);
+  }, []);
+
+  // Keep scroll-boundary state fresh on mount, on tab add/remove, and on
+  // container resize. (Scroll position itself is tracked by onScroll.)
+  useEffect(() => {
+    recomputeScrollState();
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => recomputeScrollState());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tabs.length, recomputeScrollState]);
+
+  // Scroll the active tab into view whenever it changes — so selecting a
+  // background tab or opening a new one never leaves it hidden off-screen.
+  useEffect(() => {
+    if (!activeId) return;
+    const node = tabNodes.current.get(activeId);
+    node?.scrollIntoView({ inline: "nearest", behavior: "smooth", block: "nearest" });
+    // Recompute after the smooth scroll settles.
+    const t = setTimeout(recomputeScrollState, 260);
+    return () => clearTimeout(t);
+  }, [activeId, tabs.length, recomputeScrollState]);
+
+  const scrollByPage = useCallback((dir: 1 | -1) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: "smooth" });
+  }, []);
+
+  const onWheel = useCallback((e: React.WheelEvent) => {
+    // Translate vertical wheel into horizontal scroll so a plain mouse
+    // wheel can navigate the strip. Trackpad horizontal is already deltaX.
+    const el = scrollRef.current;
+    if (!el) return;
+    if (e.deltaY !== 0 && e.deltaX === 0) {
+      el.scrollLeft += e.deltaY;
+    }
+  }, []);
+
+  // ── Drag-and-drop (reorder) ──────────────────────────────────────────
+  // A 6px movement activates a drag; anything less is treated as a click
+  // (so tapping a tab to select it still works). Touch gets a slightly
+  // longer delay so a scroll gesture isn't hijacked.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 120, tolerance: 8 },
+    }),
+  );
+
+  const onDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      const { active, over } = e;
+      if (!over || active.id === over.id) return;
+      const from = tabs.indexOf(String(active.id));
+      const to = tabs.indexOf(String(over.id));
+      if (from === -1 || to === -1) return;
+      reorderTab(from, to);
+    },
+    [tabs, reorderTab],
+  );
 
   if (tabs.length === 0) return null;
+  const overflowing = canScrollLeft || canScrollRight;
 
   return (
-    <div className="flex shrink-0 items-end gap-0.5 overflow-x-auto border-b border-edge bg-surface/40 px-2 pt-1.5">
-      {tabs.map((id) => {
-        const sess = findSession(sessionsByProject, id);
-        const isActive = id === activeId;
-        const running = !!runningBySession[id];
-        return (
-          <Tab
-            key={id}
-            session={sess}
-            sessionId={id}
-            isActive={isActive}
-            running={running}
-            onActivate={() => void selectSession(id)}
-            onClose={(e) => {
-              // Prevent the tab body click from also firing.
-              e.stopPropagation();
-              closeTab(id);
-            }}
-          />
-        );
-      })}
+    <div className="flex shrink-0 items-end gap-0.5 border-b border-edge bg-surface/40 px-2 pt-1.5">
+      {/* Left chevron — only when there's content scrolled off the left edge. */}
+      {canScrollLeft && (
+        <ChevronButton
+          dir="left"
+          onClick={() => scrollByPage(-1)}
+          title="Scroll tabs left"
+        />
+      )}
+
+      {/* Scrollable tab track. The native scrollbar is hidden; navigation
+          is via chevrons + wheel + drag. Edge fades on either side hint at
+          overflow. */}
+      <div className="relative min-w-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={recomputeScrollState}
+          onWheel={onWheel}
+          className="no-scrollbar flex items-end gap-0.5 overflow-x-auto"
+        >
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={onDragEnd}
+          >
+            <SortableContext
+              items={tabs}
+              strategy={horizontalListSortingStrategy}
+            >
+              {tabs.map((id) => {
+                const sess = findSession(sessionsByProject, id);
+                const isActive = id === activeId;
+                const running = !!runningBySession[id];
+                return (
+                  <SortableTab
+                    key={id}
+                    session={sess}
+                    sessionId={id}
+                    isActive={isActive}
+                    running={running}
+                    registerNode={(node) => {
+                      if (node) tabNodes.current.set(id, node);
+                      else tabNodes.current.delete(id);
+                    }}
+                    onActivate={() => void selectSession(id)}
+                    onClose={() => closeTab(id)}
+                  />
+                );
+              })}
+            </SortableContext>
+          </DndContext>
+        </div>
+
+        {/* Edge fades — overlay only, pointer-events disabled so they never
+            intercept tab clicks. Shown per-direction based on scroll state. */}
+        {canScrollLeft && (
+          <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-surface to-transparent" />
+        )}
+        {canScrollRight && (
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-surface to-transparent" />
+        )}
+      </div>
+
+      {/* Right chevron — only when there's content scrolled off the right edge. */}
+      {canScrollRight && (
+        <ChevronButton
+          dir="right"
+          onClick={() => scrollByPage(1)}
+          title="Scroll tabs right"
+        />
+      )}
+
+      {/* Overflow menu — lists every tab for quick jumping. Only shown when
+          the strip actually overflows (otherwise it's pure noise). */}
+      {overflowing && (
+        <OverflowMenu
+          tabs={tabs}
+          activeId={activeId}
+          sessionsByProject={sessionsByProject}
+          runningBySession={runningBySession}
+          onSelect={(id) => void selectSession(id)}
+        />
+      )}
     </div>
   );
 }
 
-interface TabProps {
+interface ChevronButtonProps {
+  dir: "left" | "right";
+  onClick: () => void;
+  title: string;
+}
+
+function ChevronButton({ dir, onClick, title }: ChevronButtonProps) {
+  const Icon = dir === "left" ? IconChevronLeft : IconChevronRight;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content"
+    >
+      <Icon size={14} />
+    </button>
+  );
+}
+
+interface SortableTabProps {
   session: Session | undefined;
   sessionId: string;
   isActive: boolean;
   running: boolean;
+  registerNode: (node: HTMLDivElement | null) => void;
   onActivate: () => void;
-  onClose: (e: React.MouseEvent) => void;
+  onClose: () => void;
 }
 
-function Tab({ session, isActive, running, onActivate, onClose }: TabProps) {
+function SortableTab({
+  session,
+  sessionId,
+  isActive,
+  running,
+  registerNode,
+  onActivate,
+  onClose,
+}: SortableTabProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: sessionId });
+
   const title = session?.title ?? "(unknown)";
+
+  // Merge the dnd-kit node ref with our registry ref.
+  const setRefs = useCallback(
+    (node: HTMLDivElement | null) => {
+      setNodeRef(node);
+      registerNode(node);
+    },
+    [setNodeRef, registerNode],
+  );
+
+  // The sortable transform reorders visually during a drag; while dragging
+  // the source tab is dimmed and lifted slightly.
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    ...(isDragging
+      ? { zIndex: 10, opacity: 0.6 }
+      : undefined),
+  };
+
+  const handleClose = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onClose();
+    },
+    [onClose],
+  );
+
+  // Middle-click closes (browser tab-bar convention).
+  const onMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        onClose();
+      }
+    },
+    [onClose],
+  );
+
   return (
-    <button
-      onClick={onActivate}
-      className={`group flex max-w-[200px] min-w-0 items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 text-[11px] transition-colors ${
+    <div
+      ref={setRefs}
+      style={style}
+      {...attributes}
+      {...listeners}
+      onClick={() => {
+        // A real drag is captured away by dnd-kit and never lands here; this
+        // fires only for an actual tap, which we treat as tab activation.
+        onActivate();
+      }}
+      onMouseDown={onMouseDown}
+      role="tab"
+      aria-selected={isActive}
+      title={title}
+      className={cn(
+        "group flex max-w-[200px] min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 text-[11px] transition-colors",
         isActive
           ? "border-accent bg-surface text-content"
-          : "border-transparent text-content-muted hover:bg-surface-muted/50 hover:text-content"
-      }`}
-      title={title}
+          : "border-transparent text-content-muted hover:bg-surface-muted/50 hover:text-content",
+        isDragging && "shadow-lg",
+      )}
     >
       {/* Running indicator: solid dot when active+idle, pulsing when turn
           in flight. Uses Tailwind's animate-pulse so the user can see at a
           glance which background tabs are still working. */}
       <span
         aria-hidden
-        className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+        className={cn(
+          "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
           running
             ? "bg-accent animate-pulse"
             : isActive
               ? "bg-accent/70"
-              : "bg-content-subtle/50"
-        }`}
+              : "bg-content-subtle/50",
+        )}
       />
       <span className="truncate">{title}</span>
-      <span
-        role="button"
+      {/* Close button — explicit stopPropagation so it never starts a drag
+          and never activates the tab. */}
+      <button
+        type="button"
         aria-label="Close tab"
-        onClick={onClose}
-        className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-0 hover:bg-surface-hover hover:text-content group-hover:opacity-100"
+        onClick={handleClose}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-0 transition-opacity hover:bg-surface-hover hover:text-content group-hover:opacity-100 data-[active=true]:opacity-100"
+        data-active={isActive}
       >
-        ×
-      </span>
-    </button>
+        <IconX size={11} />
+      </button>
+    </div>
+  );
+}
+
+interface OverflowMenuProps {
+  tabs: string[];
+  activeId: string | null;
+  sessionsByProject: Record<string, Session[]>;
+  runningBySession: Record<string, boolean>;
+  onSelect: (id: string) => void;
+}
+
+function OverflowMenu({
+  tabs,
+  activeId,
+  sessionsByProject,
+  runningBySession,
+  onSelect,
+}: OverflowMenuProps) {
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content"
+        title="Show all tabs"
+        aria-label="Show all tabs"
+      >
+        <IconDotsVertical size={14} />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner side="top" align="end">
+          <Menu.Popup
+            className={cn(
+              "z-50 max-h-[min(60vh,360px)] min-w-[200px] origin-bottom-right overflow-y-auto rounded-md border border-edge bg-surface py-1 shadow-2xl",
+              "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+              "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+              "transition-[transform,opacity] duration-100",
+            )}
+          >
+            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-content-subtle">
+              Open tabs
+            </div>
+            {tabs.map((id) => {
+              const sess = findSession(sessionsByProject, id);
+              const title = sess?.title ?? "(unknown)";
+              const isActive = id === activeId;
+              const running = !!runningBySession[id];
+              return (
+                <Menu.Item
+                  key={id}
+                  onClick={() => onSelect(id)}
+                  className={cn(
+                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] outline-none select-none",
+                    "data-[highlighted]:bg-surface-muted",
+                    isActive ? "text-accent" : "text-content-muted",
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+                      running ? "bg-accent animate-pulse" : "bg-content-subtle/50",
+                    )}
+                  />
+                  <span className="truncate">{title}</span>
+                </Menu.Item>
+              );
+            })}
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   );
 }
 

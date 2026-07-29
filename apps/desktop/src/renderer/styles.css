@@ -129,6 +129,16 @@
   background: rgb(var(--content-subtle));
 }
 
+/* Hide the scrollbar on a specific element while keeping it scrollable.
+   Used by the center-pane tab strip, which navigates via chevron buttons +
+   wheel instead of a visible scrollbar (matches VS Code / browser tab bars). */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 html,
 body,
 #root {

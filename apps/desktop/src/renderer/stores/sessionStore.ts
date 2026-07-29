@@ -30,9 +30,11 @@ import {
   UI_COMMIT_GEN_MODEL_SETTING_KEY,
   UI_COMMIT_GEN_PROMPT_SETTING_KEY,
   UI_GIT_COLLAPSED_REPOS_SETTING_KEY,
+  UI_CUSTOM_COMMANDS_SETTING_KEY,
   type DisplayMode,
   type RightPanelTab,
   type IdeEditorMode,
+  type CustomCommand,
 } from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
 
@@ -268,6 +270,10 @@ interface SessionState {
    *  the last-used inspector. Only "files" is implemented in P4; the other
    *  three round-trip for forward-compat. */
   rightPanelTab: RightPanelTab;
+  /** User-saved terminal quick-commands. Persisted as a JSON array in the
+   *  settings table; read/written by the terminal toolbar's commands menu.
+   *  Global (not per-project) — these express reusable shortcuts. */
+  customCommands: CustomCommand[];
   /** Per-project ordered list of absolute file paths open in the Monaco
    *  editor area. Drives the OpenTabsBar. Persisted as a JSON object keyed
    *  by projectId. */
@@ -343,6 +349,11 @@ interface SessionState {
    *  previous); running turns are NOT cancelled — they keep streaming
    *  in the background and the user can re-open the tab to see them. */
   closeTab: (sessionId: string) => void;
+  /** Reorder the tab strip by moving the tab at `from` to index `to`.
+   *  Pure order shuffle: activeSessionId is untouched, config sync is
+   *  unaffected (it keys off the session row, not tab order), and the
+   *  order is not persisted (openTabs is in-memory only). */
+  reorderTab: (from: number, to: number) => void;
   deleteProject: (id: string) => Promise<void>;
   archiveProject: (id: string, archived: boolean) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
@@ -412,6 +423,10 @@ interface SessionState {
   /* ── IDE right-panel actions ── */
   /** Switch the active right-panel tab. Persists to settings. */
   setRightPanelTab: (tab: RightPanelTab) => void;
+  /** Replace the full list of saved terminal quick-commands. Persists to
+   *  settings (JSON-encoded). The terminal commands menu owns add/edit/delete
+   *  logic and calls this with the updated array. */
+  setCustomCommands: (cmds: CustomCommand[]) => void;
   /** Open a file in the Monaco editor (dedup + append to ideOpenFiles, set
    *  active). `opts.diff` opens it in diff mode (used by the 审查 button when
    *  a before-snapshot exists). Also bumps ideFocusNonce so App opens the
@@ -1273,6 +1288,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // init() hydrates from the settings table. rightPanelTab / ideEditorMode
   // are global user prefs.
   rightPanelTab: "files",
+  customCommands: [],
   ideOpenFilesByProject: {},
   ideActiveFileByProject: {},
   ideFileViewModeByProject: {},
@@ -1356,7 +1372,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // values leave the defaults. Paths that don't belong to any persisted
     // project are dropped on load (stale tabs from a removed project).
     try {
-      const [tabRes, openRes, activeRes, dirsRes, modeRes, commitModelRes, commitPromptRes] = await Promise.all([
+      const [tabRes, openRes, activeRes, dirsRes, modeRes, commitModelRes, commitPromptRes, commandsRes] = await Promise.all([
         api.setting.get({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_OPEN_FILES_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_ACTIVE_FILE_SETTING_KEY }),
@@ -1364,13 +1380,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         api.setting.get({ key: UI_IDE_EDITOR_MODE_SETTING_KEY }),
         api.setting.get({ key: UI_COMMIT_GEN_MODEL_SETTING_KEY }),
         api.setting.get({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY }),
+        api.setting.get({ key: UI_CUSTOM_COMMANDS_SETTING_KEY }),
       ]);
-      if (
-        tabRes.value === "files" ||
-        tabRes.value === "git" ||
-        tabRes.value === "terminal" ||
-        tabRes.value === "browser"
-      ) {
+      // Terminal moved to the bottom bar, so "terminal" is no longer a valid
+      // right-panel tab — a stale persisted value falls through to the default
+      // ("files"). The schema in contracts/ipc.ts mirrors this. "browser" was
+      // a P5 placeholder tab since removed, so a stale persisted value also
+      // falls through to the default.
+      if (tabRes.value === "files" || tabRes.value === "git") {
         set({ rightPanelTab: tabRes.value });
       }
       if (modeRes.value === "tabs" || modeRes.value === "replace") {
@@ -1380,6 +1397,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set({ commitGenModel: commitModelRes.value || null });
       if (commitPromptRes.value) {
         set({ commitGenPrompt: commitPromptRes.value });
+      }
+      // Terminal quick-commands: JSON-encoded CustomCommand[]. Defensively
+      // parse + shape-check each item; malformed values leave the default [].
+      if (commandsRes.value) {
+        try {
+          const parsed = JSON.parse(commandsRes.value);
+          if (Array.isArray(parsed)) {
+            const valid = parsed.filter(
+              (c): c is CustomCommand =>
+                !!c &&
+                typeof c === "object" &&
+                typeof c.id === "string" &&
+                typeof c.name === "string" &&
+                typeof c.command === "string",
+            );
+            set({ customCommands: valid });
+          }
+        } catch {
+          /* malformed JSON — keep default [] */
+        }
       }
       // IDE editor state is persisted as per-project JSON objects (keyed by
       // projectId). Parse them now; path validation happens after projects
@@ -1733,6 +1770,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { openTabs: nextTabs, activeSessionId: nextActive };
     });
   },
+
+  /** Move a tab within the strip. No-op for out-of-range / same index. */
+  reorderTab: (from, to) =>
+    set((s) => {
+      if (
+        from === to ||
+        from < 0 ||
+        from >= s.openTabs.length ||
+        to < 0 ||
+        to >= s.openTabs.length
+      ) {
+        return {};
+      }
+      const next = [...s.openTabs];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return { openTabs: next };
+    }),
 
   /** Hard-delete a project; its sessions + messages cascade-delete in the DB.
    *  If it was active, fall back to the first remaining project. */
@@ -2749,6 +2804,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void api.setting.set({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY, value: tab }).catch((err) => {
       console.error("setting.set(rightPanelTab) failed:", err);
     });
+  },
+
+  setCustomCommands: (cmds) => {
+    set({ customCommands: cmds });
+    void api.setting
+      .set({ key: UI_CUSTOM_COMMANDS_SETTING_KEY, value: JSON.stringify(cmds) })
+      .catch((err) => console.error("setting.set(customCommands) failed:", err));
   },
 
   openFileInIde: (filePath, opts) => {

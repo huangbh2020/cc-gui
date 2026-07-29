@@ -12,8 +12,11 @@ import type { CustomModelRoleKey } from "@contracts/customModel";
  *  - **Model**: pick a SPECIFIC model (supplier + role binding, e.g.
  *    "DeepSeek 中转 → Sonnet"). Only custom-model configs with at least one
  *    bound role are listed; the user must have configured models first.
- *  - **Prompt**: a textarea for the user's custom prompt template. The staged
- *    git diff is appended after this text. Empty = built-in default.
+ *  - **Format preference**: a textarea steering only the language / wording /
+ *    convention of the generated message (e.g. Conventional Commits, en/zh,
+ *    emoji style). The core behavior — emit a clean, diff-derived commit
+ *    message with no preamble — is fixed in the backend and cannot be
+ *    overridden here. Empty = built-in default preference.
  *
  * The model value is stored as `"configId:roleKey"` (e.g. `"cfg_abc:sonnet"`)
  * in the settings table; at commit-generation time it's split back into
@@ -82,16 +85,16 @@ export function GitPanel() {
         )}
       </SettingRow>
 
-      {/* Prompt template */}
+      {/* Prompt template — format/language preference only */}
       <SettingRow
         layout="vertical"
-        title="提示词模板"
-        desc="生成提交信息时使用的提示词。已暂存的 git diff 会附加在提示词之后。留空则使用内置默认提示词。"
+        title="格式与语言偏好"
+        desc="仅控制提交信息的语言、措辞风格与规范格式(如 Conventional Commits、中英文、是否加 emoji)。核心生成行为(基于已暂存 diff 输出干净的提交信息)已内置固定,无法被覆盖。留空使用默认偏好。"
       >
         <textarea
           value={commitGenPrompt}
           onChange={(e) => setCommitGenPrompt(e.target.value)}
-          placeholder="例如:请根据以下 diff 生成一条符合 Conventional Commits 规范的中文提交信息…"
+          placeholder="例如:使用英文、遵循 Conventional Commits 规范、在类型前加 emoji…"
           rows={5}
           className={cn(
             "w-full resize-y rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-xs leading-relaxed text-content outline-none",

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
+import { api } from "@renderer/lib/api.js";
 import {
   IconPlus,
   IconX,
@@ -14,6 +15,7 @@ import {
   type TerminalSessionStatus,
   type TerminalViewHandle,
 } from "./TerminalView.js";
+import { TerminalCommandsMenu } from "./TerminalCommandsMenu.js";
 
 /** One UI terminal tab. `key` is stable; the underlying PTY id lives in the view. */
 interface TermSession {
@@ -124,6 +126,19 @@ export function TerminalPanel({ active }: { active: boolean }) {
   const activeSession = sessions.find((s) => s.key === activeKey) ?? sessions[0] ?? null;
   const activeHandle = activeSession ? handlesRef.current.get(activeSession.key) : undefined;
 
+  // Run a saved quick-command: write `command + "\n"` to the active PTY so the
+  // shell executes it immediately. Silently no-ops when no terminal is running
+  // (no session yet, or the shell has exited) — matches the kill button's guard.
+  const runCommand = useCallback(
+    (command: string) => {
+      const id = activeHandle?.getTerminalId();
+      if (id && activeHandle?.getStatus() === "running") {
+        void api.terminal.write({ terminalId: id, data: `${command}\n` });
+      }
+    },
+    [activeHandle],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Session tab strip + actions */}
@@ -186,6 +201,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-0.5 border-l border-edge pl-1">
+          <TerminalCommandsMenu onRun={runCommand} />
           <IconBtn
             title="清屏"
             onClick={() => activeHandle?.clear()}

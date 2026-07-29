@@ -95,15 +95,16 @@ export const UI_ACCENT_COLOR_SETTING_KEY = "ui.accentColor";
 
 /**
  * Setting key under which the active right-panel tab is persisted.
- * Value is one of "files" | "git" | "terminal" | "browser". The right panel
- * reads it at boot and restores the last-used tab. Files/Git/Terminal are
- * implemented; Browser remains a P5 placeholder. The preference round-trips
- * all four so later phases don't need a migration.
+ * Value is one of "files" | "git". The right panel reads it at boot and
+ * restores the last-used tab. (Terminal used to live here as a tab but moved
+ * to the bottom bar, and Browser was a P5 placeholder that has since been
+ * removed — a persisted value of "terminal" or "browser" is rejected by the
+ * schema on hydrate and falls back to "files".)
  */
 export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
 
 /** zod schema + TS union for the right-panel tab preference. */
-export const RightPanelTabSchema = z.enum(["files", "git", "terminal", "browser"]);
+export const RightPanelTabSchema = z.enum(["files", "git"]);
 export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
 
 /**
@@ -161,6 +162,23 @@ export const UI_COMMIT_GEN_PROMPT_SETTING_KEY = "ui.commitGenPrompt";
  * state. Persisted so the collapsed/expanded state survives restarts.
  */
 export const UI_GIT_COLLAPSED_REPOS_SETTING_KEY = "ui.gitCollapsedRepos";
+
+/**
+ * Setting key under which the user's saved terminal quick-commands are
+ * persisted. Value is a JSON-encoded `CustomCommand[]` (name + command + id).
+ * The terminal toolbar's commands menu reads/writes it so saved commands
+ * survive restarts and stay in sync across terminal instances.
+ */
+export const UI_CUSTOM_COMMANDS_SETTING_KEY = "ui.customCommands";
+
+/** One user-saved terminal quick-command. `id` is a stable client-side id
+ *  (used as the React key and for edit/delete targeting); `name` is the menu
+ *  label; `command` is the shell text written to the PTY (run verbatim). */
+export interface CustomCommand {
+  id: string;
+  name: string;
+  command: string;
+}
 
 /** zod schema + TS union for the IDE editor open-mode preference. */
 export const IdeEditorModeSchema = z.enum(["tabs", "replace"]);

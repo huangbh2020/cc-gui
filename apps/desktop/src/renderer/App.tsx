@@ -5,6 +5,7 @@ import { LeftBar } from "./components/layout/LeftBar.js";
 import { ChatPane } from "./components/chat/ChatPane.js";
 import { SessionTabs } from "./components/layout/SessionTabs.js";
 import { RightPanel } from "./components/layout/RightPanel.js";
+import { BottomTerminalBar } from "./components/layout/BottomTerminalBar.js";
 import { SettingsPage } from "./components/settings/SettingsPage.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
 import { useSessionStore } from "./stores/sessionStore.js";
@@ -42,6 +43,12 @@ export function App() {
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
 
+  /** Bottom terminal bar visibility. Toggled by the terminal icon in the
+   *  titlebar. The bar is always mounted (keep-alive) so PTYs survive; this
+   *  only controls whether it's expanded (280px) or collapsed (height 0).
+   *  Defaults to closed so it doesn't eat vertical space on boot. */
+  const [bottomTerminalOpen, setBottomTerminalOpen] = useState(false);
+
   // Auto-open the right panel when something requests its attention (the
   // 审查 button on a turn-files card, or any openFileInIde call). The store
   // can't reach into this local state, so it bumps a nonce we watch here.
@@ -58,6 +65,7 @@ export function App() {
             mode="settings"
             leftOpen
             rightOpen={false}
+            bottomTerminalOpen={false}
             onBack={() => setSettingsOpen(false)}
           />
           {/* The settings page reuses the three-pane shell with the right
@@ -73,8 +81,10 @@ export function App() {
             mode="workspace"
             leftOpen={leftOpen}
             rightOpen={rightOpen}
+            bottomTerminalOpen={bottomTerminalOpen}
             onToggleLeft={() => setLeftOpen((v) => !v)}
             onToggleRight={() => setRightOpen((v) => !v)}
+            onToggleBottomTerminal={() => setBottomTerminalOpen((v) => !v)}
           />
           {/* Panel row — bg-surface-muted as the contrasting track so the
               center pane's rounded bottom-left corner (in ThreePaneLayout)
@@ -89,6 +99,8 @@ export function App() {
               right={<RightPanel />}
               leftOpen={leftOpen}
               rightOpen={rightOpen}
+              bottomTerminal={<BottomTerminalBar active={bottomTerminalOpen} />}
+              bottomTerminalOpen={bottomTerminalOpen}
             />
           </div>
         </>
