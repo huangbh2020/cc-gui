@@ -18,6 +18,7 @@ export function SettingRow({
   descExtra,
   htmlFor,
   controlAlign = "center",
+  layout = "horizontal",
   className,
   children,
 }: {
@@ -26,13 +27,38 @@ export function SettingRow({
   /** Optional secondary line below `desc` (e.g. a faint hint). */
   descExtra?: ReactNode;
   htmlFor?: string;
-  /** Vertical alignment of the right control column. */
+  /** Vertical alignment of the right control column (horizontal layout only). */
   controlAlign?: "center" | "start";
+  /** Layout direction: horizontal = side-by-side, vertical = stacked. */
+  layout?: "horizontal" | "vertical";
   className?: string;
   children: ReactNode;
 }) {
   const isLabel = !!htmlFor;
   const TitleTag = isLabel ? "label" : "div";
+
+  if (layout === "vertical") {
+    return (
+      <div className={cn("flex flex-col gap-2 py-3", className)}>
+        <div>
+          <TitleTag
+            {...(isLabel ? { htmlFor } : {})}
+            className="text-xs font-medium text-content"
+          >
+            {title}
+          </TitleTag>
+          {desc && (
+            <div className="mt-0.5 text-[11px] leading-relaxed text-content-subtle">
+              {desc}
+            </div>
+          )}
+          {descExtra && <div className="mt-0.5">{descExtra}</div>}
+        </div>
+        <div className="w-full">{children}</div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={cn(

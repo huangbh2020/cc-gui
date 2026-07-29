@@ -48,17 +48,22 @@ export function FileEditor({
   const setEditorMode = useSessionStore((s) => s.setIdeEditorMode);
 
   // Resolve the before-snapshot for diff mode. Two sources, checked in order:
-  //  1. Git panel — the active project's gitDiffByProject bucket (the user
-  //     clicked a git-changed file in the Git panel).
+  //  1. Git panel — the active project's gitDiffByProject bucket (working-tree
+  //     or history click). History pairs also carry an explicit `after` blob.
   //  2. Turn-files — the active session's latest-turn snapshot (the agent
   //     edited the file, or the user clicked 审查 on a turn-files card).
   const turnFile = useTurnFileFor(filePath);
-  const gitBefore = useGitDiffBefore(filePath);
-  const diffBefore = gitBefore ?? turnFile?.before;
+  const gitPair = useGitDiffPair(filePath);
+  const diffBefore = gitPair?.before ?? turnFile?.before;
+  const diffAfter = gitPair?.after;
+  // History diffs are pure blobs — don't offer switching into the live editor,
+  // which would show unrelated working-tree content.
+  const historyOnly = diffAfter != null;
 
   // Effective mode: diff only if explicitly requested AND a before-snapshot
-  // exists (from either source).
-  const effectiveMode: "edit" | "diff" = viewMode === "diff" && diffBefore != null ? "diff" : "edit";
+  // exists (from either source). History pairs force diff mode.
+  const effectiveMode: "edit" | "diff" =
+    historyOnly || (viewMode === "diff" && diffBefore != null) ? "diff" : "edit";
 
   return (
     <div className="flex h-full flex-col">
@@ -66,14 +71,14 @@ export function FileEditor({
         filePath={filePath}
         projectPath={projectPath}
         mode={effectiveMode}
-        canDiff={diffBefore != null}
+        canDiff={diffBefore != null && !historyOnly}
         onToggleMode={() => setViewMode(filePath, effectiveMode === "edit" ? "diff" : "edit")}
         editorMode={editorMode}
         onToggleEditorMode={() => setEditorMode(editorMode === "tabs" ? "replace" : "tabs")}
       />
       <div className="min-h-0 flex-1">
         {effectiveMode === "diff" && diffBefore != null ? (
-          <DiffPane filePath={filePath} before={diffBefore} />
+          <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
         ) : (
           <EditPane filePath={filePath} />
         )}
@@ -287,8 +292,8 @@ function EditPane({ filePath }: { filePath: string }) {
 
 /* ───────────────────────── Diff pane ───────────────────────── */
 
-/** Side-by-side diff: `before` (pre-turn snapshot) vs current on-disk content.
- *  Read-only — the diff is for review, not editing.
+/** Side-by-side diff: `before` vs `after` (or current on-disk content when
+ *  `after` is omitted). Read-only — the diff is for review, not editing.
  *
  *  Uses `keepCurrentOriginalModel` / `keepCurrentModifiedModel` and a manual
  *  onMount cleanup to avoid the "TextModel got disposed before
@@ -298,8 +303,18 @@ function EditPane({ filePath }: { filePath: string }) {
  *  By keeping the models alive past the widget's disposal, we break that race.
  *  We then dispose the models ourselves in the correct order (widget first,
  *  then models) via the onMount ref. */
-function DiffPane({ filePath, before }: { filePath: string; before: string }) {
-  const [modified, setModified] = useState<string | null>(null);
+function DiffPane({
+  filePath,
+  before,
+  after,
+}: {
+  filePath: string;
+  before: string;
+  /** Explicit modified-side content (history commits). When omitted the pane
+   *  reads the working-tree file from disk. */
+  after?: string;
+}) {
+  const [modified, setModified] = useState<string | null>(after ?? null);
   const theme = useMonacoTheme();
   const language = languageForExt(extname(filePath));
   // Stash the editor + monaco instances so we can dispose in the right order
@@ -308,7 +323,13 @@ function DiffPane({ filePath, before }: { filePath: string; before: string }) {
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
 
   useEffect(() => {
+    // History pair: both sides are already known — don't touch the disk.
+    if (after != null) {
+      setModified(after);
+      return;
+    }
     let cancelled = false;
+    setModified(null);
     api.file
       .readFile({ filePath })
       .then(({ content }) => {
@@ -320,7 +341,7 @@ function DiffPane({ filePath, before }: { filePath: string; before: string }) {
     return () => {
       cancelled = true;
     };
-  }, [filePath]);
+  }, [filePath, after]);
 
   // On unmount: dispose the widget FIRST, then the models. This is the
   // reverse of what the library does by default, and avoids the listener race.
@@ -393,9 +414,11 @@ function useTurnFileFor(filePath: string): TurnFileEntry | undefined {
   return turnFiles.find((f) => f.filePath === filePath);
 }
 
-/** Look up the active project's git-diff "before" content for `filePath`.
+/** Look up the active project's git-diff pair for `filePath`.
  *  Returns undefined if the Git panel hasn't stashed a diff for this file. */
-function useGitDiffBefore(filePath: string): string | undefined {
+function useGitDiffPair(
+  filePath: string,
+): { before: string; after?: string } | undefined {
   const pid = useSessionStore((s) => s.activeProjectId);
   const projMap = useSessionStore((s) =>
     pid ? s.gitDiffByProject[pid] : undefined,

@@ -27,8 +27,20 @@ import {
   GitDiffSchema,
   GitDiscardSchema,
   GitGenerateCommitSchema,
+  GitLogSchema,
+  GitShowCommitSchema,
+  GitShowFileSchema,
 } from "@contracts/ipc";
-import type { GitRepo, GitStatusResult, GitFileStatus, GitStatusCode } from "@contracts/ipc";
+import type {
+  GitRepo,
+  GitStatusResult,
+  GitFileStatus,
+  GitStatusCode,
+  GitCommitInfo,
+  GitCommitFile,
+  GitCommitFileStatus,
+  GitCommitDetail,
+} from "@contracts/ipc";
 import { ProjectRepo, SettingRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
@@ -344,6 +356,81 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
     }
   });
 
+  /* ── git:log — paginated commit history ── */
+  ipcMain.handle(IPC.GIT_LOG, async (_evt, raw) => {
+    const input = GitLogSchema.parse(raw);
+    if (!findContainingProject(input.repoPath)) {
+      log.warn(`git.log refused — repoPath outside any project: ${input.repoPath}`);
+      return { commits: [], hasMore: false };
+    }
+    const limit = input.limit ?? 50;
+    const skip = input.skip ?? 0;
+    try {
+      const git = simpleGit(input.repoPath);
+      // Custom format via raw so we control fields + --skip cleanly.
+      // Record separator \x1e, field separator \x1f.
+      // Request one extra row so we can tell whether another page exists.
+      const args = [
+        "log",
+        `--max-count=${limit + 1}`,
+        `--skip=${skip}`,
+        "--format=%H%x1f%h%x1f%s%x1f%b%x1f%an%x1f%aI%x1f%P%x1e",
+      ];
+      if (input.ref) args.push(input.ref);
+      const rawLog = await git.raw(args);
+      const commits = parseLogOutput(rawLog);
+      const hasMore = commits.length > limit;
+      return {
+        commits: hasMore ? commits.slice(0, limit) : commits,
+        hasMore,
+      };
+    } catch (err) {
+      log.warn(`git.log failed for ${input.repoPath}: ${(err as Error).message}`);
+      return { commits: [], hasMore: false };
+    }
+  });
+
+  /* ── git:showCommit — meta + changed files for one commit ── */
+  ipcMain.handle(IPC.GIT_SHOW_COMMIT, async (_evt, raw) => {
+    const input = GitShowCommitSchema.parse(raw);
+    if (!findContainingProject(input.repoPath)) {
+      log.warn(`git.showCommit refused — repoPath outside any project: ${input.repoPath}`);
+      return null;
+    }
+    try {
+      const git = simpleGit(input.repoPath);
+      const detail = await loadCommitDetail(git, input.commitHash);
+      return detail;
+    } catch (err) {
+      log.warn(
+        `git.showCommit failed for ${input.repoPath}@${input.commitHash}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  });
+
+  /* ── git:showFile — parent vs commit blob contents for one path ── */
+  ipcMain.handle(IPC.GIT_SHOW_FILE, async (_evt, raw) => {
+    const input = GitShowFileSchema.parse(raw);
+    if (!findContainingProject(input.repoPath)) {
+      log.warn(`git.showFile refused — repoPath outside any project: ${input.repoPath}`);
+      return { before: "", after: "" };
+    }
+    try {
+      const git = simpleGit(input.repoPath);
+      const beforePath = input.oldPath || input.filePath;
+      const after = await showBlob(git, input.commitHash, input.filePath);
+      // Parent side: `${hash}^:path`. Root commits / added files yield "".
+      const before = await showBlob(git, `${input.commitHash}^`, beforePath);
+      return { before, after };
+    } catch (err) {
+      log.warn(
+        `git.showFile failed for ${input.repoPath}@${input.commitHash}:${input.filePath}: ${(err as Error).message}`,
+      );
+      return { before: "", after: "" };
+    }
+  });
+
   /* ── git:generateCommitMessage — LLM-generated commit message from staged diff ── */
   ipcMain.handle(IPC.GIT_GENERATE_COMMIT, async (_evt, raw) => {
     const input = GitGenerateCommitSchema.parse(raw);
@@ -445,3 +532,177 @@ const DEFAULT_COMMIT_PROMPT =
   "1. 第一行是简短摘要(不超过 50 字符)\n" +
   "2. 如果改动较复杂,空一行后写详细说明\n" +
   "3. 只返回提交信息本身,不要包含多余的解释或代码块标记";
+
+/* ───────────────────────── history helpers ───────────────────────── */
+
+/** Parse `git log --format=...%x1e` output into GitCommitInfo[]. */
+function parseLogOutput(raw: string): GitCommitInfo[] {
+  const commits: GitCommitInfo[] = [];
+  for (const record of raw.split("\x1e")) {
+    const line = record.replace(/^\n+/, "").trimEnd();
+    if (!line.trim()) continue;
+    const [hash, shortHash, subject, body, author, authoredAt, parentsRaw] =
+      line.split("\x1f");
+    if (!hash) continue;
+    const parents = (parentsRaw || "")
+      .split(/\s+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    commits.push({
+      hash,
+      shortHash: shortHash || hash.slice(0, 7),
+      subject: subject || "",
+      body: body?.trim() || undefined,
+      author: author || "",
+      authoredAt: authoredAt || "",
+      parents: parents.length > 0 ? parents : undefined,
+    });
+  }
+  return commits;
+}
+
+/** Read a blob at `rev:path`. Missing path / root-parent → "". */
+async function showBlob(
+  git: import("simple-git").SimpleGit,
+  rev: string,
+  filePath: string,
+): Promise<string> {
+  try {
+    // `git show rev:path` — simple-git's show() returns stdout as string.
+    const content = await git.show([`${rev}:${filePath}`]);
+    return typeof content === "string" ? content : String(content ?? "");
+  } catch {
+    return "";
+  }
+}
+
+/** Load commit meta + name-status file list with optional numstat tallies. */
+async function loadCommitDetail(
+  git: import("simple-git").SimpleGit,
+  commitHash: string,
+): Promise<GitCommitDetail> {
+  // Custom pretty format so we don't depend on simple-git's log field set for
+  // a single-commit lookup. Fields separated by \x1f, record ends with \x1e.
+  const metaRaw = await git.raw([
+    "show",
+    "--no-patch",
+    "--format=%H%x1f%h%x1f%s%x1f%b%x1f%an%x1f%aI%x1f%P%x1e",
+    commitHash,
+  ]);
+  const metaLine = metaRaw.split("\x1e")[0]?.trim() ?? "";
+  const [hash, shortHash, subject, body, author, authoredAt, parentsRaw] =
+    metaLine.split("\x1f");
+  if (!hash) {
+    throw new Error(`commit not found: ${commitHash}`);
+  }
+  const parents = (parentsRaw || "")
+    .split(/\s+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  const commit: GitCommitInfo = {
+    hash,
+    shortHash: shortHash || hash.slice(0, 7),
+    subject: subject || "",
+    body: body?.trim() || undefined,
+    author: author || "",
+    authoredAt: authoredAt || "",
+    parents,
+  };
+
+  // name-status: status letter + path(s). --root handles the initial commit.
+  const nameStatusRaw = await git.raw([
+    "diff-tree",
+    "--no-commit-id",
+    "--name-status",
+    "-r",
+    "-M",
+    "--root",
+    commitHash,
+  ]);
+  const files = parseNameStatus(nameStatusRaw);
+
+  // numstat for +/- tallies (best-effort; binary files report "-" ).
+  try {
+    const numstatRaw = await git.raw([
+      "diff-tree",
+      "--no-commit-id",
+      "--numstat",
+      "-r",
+      "-M",
+      "--root",
+      commitHash,
+    ]);
+    applyNumstat(files, numstatRaw);
+  } catch {
+    // tallies are optional
+  }
+
+  return { commit, files };
+}
+
+/** Parse `git diff-tree --name-status` output into GitCommitFile[]. */
+function parseNameStatus(raw: string): GitCommitFile[] {
+  const files: GitCommitFile[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trimEnd();
+    if (!trimmed) continue;
+    // Formats:
+    //   M\tpath
+    //   A\tpath
+    //   D\tpath
+    //   R100\told\tnew
+    //   C100\told\tnew
+    const parts = trimmed.split("\t");
+    if (parts.length < 2) continue;
+    const code = parts[0] ?? "";
+    const letter = code.charAt(0).toUpperCase();
+    const status = mapCommitFileStatus(letter);
+    if (letter === "R" || letter === "C") {
+      const oldPath = parts[1] ?? "";
+      const path = parts[2] ?? oldPath;
+      files.push({ path, status, oldPath: oldPath || undefined });
+    } else {
+      files.push({ path: parts[1] ?? "", status });
+    }
+  }
+  return files.filter((f) => f.path.length > 0);
+}
+
+function mapCommitFileStatus(letter: string): GitCommitFileStatus {
+  switch (letter) {
+    case "A":
+      return "added";
+    case "D":
+      return "deleted";
+    case "R":
+      return "renamed";
+    case "C":
+      return "copied";
+    default:
+      return "modified";
+  }
+}
+
+/** Merge `git diff-tree --numstat` tallies into an existing file list. */
+function applyNumstat(files: GitCommitFile[], raw: string): void {
+  const byPath = new Map(files.map((f) => [f.path, f]));
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trimEnd();
+    if (!trimmed) continue;
+    // numstat: additions\tdeletions\tpath
+    // rename:  additions\tdeletions\told\tnew  OR path with => 
+    const parts = trimmed.split("\t");
+    if (parts.length < 3) continue;
+    const addStr = parts[0] ?? "0";
+    const delStr = parts[1] ?? "0";
+    const additions = addStr === "-" ? undefined : Number.parseInt(addStr, 10);
+    const deletions = delStr === "-" ? undefined : Number.parseInt(delStr, 10);
+    // For renames, last field is the new path.
+    const path = parts[parts.length - 1] ?? "";
+    const file = byPath.get(path);
+    if (!file) continue;
+    if (additions != null && !Number.isNaN(additions)) file.additions = additions;
+    if (deletions != null && !Number.isNaN(deletions)) file.deletions = deletions;
+  }
+}

@@ -48,6 +48,9 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
   const [commitMsg, setCommitMsg] = useState("");
   const [busy, setBusy] = useState<"push" | "pull" | "commit" | null>(null);
   const [pendingDiscard, setPendingDiscard] = useState<string[] | null>(null);
+  const collapsedGitRepos = useSessionStore((s) => s.collapsedGitRepos);
+  const toggleCollapsedGitRepo = useSessionStore((s) => s.toggleCollapsedGitRepo);
+  const collapsed = !!collapsedGitRepos[repo.path];
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -237,11 +240,14 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
           <ActionButton onClick={refresh} disabled={busy !== null} title="刷新状态">
             <IconRefresh size={12} />
           </ActionButton>
+          <ActionButton onClick={() => toggleCollapsedGitRepo(repo.path)} title={collapsed ? "展开" : "收起"}>
+            {collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
+          </ActionButton>
         </div>
       </div>
 
       {/* ── Error banner ── */}
-      {error && (
+      {!collapsed && error && (
         <div className="flex items-start gap-1.5 border-b border-danger/30 bg-danger/10 px-2.5 py-1.5 text-[11px] text-danger">
           <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span className="break-words">{error}</span>
@@ -249,66 +255,68 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       )}
 
       {/* ── Body ── */}
-      <div className="p-2">
-        {loading && !status ? (
-          <div className="flex items-center gap-1.5 py-2 text-[11px] text-content-subtle">
-            <IconLoader2 size={12} className="animate-spin" />
-            读取状态…
-          </div>
-        ) : !status || (status.files.length === 0) ? (
-          <div className="flex items-center gap-1.5 py-2 text-[11px] text-content-subtle">
-            <IconCheck size={12} className="text-accent" />
-            工作区干净
-          </div>
-        ) : (
-          <>
-            {/* Commit box (above staged, so the user writes the message first
-                then reviews what's staged before committing). */}
-            {hasStaged && (
-              <CommitBox
-                repoPath={repo.path}
-                value={commitMsg}
-                onChange={setCommitMsg}
-                disabled={busy !== null}
-                busy={busy === "commit"}
-                onCommit={handleCommit}
-              />
-            )}
-
-            {/* 已暂存 group */}
-            {hasStaged && (
-              <FileGroup
-                label="已暂存"
-                files={staged}
-                repoPath={repo.path}
-                staged
-                onBulkAction={handleUnstageAll}
-                bulkActionLabel="全部取消"
-                busy={busy !== null}
-                onSingleUnstage={(path) => void handleSingleUnstage(path)}
-                onSingleDiscard={undefined}
-              />
-            )}
-
-            {/* 更改 group */}
-            {hasUnstaged && (
-              <div className={hasStaged ? "mt-2" : ""}>
-                <FileGroup
-                  label="更改"
-                  files={unstaged}
+      {!collapsed && (
+        <div className="p-2">
+          {loading && !status ? (
+            <div className="flex items-center gap-1.5 py-2 text-[11px] text-content-subtle">
+              <IconLoader2 size={12} className="animate-spin" />
+              读取状态…
+            </div>
+          ) : !status || (status.files.length === 0) ? (
+            <div className="flex items-center gap-1.5 py-2 text-[11px] text-content-subtle">
+              <IconCheck size={12} className="text-accent" />
+              工作区干净
+            </div>
+          ) : (
+            <>
+              {/* Commit box (above staged, so the user writes the message first
+                  then reviews what's staged before committing). */}
+              {hasStaged && (
+                <CommitBox
                   repoPath={repo.path}
-                  onBulkAction={handleStageAll}
-                  bulkActionLabel="全部暂存"
-                  busy={busy !== null}
-                  onDiscard={(paths) => setPendingDiscard(paths)}
-                  onSingleStage={(path) => void handleSingleStage(path)}
-                  onSingleDiscard={(path) => setPendingDiscard([path])}
+                  value={commitMsg}
+                  onChange={setCommitMsg}
+                  disabled={busy !== null}
+                  busy={busy === "commit"}
+                  onCommit={handleCommit}
                 />
-              </div>
-            )}
-          </>
-        )}
-      </div>
+              )}
+
+              {/* 已暂存 group */}
+              {hasStaged && (
+                <FileGroup
+                  label="已暂存"
+                  files={staged}
+                  repoPath={repo.path}
+                  staged
+                  onBulkAction={handleUnstageAll}
+                  bulkActionLabel="全部取消"
+                  busy={busy !== null}
+                  onSingleUnstage={(path) => void handleSingleUnstage(path)}
+                  onSingleDiscard={undefined}
+                />
+              )}
+
+              {/* 更改 group */}
+              {hasUnstaged && (
+                <div className={hasStaged ? "mt-2" : ""}>
+                  <FileGroup
+                    label="更改"
+                    files={unstaged}
+                    repoPath={repo.path}
+                    onBulkAction={handleStageAll}
+                    bulkActionLabel="全部暂存"
+                    busy={busy !== null}
+                    onDiscard={(paths) => setPendingDiscard(paths)}
+                    onSingleStage={(path) => void handleSingleStage(path)}
+                    onSingleDiscard={(path) => setPendingDiscard([path])}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── Discard confirmation dialog ── */}
       <Dialog.Root open={pendingDiscard !== null} onOpenChange={(open) => { if (!open) setPendingDiscard(null); }}>

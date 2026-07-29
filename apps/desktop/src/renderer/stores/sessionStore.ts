@@ -28,6 +28,7 @@ import {
   UI_IDE_EDITOR_MODE_SETTING_KEY,
   UI_COMMIT_GEN_MODEL_SETTING_KEY,
   UI_COMMIT_GEN_PROMPT_SETTING_KEY,
+  UI_GIT_COLLAPSED_REPOS_SETTING_KEY,
   type DisplayMode,
   type RightPanelTab,
   type IdeEditorMode,
@@ -282,18 +283,20 @@ interface SessionState {
    *  Persisted as a JSON object keyed by projectId so each project's tree
    *  re-opens to where the user left it. */
   ideExpandedDirsByProject: Record<string, string[]>;
-  /** Per-project per-file "before" content for the Git panel's diff view.
-   *  When the user clicks a git-changed file, its pre-change content (parsed
-   *  from the git diff patch) is stashed here so the center editor's FileEditor
-   *  can show a Monaco diff. Ephemeral (NOT persisted) — git state may be stale
-   *  after a restart. Outer key = projectId, inner key = absolute filePath. */
-  gitDiffByProject: Record<string, Record<string, string>>;
+  /** Per-project per-file git diff pair for the center Monaco DiffEditor.
+   *  - Working-tree clicks stash `{ before }` only → DiffPane reads disk as after.
+   *  - History clicks stash `{ before, after }` → DiffPane uses both blobs (no disk).
+   *  Ephemeral (NOT persisted). Outer key = projectId, inner key = abs filePath. */
+  gitDiffByProject: Record<string, Record<string, { before: string; after?: string }>>;
   /** Custom-model id used for git-commit-message generation, or null for
    *  built-in. Persisted in the settings table. */
   commitGenModel: string | null;
   /** Prompt template for commit-message generation. Persisted. Empty = use
    *  the built-in default (defined in the main-process handler). */
   commitGenPrompt: string;
+  /** Per-repo collapsed state in the Git panel. Persisted in the settings
+   *  table as a JSON-encoded Record<string, boolean>. */
+  collapsedGitRepos: Record<string, boolean>;
   /** Monotonically-increasing counter bumped whenever something requests the
    *  right panel's attention (e.g. the 审查 button on a turn-files card).
    *  App.tsx watches this via effect and opens the panel if collapsed —
@@ -416,15 +419,20 @@ interface SessionState {
    *  editor state — the caller (FileEditor) keeps its own dirty tracking. */
   saveFileContent: (filePath: string, content: string) => Promise<boolean>;
   /** Stash a git diff "before" content for a file so the center editor can
-   *  show a Monaco diff. Keyed by the active project. Ephemeral. */
+   *  show a Monaco diff against the working tree. Keyed by the active project.
+   *  Ephemeral. Equivalent to `setGitDiffPair(path, { before })`. */
   setGitDiffBefore: (filePath: string, before: string) => void;
-  /** Clear a file's git diff "before" content (e.g. after the file is staged
-   *  or discarded). */
+  /** Stash a before/after pair for Monaco diff. When `after` is set the
+   *  DiffPane uses it directly (history commits); when omitted it reads disk. */
+  setGitDiffPair: (filePath: string, pair: { before: string; after?: string }) => void;
+  /** Clear a file's git diff pair (e.g. after the file is staged or discarded). */
   clearGitDiffBefore: (filePath: string) => void;
   /** Set the custom-model id used for commit-message generation. Persists. */
   setCommitGenModel: (modelId: string | null) => void;
   /** Set the prompt template for commit-message generation. Persists. */
   setCommitGenPrompt: (prompt: string) => void;
+  /** Toggle a git repo card's collapsed state. Persists. */
+  toggleCollapsedGitRepo: (repoPath: string) => void;
 }
 
 /** Map of messageId → msg for fast delta accumulation. */
@@ -1239,6 +1247,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   gitDiffByProject: {},
   commitGenModel: null,
   commitGenPrompt: "",
+  collapsedGitRepos: {} as Record<string, boolean>,
   ideFocusNonce: 0,
 
   init: async () => {
@@ -1353,6 +1362,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       ideHydrationPending = { open: parsedOpen, active: parsedActive, dirs: parsedDirs };
     } catch (err) {
       console.error("setting.get(ide) failed:", err);
+    }
+
+    // Hydrate collapsed git repo card states from the settings table. Stored
+    // as a JSON-encoded Record<string, boolean> mapping repo paths to their
+    // collapsed state. Falls back to empty on error.
+    try {
+      const { value } = await api.setting.get({ key: UI_GIT_COLLAPSED_REPOS_SETTING_KEY });
+      if (value) {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          set({ collapsedGitRepos: parsed as Record<string, boolean> });
+        }
+      }
+    } catch (err) {
+      console.error("setting.get(gitCollapsedRepos) failed:", err);
     }
 
     const { projects } = await api.project.list();
@@ -2803,12 +2827,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setGitDiffBefore: (filePath, before) => {
+    get().setGitDiffPair(filePath, { before });
+  },
+
+  setGitDiffPair: (filePath, pair) => {
     const pid = get().activeProjectId;
     if (!pid) return;
     set((s) => ({
       gitDiffByProject: {
         ...s.gitDiffByProject,
-        [pid]: { ...(s.gitDiffByProject[pid] ?? {}), [filePath]: before },
+        [pid]: { ...(s.gitDiffByProject[pid] ?? {}), [filePath]: pair },
       },
     }));
   },
@@ -2837,6 +2865,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void api.setting
       .set({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY, value: prompt })
       .catch((err) => console.error("setting.set(commitGenPrompt) failed:", err));
+  },
+
+  toggleCollapsedGitRepo: (repoPath) => {
+    set((s) => {
+      const next = { ...s.collapsedGitRepos };
+      if (next[repoPath]) {
+        delete next[repoPath]; // remove key when expanding
+      } else {
+        next[repoPath] = true;
+      }
+      void api.setting
+        .set({ key: UI_GIT_COLLAPSED_REPOS_SETTING_KEY, value: JSON.stringify(next) })
+        .catch((err) => console.error("setting.set(gitCollapsedRepos) failed:", err));
+      return { collapsedGitRepos: next };
+    });
   },
 }));
 

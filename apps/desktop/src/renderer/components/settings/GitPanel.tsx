@@ -84,6 +84,7 @@ export function GitPanel() {
 
       {/* Prompt template */}
       <SettingRow
+        layout="vertical"
         title="提示词模板"
         desc="生成提交信息时使用的提示词。已暂存的 git diff 会附加在提示词之后。留空则使用内置默认提示词。"
       >
@@ -93,7 +94,7 @@ export function GitPanel() {
           placeholder="例如:请根据以下 diff 生成一条符合 Conventional Commits 规范的中文提交信息…"
           rows={5}
           className={cn(
-            "w-full max-w-[400px] resize-y rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-xs leading-relaxed text-content outline-none",
+            "w-full resize-y rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-xs leading-relaxed text-content outline-none",
             "focus:border-accent",
           )}
         />

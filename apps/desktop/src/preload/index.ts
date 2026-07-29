@@ -118,6 +118,12 @@ const api = {
       ipcRenderer.invoke(IPC.GIT_DISCARD, input)) as RpcMap["git.discard"],
     generateCommitMessage: ((input) =>
       ipcRenderer.invoke(IPC.GIT_GENERATE_COMMIT, input)) as RpcMap["git.generateCommitMessage"],
+    log: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_LOG, input)) as RpcMap["git.log"],
+    showCommit: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_SHOW_COMMIT, input)) as RpcMap["git.showCommit"],
+    showFile: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_SHOW_FILE, input)) as RpcMap["git.showFile"],
   },
 
   // ── Main-only helpers ──

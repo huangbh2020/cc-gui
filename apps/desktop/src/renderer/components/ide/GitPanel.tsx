@@ -1,17 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "@renderer/lib/api.js";
+import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { GitRepo } from "@contracts/ipc";
 import { GitRepoCard } from "./GitRepoCard.js";
-import { IconGitBranch, IconLoader2, IconRefresh } from "@renderer/lib/icons.js";
+import { GitHistoryView } from "./GitHistoryView.js";
+import { IconGitBranch, IconGitCommit, IconLoader2, IconRefresh } from "@renderer/lib/icons.js";
+
+type GitSubTab = "changes" | "history";
 
 /**
  * Git panel — the right-panel "Git" tab body.
  *
  * Discovers all git repositories under the active project's root (a project
  * folder may contain multiple repos: monorepo, submodules, nested projects).
- * Each repo gets its own independent {@link GitRepoCard} for status / stage /
- * commit / push / pull.
+ *
+ * Sub-tabs:
+ *   - 更改: working-tree status / stage / commit via {@link GitRepoCard}
+ *   - 历史: commit log + per-commit file list via {@link GitHistoryView}
  *
  * The scan runs on mount and whenever the active project changes. A manual
  * refresh button re-scans (useful after cloning a new repo into the folder).
@@ -19,6 +25,7 @@ import { IconGitBranch, IconLoader2, IconRefresh } from "@renderer/lib/icons.js"
 export function GitPanel() {
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const projects = useSessionStore((s) => s.projects);
+  const [subTab, setSubTab] = useState<GitSubTab>("changes");
 
   const projectPath = useMemo(() => {
     if (!activeProjectId) return null;
@@ -89,28 +96,74 @@ export function GitPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Header: repo count + refresh. */}
-      <div className="flex shrink-0 items-center justify-between border-b border-edge px-3 py-1.5">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-content-subtle">
-          {repos.length} 个仓库
-        </span>
-        <button
-          type="button"
-          onClick={() => void scan(projectPath)}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
-          title="重新扫描仓库"
-        >
-          <IconRefresh size={12} />
-        </button>
-      </div>
-      {/* Scrollable list of repo cards. */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        <div className="space-y-2">
-          {repos.map((repo) => (
-            <GitRepoCard key={repo.path} repo={repo} />
-          ))}
+      {/* Sub-tab strip: 更改 | 历史 + rescan */}
+      <div className="flex shrink-0 items-center border-b border-edge">
+        <SubTabButton
+          active={subTab === "changes"}
+          onClick={() => setSubTab("changes")}
+          icon={<IconGitBranch size={12} />}
+          label="更改"
+        />
+        <SubTabButton
+          active={subTab === "history"}
+          onClick={() => setSubTab("history")}
+          icon={<IconGitCommit size={12} />}
+          label="历史"
+        />
+        <div className="ml-auto flex items-center gap-1 px-1.5">
+          <span className="text-[10px] text-content-subtle">{repos.length} 仓</span>
+          <button
+            type="button"
+            onClick={() => void scan(projectPath)}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            title="重新扫描仓库"
+          >
+            <IconRefresh size={12} />
+          </button>
         </div>
       </div>
+
+      {subTab === "changes" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          <div className="space-y-2">
+            {repos.map((repo) => (
+              <GitRepoCard key={repo.path} repo={repo} />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1">
+          <GitHistoryView repos={repos} />
+        </div>
+      )}
     </div>
+  );
+}
+
+function SubTabButton({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium transition-colors",
+        active
+          ? "border-b-2 border-accent text-content"
+          : "border-b-2 border-transparent text-content-subtle hover:text-content-muted",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

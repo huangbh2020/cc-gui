@@ -145,6 +145,13 @@ export const UI_COMMIT_GEN_MODEL_SETTING_KEY = "ui.commitGenModel";
  */
 export const UI_COMMIT_GEN_PROMPT_SETTING_KEY = "ui.commitGenPrompt";
 
+/**
+ * Setting key for per-repo collapsed state in the Git panel. Value is a
+ * JSON-encoded `Record<string, boolean>` mapping repo paths to collapsed
+ * state. Persisted so the collapsed/expanded state survives restarts.
+ */
+export const UI_GIT_COLLAPSED_REPOS_SETTING_KEY = "ui.gitCollapsedRepos";
+
 /** zod schema + TS union for the IDE editor open-mode preference. */
 export const IdeEditorModeSchema = z.enum(["tabs", "replace"]);
 export type IdeEditorMode = z.infer<typeof IdeEditorModeSchema>;
@@ -574,6 +581,90 @@ export const GitGenerateCommitSchema = z.object({
 });
 export type GitGenerateCommitInput = z.infer<typeof GitGenerateCommitSchema>;
 
+/* ── Git history (log / show commit / show file at revision) ── */
+
+/** One commit in a `git.log` / `git.showCommit` result. */
+export interface GitCommitInfo {
+  /** Full commit hash. */
+  hash: string;
+  /** Abbreviated hash (typically 7 chars). */
+  shortHash: string;
+  /** First line of the commit message. */
+  subject: string;
+  /** Remaining body after the subject (may be empty). */
+  body?: string;
+  /** Author display name. */
+  author: string;
+  /** Author date as ISO-8601 string. */
+  authoredAt: string;
+  /** Parent commit hashes (empty for root commits). Present on showCommit. */
+  parents?: string[];
+}
+
+/** File change status inside a single commit (relative to its parent). */
+export type GitCommitFileStatus =
+  | "added"
+  | "deleted"
+  | "modified"
+  | "renamed"
+  | "copied";
+
+/** One file changed by a commit. */
+export interface GitCommitFile {
+  /** Path relative to the repo root (new path for renames). */
+  path: string;
+  status: GitCommitFileStatus;
+  /** Previous path when status is renamed/copied. */
+  oldPath?: string;
+  additions?: number;
+  deletions?: number;
+}
+
+/** Full detail for one commit: meta + changed files. */
+export interface GitCommitDetail {
+  commit: GitCommitInfo;
+  files: GitCommitFile[];
+}
+
+/** Paginated commit log. `limit` defaults to 50; `skip` defaults to 0. */
+export const GitLogSchema = z.object({
+  repoPath: z.string(),
+  /** Max commits to return (default 50, max 200). */
+  limit: z.number().int().min(1).max(200).optional(),
+  /** Number of commits to skip (for pagination). */
+  skip: z.number().int().min(0).optional(),
+  /** Optional ref to start from (branch/tag/hash). Defaults to HEAD.
+   *  Restricted to safe ref characters to avoid CLI injection. */
+  ref: z
+    .string()
+    .regex(/^[A-Za-z0-9._/\-@^{}~]+$/, "invalid git ref")
+    .optional(),
+});
+export type GitLogInput = z.infer<typeof GitLogSchema>;
+
+/** Commit hashes are restricted to hex so callers cannot inject CLI args. */
+const GitCommitHashSchema = z
+  .string()
+  .regex(/^[0-9a-fA-F]{4,40}$/, "invalid commit hash");
+
+/** Load meta + changed-file list for one commit. */
+export const GitShowCommitSchema = z.object({
+  repoPath: z.string(),
+  commitHash: GitCommitHashSchema,
+});
+export type GitShowCommitInput = z.infer<typeof GitShowCommitSchema>;
+
+/** Load parent-vs-commit file contents for Monaco diff. */
+export const GitShowFileSchema = z.object({
+  repoPath: z.string(),
+  commitHash: GitCommitHashSchema,
+  /** Path relative to the repo root (new path for renames). */
+  filePath: z.string().min(1),
+  /** Previous path when the file was renamed/copied in this commit. */
+  oldPath: z.string().optional(),
+});
+export type GitShowFileInput = z.infer<typeof GitShowFileSchema>;
+
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
 export interface ClaudeEventMessage {
@@ -674,6 +765,14 @@ export interface RpcMap {
   "git.discard": (input: GitDiscardInput) => Promise<GitOpResult>;
   /** Generate a commit message from the staged diff via an LLM one-shot call. */
   "git.generateCommitMessage": (input: GitGenerateCommitInput) => Promise<{ ok: boolean; message?: string; error?: string }>;
+  /** Paginated commit log for a repo (newest first). */
+  "git.log": (input: GitLogInput) => Promise<{ commits: GitCommitInfo[]; hasMore: boolean }>;
+  /** Meta + changed files for one commit. */
+  "git.showCommit": (input: GitShowCommitInput) => Promise<GitCommitDetail | null>;
+  /** Parent-vs-commit file contents for a single path (Monaco diff). */
+  "git.showFile": (
+    input: GitShowFileInput,
+  ) => Promise<{ before: string; after: string }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -727,6 +826,9 @@ export const IPC = {
   GIT_DIFF: "git:diff",
   GIT_DISCARD: "git:discard",
   GIT_GENERATE_COMMIT: "git:generateCommitMessage",
+  GIT_LOG: "git:log",
+  GIT_SHOW_COMMIT: "git:showCommit",
+  GIT_SHOW_FILE: "git:showFile",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",
