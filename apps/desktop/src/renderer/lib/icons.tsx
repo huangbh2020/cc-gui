@@ -75,6 +75,7 @@ export {
   IconFolderOpen,
   IconFolderPlus,
   IconGitBranch,
+  IconGitCommit,
   IconFileSymlink,
   // Editing / actions
   IconPencil,

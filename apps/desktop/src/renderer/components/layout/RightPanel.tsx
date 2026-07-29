@@ -10,6 +10,7 @@ import {
 import type { RightPanelTab } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { FilesPanel } from "@renderer/components/ide/FilesPanel.js";
+import { GitPanel } from "@renderer/components/ide/GitPanel.js";
 
 /** Right panel: tabbed inspector for files / git / terminal / browser.
  *
@@ -71,7 +72,7 @@ export function RightPanel() {
           their own content. */}
       <div className="min-h-0 flex-1">
         {tab === "files" && <FilesPanel />}
-        {tab === "git" && <Placeholder label="Git" hint="Git 状态与差异(P4 之后)" />}
+        {tab === "git" && <GitPanel />}
         {tab === "terminal" && <Placeholder label="Terminal" hint="集成终端(P4 之后)" />}
         {tab === "browser" && <Placeholder label="Browser" hint="浏览器预览(P5)" />}
       </div>

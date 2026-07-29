@@ -94,6 +94,28 @@ const api = {
       ipcRenderer.invoke(IPC.FILE_WRITE, input)) as RpcMap["file.writeFile"],
   },
 
+  /** Git operations for the Git panel. All paths must resolve inside a known
+   *  project root (main enforces this). Auth for push/pull is handled by the
+   *  system's git configuration (SSH keys, credential helpers). */
+  git: {
+    discoverRepos: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_DISCOVER_REPOS, input)) as RpcMap["git.discoverRepos"],
+    status: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_STATUS, input)) as RpcMap["git.status"],
+    stage: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_STAGE, input)) as RpcMap["git.stage"],
+    unstage: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_UNSTAGE, input)) as RpcMap["git.unstage"],
+    commit: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_COMMIT, input)) as RpcMap["git.commit"],
+    push: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_PUSH, input)) as RpcMap["git.push"],
+    pull: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_PULL, input)) as RpcMap["git.pull"],
+    diff: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_DIFF, input)) as RpcMap["git.diff"],
+  },
+
   // ── Main-only helpers ──
   /** Open a native folder picker; returns the chosen path or null. */
   pickFolder: (): Promise<{ path: string | null }> =>

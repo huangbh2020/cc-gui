@@ -5,6 +5,7 @@ import { registerClaudeHandlers } from "./claude.js";
 import { registerCustomModelHandlers } from "./customModel.js";
 import { registerThemeHandlers } from "./theme.js";
 import { registerFileHandlers } from "./files.js";
+import { registerGitHandlers } from "./git.js";
 
 /** Register all renderer→main IPC handlers. */
 export function registerIpcHandlers(): void {
@@ -13,6 +14,7 @@ export function registerIpcHandlers(): void {
   registerCustomModelHandlers(ipcMain);
   registerThemeHandlers(ipcMain);
   registerFileHandlers(ipcMain);
+  registerGitHandlers(ipcMain);
 }
 
 // Re-export channel constants so handlers stay aligned with the contract.

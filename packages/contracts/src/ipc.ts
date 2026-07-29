@@ -427,6 +427,107 @@ export const FileWriteSchema = z.object({
 });
 export type FileWriteInput = z.infer<typeof FileWriteSchema>;
 
+/* ── Git operations (status / stage / commit / push / pull / diff) ──
+ *  All git operations are scoped to a `repoPath` that must resolve inside a
+ *  known project root. A single project folder may host MULTIPLE git repos
+ *  (monorepo, submodules, nested projects) — `git.discoverRepos` finds them. */
+
+/** A git repository discovered under a project folder. `path` is the absolute
+ *  repo root (the directory containing `.git`). `name` is the relative path
+ *  from the project root (or the basename for the root itself). */
+export interface GitRepo {
+  /** Absolute path to the repo root (contains `.git`). */
+  path: string;
+  /** Display name: path relative to the project root, or the folder name. */
+  name: string;
+  /** Always true — discriminator for future result unions. */
+  isRepo: true;
+}
+
+/** Git status code for a single file, mirroring porcelain output. `index` is
+ *  the staged (cached) status; `workingTree` is the unstaged status. Both use
+ *  the same union of git status codes. */
+export type GitStatusCode =
+  | "unmodified"
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "unmerged"
+  | "ignored"
+  | "untracked";
+
+/** One file's status in a repo. `path` is relative to the repo root. */
+export interface GitFileStatus {
+  path: string;
+  /** Staged status (what's in the index vs HEAD). */
+  index: GitStatusCode;
+  /** Working-tree status (what's on disk vs the index). */
+  workingTree: GitStatusCode;
+}
+
+/** Full status of a single repo. */
+export interface GitStatusResult {
+  /** Current branch name (empty in detached HEAD). */
+  branch: string;
+  /** Commits ahead of upstream (0 if no upstream). */
+  ahead: number;
+  /** Commits behind upstream (0 if no upstream). */
+  behind: number;
+  /** All changed files (staged + unstaged + untracked). */
+  files: GitFileStatus[];
+}
+
+/** Result of a git operation that may fail (push/pull/commit). `ok` is false
+ *  on any error; `error` carries a human-readable message (e.g. auth failure,
+ *  no upstream, merge conflict). */
+export interface GitOpResult {
+  ok: boolean;
+  /** Error message when ok is false. */
+  error?: string;
+}
+
+/** Discover all git repos under a project root (recursive, max depth 3). */
+export const GitDiscoverReposSchema = z.object({
+  projectPath: z.string(),
+});
+export type GitDiscoverReposInput = z.infer<typeof GitDiscoverReposSchema>;
+
+/** Input for operations targeting a single repo. */
+export const GitRepoPathSchema = z.object({
+  repoPath: z.string(),
+});
+export type GitRepoPathInput = z.infer<typeof GitRepoPathSchema>;
+
+/** Stage (git add) specific files. `filePaths` are relative to the repo root. */
+export const GitStageSchema = z.object({
+  repoPath: z.string(),
+  filePaths: z.array(z.string()),
+});
+export type GitStageInput = z.infer<typeof GitStageSchema>;
+
+/** Unstage (git reset) specific files. `filePaths` are relative to the repo root. */
+export const GitUnstageSchema = z.object({
+  repoPath: z.string(),
+  filePaths: z.array(z.string()),
+});
+export type GitUnstageInput = z.infer<typeof GitUnstageSchema>;
+
+/** Commit staged changes with a message. */
+export const GitCommitSchema = z.object({
+  repoPath: z.string(),
+  message: z.string().min(1),
+});
+export type GitCommitInput = z.infer<typeof GitCommitSchema>;
+
+/** Diff of a single file (unstaged changes). `filePath` is relative to repo. */
+export const GitDiffSchema = z.object({
+  repoPath: z.string(),
+  filePath: z.string(),
+});
+export type GitDiffInput = z.infer<typeof GitDiffSchema>;
+
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
 export interface ClaudeEventMessage {
@@ -506,6 +607,23 @@ export interface RpcMap {
   "file.listDir": (input: FileListDirInput) => Promise<{ entries: FileTreeEntry[] }>;
   /** Write content to a file (creates parents), scoped to a project root. */
   "file.writeFile": (input: FileWriteInput) => Promise<{ ok: boolean }>;
+  // Git operations (P4 Git panel)
+  /** Discover all git repos under a project root (recursive, max depth 3). */
+  "git.discoverRepos": (input: GitDiscoverReposInput) => Promise<{ repos: GitRepo[] }>;
+  /** Get the status of a single repo (branch / ahead / behind / files). */
+  "git.status": (input: GitRepoPathInput) => Promise<{ status: GitStatusResult }>;
+  /** Stage (git add) specific files. */
+  "git.stage": (input: GitStageInput) => Promise<GitOpResult>;
+  /** Unstage (git reset) specific files. */
+  "git.unstage": (input: GitUnstageInput) => Promise<GitOpResult>;
+  /** Commit staged changes with a message. */
+  "git.commit": (input: GitCommitInput) => Promise<GitOpResult>;
+  /** Push local commits to the upstream remote. */
+  "git.push": (input: GitRepoPathInput) => Promise<GitOpResult>;
+  /** Pull remote changes into the current branch. */
+  "git.pull": (input: GitRepoPathInput) => Promise<GitOpResult>;
+  /** Get the unstaged diff patch for a single file. */
+  "git.diff": (input: GitDiffInput) => Promise<{ patch: string }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -548,6 +666,15 @@ export const IPC = {
   // File tree listing + writing (P4 IDE right panel)
   FILE_LIST_DIR: "file:listDir",
   FILE_WRITE: "file:writeFile",
+  // Git operations (P4 Git panel)
+  GIT_DISCOVER_REPOS: "git:discoverRepos",
+  GIT_STATUS: "git:status",
+  GIT_STAGE: "git:stage",
+  GIT_UNSTAGE: "git:unstage",
+  GIT_COMMIT: "git:commit",
+  GIT_PUSH: "git:push",
+  GIT_PULL: "git:pull",
+  GIT_DIFF: "git:diff",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",
