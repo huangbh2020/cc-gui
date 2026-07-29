@@ -288,11 +288,24 @@ function EditPane({ filePath }: { filePath: string }) {
 /* ───────────────────────── Diff pane ───────────────────────── */
 
 /** Side-by-side diff: `before` (pre-turn snapshot) vs current on-disk content.
- *  Read-only — the diff is for review, not editing. */
+ *  Read-only — the diff is for review, not editing.
+ *
+ *  Uses `keepCurrentOriginalModel` / `keepCurrentModifiedModel` and a manual
+ *  onMount cleanup to avoid the "TextModel got disposed before
+ *  DiffEditorWidget model got reset" error. The @monaco-editor/react library's
+ *  default unmount disposes the TextModels BEFORE the DiffEditorWidget, which
+ *  triggers the widget's model-change listener on an already-disposed model.
+ *  By keeping the models alive past the widget's disposal, we break that race.
+ *  We then dispose the models ourselves in the correct order (widget first,
+ *  then models) via the onMount ref. */
 function DiffPane({ filePath, before }: { filePath: string; before: string }) {
   const [modified, setModified] = useState<string | null>(null);
   const theme = useMonacoTheme();
   const language = languageForExt(extname(filePath));
+  // Stash the editor + monaco instances so we can dispose in the right order
+  // on unmount (widget first, then models).
+  const editorRef = useRef<import("monaco-editor").editor.IDiffEditor | null>(null);
+  const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -308,6 +321,26 @@ function DiffPane({ filePath, before }: { filePath: string; before: string }) {
       cancelled = true;
     };
   }, [filePath]);
+
+  // On unmount: dispose the widget FIRST, then the models. This is the
+  // reverse of what the library does by default, and avoids the listener race.
+  useEffect(() => {
+    return () => {
+      const editor = editorRef.current;
+      const monaco = monacoRef.current;
+      if (editor && monaco) {
+        // Dispose the diff editor widget before touching its models so no
+        // model-change listener fires on a disposed model.
+        try {
+          editor.dispose();
+        } catch {
+          // already disposed — ignore
+        }
+      }
+      editorRef.current = null;
+      monacoRef.current = null;
+    };
+  }, []);
 
   if (modified === null) {
     return (
@@ -325,7 +358,15 @@ function DiffPane({ filePath, before }: { filePath: string; before: string }) {
       original={before}
       modified={modified}
       theme={theme}
+      // Prevent the library from disposing models on unmount — we handle it
+      // ourselves (widget first) to avoid the dispose-order race.
+      keepCurrentOriginalModel
+      keepCurrentModifiedModel
       loading={<div className="text-[11px] text-content-subtle">加载差异…</div>}
+      onMount={(editor, monaco) => {
+        editorRef.current = editor;
+        monacoRef.current = monaco;
+      }}
       options={{
         readOnly: true,
         renderSideBySide: true,
