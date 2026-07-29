@@ -1,124 +1,122 @@
-# P4 Git 面板
+# Git 面板优化
 
-## 需求
+## 5 项需求与方案
 
-右栏 Git tab:支持项目文件夹下多个 git 仓库,每个仓库独立查看状态、暂存、提交、拉取、推送。
+### 需求 1:点击文件 → 中间面板 diff 视图打开
 
-## 决策(已确认)
+**当前**:点击文件在卡片内展开 inline diff。
+**目标**:点击文件 → 中间面板编辑器列以 diff 模式打开该文件。
 
-- **库**:`simple-git`(封装系统 git CLI,复用系统认证)
-- **多仓库发现**:递归扫描项目根目录子目录(限深 3 层),找出所有含 `.git` 的目录
-- **提交**:面板内勾选文件暂存 + 输入 commit message + 提交
-- **认证**:复用系统 git 认证(SSH key / credential helper),失败显示错误
+**方案**:新增 store 状态 `gitDiffByProject: Record<projectId, Record<filePath, string>>` 存储每个文件的 git diff "before" 内容(从 `git.diff` patch 解析得到)。`FileEditor` 的 `useTurnFileFor` 逻辑扩展:优先查 `gitDiffByProject`,这样 git diff 文件也能在 center editor 以 diff 打开。
 
-## 架构
+点击文件时:调 `api.git.diff` 获取 patch → `parsePatchToBeforeAfter` → 存入 `gitDiffByProject` → `openFileInIde(absolutePath, { diff: true })`。
 
-```
-GitPanel (renderer)
-  ├─ 扫描: api.git.discoverRepos(projectPath) → GitRepo[]
-  ├─ 每个 repo 一个 GitRepoCard:
-  │    ├─ 分支名 + ahead/behind
-  │    ├─ 文件列表(modified/staged/untracked)带勾选
-  │    ├─ commit message 输入框 + 提交按钮
-  │    ├─ Push / Pull 按钮
-  │    └─ 展开 diff:api.git.diffFile(repoPath, filePath)
-  └─ IPC:
-       git.discoverRepos  — 扫描 .git 目录
-       git.status         — 单仓库状态
-       git.stage / unstage
-       git.commit
-       git.push / pull
-       git.diffFile       — 单文件 diff(patch 文本)
-```
+### 需求 2:右键菜单(查看源文件 / 放弃更改)
+
+**当前**:无右键菜单。
+**方案**:用 `@base-ui/react/context-menu`(已安装,导出 `Root/Trigger/Portal/Positioner/Popup/Item`)包裹每个 FileRow。菜单项:
+- **查看源文件** — `openFileInIde(absolutePath)`(中间面板编辑模式)
+- **放弃更改** — 打开 `Dialog` 二次确认(danger 样式,复用 `CustomModelsPanel` 的 confirm 模式),确认后调新增的 `api.git.discard`
+
+新增 IPC:`git.discard`(`simpleGit(repoPath).checkout(filePaths)`)。
+
+### 需求 3:显示 diff 加减数量
+
+**当前**:只显示状态码(M/A/D)。
+**方案**:每个文件行加载时异步获取 diff → `diffSummary(lineDiff(before, after))` → 行右侧显示 `+N -M` 徽章(复用 `MessageBlocks` 的 `+adds`/`−dels` 视觉模式)。为避免每行都发 IPC,用轻量缓存。
+
+### 需求 4:一键暂存/取消全部
+
+**当前**:手动勾选 → 暂存选中。
+**方案**:
+- "更改"组标题右侧加 **全部暂存** 按钮(`api.git.stage({ filePaths: allUnstagedPaths })`)
+- "已暂存"组标题右侧加 **全部取消** 按钮(`api.git.unstage({ filePaths: allStagedPaths })`)
+
+### 需求 5:布局重排 + 提交下拉
+
+**当前**布局:更改 → 暂存按钮 → 已暂存 → 提交框。
+**目标**布局:**已暂存 → 提交框(+下拉提交按钮)→ 更改**
+
+提交按钮右侧下拉(用 `@base-ui/react/menu`):
+- **提交** — `git.commit(message)`
+- **提交并推送** — `git.commit(message)` → `git.push()`
+- **提交并同步** — `git.commit(message)` → `git.pull()` → `git.push()`
+
+---
 
 ## 实施步骤
 
-### 1. 依赖安装
+### 1. IPC 新增 `git.discard`(`ipc.ts` + `git.ts` + preload)
 
-`apps/desktop/package.json` 加 `simple-git` (^3.36.0) 到 dependencies。纯 JS,无原生模块,无打包复杂度。
+- Schema:`GitDiscardSchema = { repoPath, filePaths: string[] }`(复用 stage 的形状)
+- Handler:`simpleGit(repoPath).checkout(["--", ...filePaths])`(untracked 文件用 `git.clean`)
+- IPC 常量 `GIT_DISCARD: "git:discard"` + RpcMap + preload `git.discard`
 
-### 2. IPC 契约(`packages/contracts/src/ipc.ts`)
+### 2. Store 新增 git diff before 内容桶(`sessionStore.ts`)
 
-新增 schema + type + RpcMap + IPC 常量:
+- `gitDiffByProject: Record<string, Record<string, string>>` — per-project per-file 的 diff before 内容(ephemeral,不持久化)
+- `setGitDiffBefore(filePath, before)` — 设置某个文件的 diff before
+- `clearGitDiffBefore(filePath)` — 清除(切换项目/刷新时)
+- `deleteProject` 时清理该桶
 
-```ts
-// 输入
-GitReposInput    { projectPath: string }
-GitRepoPathInput { repoPath: string }
-GitStageInput    { repoPath, filePaths: string[] }
-GitUnstageInput  { repoPath, filePaths: string[] }
-GitCommitInput   { repoPath, message: string }
-GitPushInput     { repoPath }
-GitPullInput     { repoPath }
-GitDiffInput     { repoPath, filePath: string }
+### 3. FileEditor 支持 git diff(`FileEditor.tsx`)
 
-// 结果类型
-GitRepo          { path, name, isRepo: true }
-GitStatusResult  { branch, ahead, behind, files: GitFileStatus[] }
-GitFileStatus    { path, index: "unmodified"|"modified"|"added"|..., workingTree: ... }
-GitDiffResult    { patch: string }
+- `useTurnFileFor` → 扩展为 `useDiffBeforeSource`:先查 `gitDiffByProject[pid][filePath]`,再查 `turnFilesBySession`
+- 有 git diff before 时,工具栏 Diff/Edit 切换也可用
+
+### 4. 重写 GitRepoCard(`GitRepoCard.tsx`)
+
+**新布局**(从上到下):
+```
+┌─ Header: repo name + branch + ↑↓ + Pull/Push/Refresh ────┐
+├─ 已暂存 (N)                          [全部取消]            │
+│   ☐ file1.ts  M  +3 −1                                   │
+│   ☐ file2.ts  A  +10                                     │
+├─ 提交信息输入框  [提交 ▾]                                 │
+├─ 更改 (N)                            [全部暂存]            │
+│   ☑ file3.ts  M  +5 −2                                   │
+│   ☑ file4.ts  ??                                         │
+└──────────────────────────────────────────────────────────┘
 ```
 
-IPC 常量:`GIT_DISCOVER_REPOS`, `GIT_STATUS`, `GIT_STAGE`, `GIT_UNSTAGE`, `GIT_COMMIT`, `GIT_PUSH`, `GIT_PULL`, `GIT_DIFF`
+**FileRow 改动**:
+- 点击行(非 checkbox)→ 调 `api.git.diff` + `setGitDiffBefore` + `openFileInIde(absPath, {diff:true})` → 中间面板打开
+- 右键 → `@base-ui/react/context-menu`(查看源文件 / 放弃更改…)
+- 加载时异步获取 diff → 显示 `+N −M` 徽章
+- checkbox 仍在(用于选择单个文件操作)
 
-### 3. Main handler(`apps/desktop/src/main/ipc/git.ts`)
+**FileGroup 改动**:
+- 标题行加"全部暂存"/"全部取消"按钮
+- 去掉旧的 inline `FileDiff`(diff 移到 center editor)
 
-新文件,镜像 `files.ts` 模式(zod parse → pathWithin 校验 → 操作 → 降级)。
+**提交区**:
+- 放在已暂存下方
+- 提交按钮用 `@base-ui/react/menu` 下拉(提交 / 提交并推送 / 提交并同步)
 
-**`git.discoverRepos`**:递归扫描 `projectPath` 子目录(限深 3 层),找含 `.git` 的目录。返回 `GitRepo[]`。复用 `node:fs/promises` 的 `readdir` + `stat`。过滤 node_modules 等。
+**放弃更改确认**:
+- `Dialog`(复用 ui/Dialog)danger 样式
 
-**`git.status`**:`simpleGit(repoPath).status()` → 映射为 `GitStatusResult`。
+### 5. 文件路径解析
 
-**`git.stage`/`git.unstage`**:`.add(filePaths)` / `.reset(filePaths)`。
+git status 返回的 `file.path` 是相对 repo root 的。center editor 的 `openFileInIde` 需要绝对路径。在 GitRepoCard 里用 `repo.path + '/' + file.path` 拼接(需 renderer-side path join,已有 `lib/path.ts`)。
 
-**`git.commit`**:`.commit(message)`。
-
-**`git.push`/`git.pull`**:`.push()` / `.pull()`。捕获错误(认证失败、无 upstream)返回 `{ ok: false, error }`。
-
-**`git.diff`**:`.diff([filePath])` 或 unstaged diff。返回 patch 文本。
-
-**路径安全**:每个操作校验 `repoPath` 在某 project root 内(`pathWithin`)。
-
-**注册**:`index.ts` 加 `registerGitHandlers(ipcMain)`。
-
-### 4. Preload(`apps/desktop/src/preload/index.ts`)
-
-加 `git: { discoverRepos, status, stage, unstage, commit, push, pull, diff }` 方法组。
-
-### 5. GitPanel 组件(renderer)
-
-**`components/ide/GitPanel.tsx`** — 顶层容器:
-- 读 activeProjectId → projectPath
-- mount 时调 `api.git.discoverRepos(projectPath)` 找仓库
-- 无仓库 → 空态("未找到 git 仓库")
-- 有仓库 → 渲染 `GitRepoCard[]`(可折叠,每个独立)
-
-**`components/ide/GitRepoCard.tsx`** — 单仓库卡片:
-- 头部:仓库名(相对项目根的路径)+ 分支 + ahead/behind 徽章 + Push/Pull 按钮 + 刷新
-- 文件列表:每个文件一行(状态图标 M/A/?? + 路径 + 勾选框)。已暂存/未暂存分组。
-- commit 输入框 + 提交按钮(暂存勾选的文件 → commit)
-- 点击文件 → 展开 diff(`api.git.diff`)→ 用现有 `DiffView` 组件渲染
-
-### 6. RightPanel 接入
-
-`RightPanel.tsx` 的 `tab === "git"` 分支:占位 → `<GitPanel />`。
+---
 
 ## 文件改动清单
 
 | 文件 | 动作 |
 |------|------|
-| `apps/desktop/package.json` | 加 simple-git 依赖 |
-| `packages/contracts/src/ipc.ts` | Git schema + type + RpcMap + IPC 常量 |
-| `apps/desktop/src/main/ipc/git.ts` | 新建:git handler |
-| `apps/desktop/src/main/ipc/index.ts` | 注册 registerGitHandlers |
-| `apps/desktop/src/preload/index.ts` | 暴露 git.* 方法 |
-| `apps/desktop/src/renderer/components/ide/GitPanel.tsx` | 新建:顶层容器 |
-| `apps/desktop/src/renderer/components/ide/GitRepoCard.tsx` | 新建:单仓库卡片 |
-| `apps/desktop/src/renderer/components/layout/RightPanel.tsx` | Git tab 接入 |
+| `packages/contracts/src/ipc.ts` | 加 `GitDiscardSchema` + RpcMap + `GIT_DISCARD` 常量 |
+| `apps/desktop/src/main/ipc/git.ts` | 加 `git.discard` handler(checkout + clean) |
+| `apps/desktop/src/preload/index.ts` | 暴露 `git.discard` |
+| `apps/desktop/src/renderer/stores/sessionStore.ts` | 加 `gitDiffByProject` 桶 + `setGitDiffBefore`/`clearGitDiffBefore` + deleteProject 清理 |
+| `apps/desktop/src/renderer/components/ide/FileEditor.tsx` | diff before 来源扩展(查 gitDiffByProject) |
+| `apps/desktop/src/renderer/components/ide/GitRepoCard.tsx` | 重写:布局重排 + 点击打开 + 右键菜单 + diff 徽章 + 一键暂存/取消 + 提交下拉 + 放弃确认 |
+| `apps/desktop/src/renderer/lib/icons.tsx` | 补充所需图标(如 IconDotsVertical 用于下拉) |
 
 ## 注意
 
-1. **simple-git 在 Electron main 进程运行**(非 renderer),通过 `externalizeDepsPlugin` 自动外部化(已是 dependency)。
-2. **push/pull 可能阻塞**(网络操作)— handler 是 async,renderer 显示 loading 态。
-3. **认证错误处理**:push/pull 失败返回 `{ ok: false, error: string }`,面板显示错误提示(如"认证失败,请检查 SSH key 或 git credential 配置")。
-4. **diff 渲染**:复用现有 `DiffView` + `lineDiff`(parse patch 或用 simple-git 的 diffSumary)。先用 patch 文本,简单可靠。
+1. **untracked 文件放弃更改**:git checkout 不适用于 untracked(未跟踪),需用 `git clean -f -- file`。handler 里根据状态码判断用 checkout 还是 clean。
+2. **gitDiffByProject 是 ephemeral**:不持久化(重启后 git 状态可能已变),切项目时不清(切回来还能用,直到刷新)。
+3. **diff 徽章性能**:每个文件行异步加载 diff 可能较多 IPC 调用。用 `useEffect` + `useState` per row,只加载可见行的 diff(React 只渲染已展开组的行)。
+4. **提交并同步**:commit → pull → push,如果 pull 有冲突 push 不执行,显示错误。

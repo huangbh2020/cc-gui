@@ -25,6 +25,7 @@ import {
   GitUnstageSchema,
   GitCommitSchema,
   GitDiffSchema,
+  GitDiscardSchema,
 } from "@contracts/ipc";
 import type { GitRepo, GitStatusResult, GitFileStatus, GitStatusCode } from "@contracts/ipc";
 import { ProjectRepo } from "@main/store/repositories.js";
@@ -298,6 +299,42 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
     } catch (err) {
       log.warn(`git.diff failed for ${input.repoPath}/${input.filePath}: ${(err as Error).message}`);
       return { patch: "" };
+    }
+  });
+
+  /* ── git:discard — discard local changes (checkout tracked / clean untracked) ── */
+  ipcMain.handle(IPC.GIT_DISCARD, async (_evt, raw) => {
+    const input = GitDiscardSchema.parse(raw);
+    if (!findContainingProject(input.repoPath)) {
+      return { ok: false, error: "仓库路径不在任何已添加的项目内" };
+    }
+    try {
+      const git = simpleGit(input.repoPath);
+      // Separate tracked (modified/staged/deleted) from untracked files:
+      // tracked → git checkout -- <file> (restore to index)
+      // untracked → git clean -f -- <file> (remove)
+      const status = await git.status();
+      const untrackedSet = new Set(
+        status.files.filter((f) => f.working_dir === "?" || f.index === "?").map((f) => f.path),
+      );
+      const tracked: string[] = [];
+      const untracked: string[] = [];
+      for (const fp of input.filePaths) {
+        if (untrackedSet.has(fp)) untracked.push(fp);
+        else tracked.push(fp);
+      }
+      if (tracked.length > 0) {
+        await git.checkout(["--", ...tracked]);
+      }
+      if (untracked.length > 0) {
+        await git.clean("f", ["-d", "--", ...untracked]);
+      }
+      log.info(`git.discard succeeded in ${input.repoPath} (${tracked.length} tracked, ${untracked.length} untracked)`);
+      return { ok: true };
+    } catch (err) {
+      const msg = (err as Error).message;
+      log.warn(`git.discard failed for ${input.repoPath}: ${msg}`);
+      return { ok: false, error: msg };
     }
   });
 }

@@ -280,6 +280,12 @@ interface SessionState {
    *  Persisted as a JSON object keyed by projectId so each project's tree
    *  re-opens to where the user left it. */
   ideExpandedDirsByProject: Record<string, string[]>;
+  /** Per-project per-file "before" content for the Git panel's diff view.
+   *  When the user clicks a git-changed file, its pre-change content (parsed
+   *  from the git diff patch) is stashed here so the center editor's FileEditor
+   *  can show a Monaco diff. Ephemeral (NOT persisted) — git state may be stale
+   *  after a restart. Outer key = projectId, inner key = absolute filePath. */
+  gitDiffByProject: Record<string, Record<string, string>>;
   /** Monotonically-increasing counter bumped whenever something requests the
    *  right panel's attention (e.g. the 审查 button on a turn-files card).
    *  App.tsx watches this via effect and opens the panel if collapsed —
@@ -401,6 +407,12 @@ interface SessionState {
   /** Write content to disk via file.writeFile. Returns ok. Does NOT touch
    *  editor state — the caller (FileEditor) keeps its own dirty tracking. */
   saveFileContent: (filePath: string, content: string) => Promise<boolean>;
+  /** Stash a git diff "before" content for a file so the center editor can
+   *  show a Monaco diff. Keyed by the active project. Ephemeral. */
+  setGitDiffBefore: (filePath: string, before: string) => void;
+  /** Clear a file's git diff "before" content (e.g. after the file is staged
+   *  or discarded). */
+  clearGitDiffBefore: (filePath: string) => void;
 }
 
 /** Map of messageId → msg for fast delta accumulation. */
@@ -1212,6 +1224,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   ideFileViewModeByProject: {},
   ideEditorMode: "tabs",
   ideExpandedDirsByProject: {},
+  gitDiffByProject: {},
   ideFocusNonce: 0,
 
   init: async () => {
@@ -1661,10 +1674,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const ideActiveFileByProject = { ...s.ideActiveFileByProject };
       const ideFileViewModeByProject = { ...s.ideFileViewModeByProject };
       const ideExpandedDirsByProject = { ...s.ideExpandedDirsByProject };
+      const gitDiffByProject = { ...s.gitDiffByProject };
       delete ideOpenFilesByProject[id];
       delete ideActiveFileByProject[id];
       delete ideFileViewModeByProject[id];
       delete ideExpandedDirsByProject[id];
+      delete gitDiffByProject[id];
       const wasActive = s.activeProjectId === id;
       if (!wasActive) {
         // Still need to scrub any open tabs that belonged to the deleted
@@ -1677,7 +1692,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return {
           projects, sessionsByProject, archivedSessionsByProject: archivedByProject,
           sessionsTotalByProject: totalByProject, sessionsHasMoreByProject: hasMoreByProject,
-          ideOpenFilesByProject, ideActiveFileByProject, ideFileViewModeByProject, ideExpandedDirsByProject,
+          ideOpenFilesByProject, ideActiveFileByProject, ideFileViewModeByProject, ideExpandedDirsByProject, gitDiffByProject,
           openTabs, activeSessionId,
         };
       }
@@ -2764,6 +2779,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.error("file.writeFile failed:", err);
       return false;
     }
+  },
+
+  setGitDiffBefore: (filePath, before) => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    set((s) => ({
+      gitDiffByProject: {
+        ...s.gitDiffByProject,
+        [pid]: { ...(s.gitDiffByProject[pid] ?? {}), [filePath]: before },
+      },
+    }));
+  },
+
+  clearGitDiffBefore: (filePath) => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    set((s) => {
+      const projMap = s.gitDiffByProject[pid];
+      if (!projMap || !(filePath in projMap)) return {};
+      const next = { ...projMap };
+      delete next[filePath];
+      return { gitDiffByProject: { ...s.gitDiffByProject, [pid]: next } };
+    });
   },
 }));
 

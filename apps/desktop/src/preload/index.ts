@@ -114,6 +114,8 @@ const api = {
       ipcRenderer.invoke(IPC.GIT_PULL, input)) as RpcMap["git.pull"],
     diff: ((input) =>
       ipcRenderer.invoke(IPC.GIT_DIFF, input)) as RpcMap["git.diff"],
+    discard: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_DISCARD, input)) as RpcMap["git.discard"],
   },
 
   // ── Main-only helpers ──

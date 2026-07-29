@@ -1,7 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Menu } from "@base-ui/react/menu";
+import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
+import { joinPath } from "@renderer/lib/path.js";
 import type { GitRepo, GitStatusResult, GitFileStatus } from "@contracts/ipc";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
+import { Dialog } from "@renderer/components/ui/index.js";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -13,29 +19,32 @@ import {
   IconLoader2,
   IconAlertTriangle,
   IconCheck,
+  IconDotsVertical,
+  IconTrash,
+  IconEye,
 } from "@renderer/lib/icons.js";
-import { DiffView } from "../chat/DiffView.js";
-import { lineDiff } from "@renderer/lib/lineDiff.js";
 
 /**
- * One git repository's card in the Git panel. Shows:
- *  - Header: repo name + branch + ahead/behind badges + Push/Pull/Refresh.
- *  - File list: staged and unstaged files with checkboxes for selection.
- *  - Commit box: message input + commit button (commits selected files).
- *  - Per-file diff: click a file to expand its inline diff.
+ * One git repository's card in the Git panel. Layout (top to bottom):
+ *
+ *   Header: repo name + branch + ahead/behind + Pull/Push/Refresh
+ *   已暂存 (staged) group  — [全部取消]
+ *   Commit message input   — [提交 ▾] (commit / commit+push / commit+sync)
+ *   更改 (unstaged) group   — [全部暂存]
+ *
+ * Clicking a file opens it in the CENTER editor's diff view (not inline).
+ * Right-clicking a file shows a context menu (view source / discard changes).
+ * Each file row shows a +/- diff tally badge (loaded async).
  *
  * All state is local to this card — multiple cards operate independently.
- * Operations (stage/unstage/commit/push/pull) call the git IPC, then refresh
- * the status.
  */
 export function GitRepoCard({ repo }: { repo: GitRepo }) {
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Selected file paths (relative to repo) for staging/committing.
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [commitMsg, setCommitMsg] = useState("");
   const [busy, setBusy] = useState<"push" | "pull" | "commit" | null>(null);
+  const [pendingDiscard, setPendingDiscard] = useState<string[] | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -43,13 +52,6 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     try {
       const { status } = await api.git.status({ repoPath: repo.path });
       setStatus(status);
-      // Prune selection: drop files that are no longer in the status.
-      setSelected((prev) => {
-        const current = new Set(status.files.map((f) => f.path));
-        const next = new Set<string>();
-        for (const p of prev) if (current.has(p)) next.add(p);
-        return next;
-      });
     } catch {
       setStatus(null);
     } finally {
@@ -61,40 +63,73 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     void refresh();
   }, [refresh]);
 
-  const toggleSelect = (path: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-  };
+  // Split files into staged and unstaged groups.
+  const staged = useMemo(
+    () => status?.files.filter((f) => f.index !== "unmodified" && f.index !== "untracked") ?? [],
+    [status],
+  );
+  const unstaged = useMemo(
+    () => status?.files.filter((f) => f.workingTree !== "unmodified" || f.index === "untracked") ?? [],
+    [status],
+  );
+  const hasStaged = staged.length > 0;
+  const hasUnstaged = unstaged.length > 0;
 
-  const handleStage = async () => {
-    const files = [...selected];
-    if (files.length === 0) return;
+  /* ── operations ── */
+
+  const handleStageAll = async () => {
+    if (unstaged.length === 0) return;
     setBusy("commit");
     try {
-      const res = await api.git.stage({ repoPath: repo.path, filePaths: files });
+      const res = await api.git.stage({
+        repoPath: repo.path,
+        filePaths: unstaged.map((f) => f.path),
+      });
       if (!res.ok) setError(res.error ?? "暂存失败");
-      else setSelected(new Set());
       await refresh();
     } finally {
       setBusy(null);
     }
   };
 
-  const handleCommit = async () => {
+  const handleUnstageAll = async () => {
+    if (staged.length === 0) return;
+    setBusy("commit");
+    try {
+      const res = await api.git.unstage({
+        repoPath: repo.path,
+        filePaths: staged.map((f) => f.path),
+      });
+      if (!res.ok) setError(res.error ?? "取消暂存失败");
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleCommit = async (mode: "commit" | "push" | "sync") => {
     const msg = commitMsg.trim();
     if (!msg) return;
     setBusy("commit");
+    setError(null);
     try {
       const res = await api.git.commit({ repoPath: repo.path, message: msg });
       if (!res.ok) {
         setError(res.error ?? "提交失败");
-      } else {
-        setCommitMsg("");
-        setError(null);
+        return;
+      }
+      setCommitMsg("");
+      if (mode === "push") {
+        const pushRes = await api.git.push({ repoPath: repo.path });
+        if (!pushRes.ok) setError(pushRes.error ?? "推送失败");
+      } else if (mode === "sync") {
+        const pullRes = await api.git.pull({ repoPath: repo.path });
+        if (!pullRes.ok) {
+          setError(pullRes.error ?? "拉取失败");
+          return; // don't push if pull failed
+        }
+        const pushRes = await api.git.push({ repoPath: repo.path });
+        if (!pushRes.ok) setError(pushRes.error ?? "推送失败");
       }
       await refresh();
     } finally {
@@ -126,17 +161,25 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     }
   };
 
-  // Split files into staged (index changed) and unstaged (working tree changed).
-  const staged = status?.files.filter((f) => f.index !== "unmodified" && f.index !== "untracked") ?? [];
-  const unstaged = status?.files.filter(
-    (f) => f.workingTree !== "unmodified" || f.index === "untracked",
-  ) ?? [];
-  const hasStaged = staged.length > 0;
-  const hasUnstaged = unstaged.length > 0;
+  const handleDiscard = async () => {
+    if (!pendingDiscard) return;
+    setBusy("commit");
+    try {
+      const res = await api.git.discard({
+        repoPath: repo.path,
+        filePaths: pendingDiscard,
+      });
+      if (!res.ok) setError(res.error ?? "放弃更改失败");
+      setPendingDiscard(null);
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <div className="rounded-lg border border-edge bg-surface">
-      {/* Header: repo name + branch + actions. */}
+      {/* ── Header ── */}
       <div className="flex items-center gap-2 border-b border-edge px-2.5 py-1.5">
         <IconGitBranch size={13} className="shrink-0 text-content-subtle" />
         <span className="truncate text-[11px] font-medium text-content" title={repo.path}>
@@ -147,7 +190,6 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
             {status.branch}
           </span>
         )}
-        {/* Ahead/behind badges. */}
         {status && status.ahead > 0 && (
           <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-accent" title="领先上游">
             <IconArrowUp size={10} />
@@ -161,20 +203,10 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
           </span>
         )}
         <div className="ml-auto flex items-center gap-0.5">
-          <ActionButton
-            onClick={handlePull}
-            disabled={busy !== null || loading}
-            busy={busy === "pull"}
-            title="拉取 (Pull)"
-          >
+          <ActionButton onClick={handlePull} disabled={busy !== null || loading} busy={busy === "pull"} title="拉取 (Pull)">
             <IconArrowDown size={12} />
           </ActionButton>
-          <ActionButton
-            onClick={handlePush}
-            disabled={busy !== null || loading}
-            busy={busy === "push"}
-            title="推送 (Push)"
-          >
+          <ActionButton onClick={handlePush} disabled={busy !== null || loading} busy={busy === "push"} title="推送 (Push)">
             <IconArrowUp size={12} />
           </ActionButton>
           <ActionButton onClick={refresh} disabled={busy !== null} title="刷新状态">
@@ -183,7 +215,7 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         </div>
       </div>
 
-      {/* Error banner. */}
+      {/* ── Error banner ── */}
       {error && (
         <div className="flex items-start gap-1.5 border-b border-danger/30 bg-danger/10 px-2.5 py-1.5 text-[11px] text-danger">
           <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
@@ -191,75 +223,185 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         </div>
       )}
 
-      {/* Body: file lists + commit box. */}
+      {/* ── Body ── */}
       <div className="p-2">
         {loading && !status ? (
           <div className="flex items-center gap-1.5 py-2 text-[11px] text-content-subtle">
             <IconLoader2 size={12} className="animate-spin" />
             读取状态…
           </div>
-        ) : !status || (status.files.length === 0 && !hasStaged) ? (
+        ) : !status || (status.files.length === 0) ? (
           <div className="flex items-center gap-1.5 py-2 text-[11px] text-content-subtle">
             <IconCheck size={12} className="text-accent" />
             工作区干净
           </div>
         ) : (
           <>
-            {/* Unstaged changes — selectable for staging. */}
-            {hasUnstaged && (
+            {/* 已暂存 group (top) */}
+            {hasStaged && (
               <FileGroup
-                label="更改"
-                files={unstaged}
-                selected={selected}
-                onToggle={toggleSelect}
+                label="已暂存"
+                files={staged}
                 repoPath={repo.path}
+                staged
+                onBulkAction={handleUnstageAll}
+                bulkActionLabel="全部取消"
+                busy={busy !== null}
               />
             )}
-            {/* Stage button — stages all selected unstaged files. */}
-            {hasUnstaged && selected.size > 0 && (
-              <button
-                type="button"
-                onClick={handleStage}
+
+            {/* Commit box (below staged) */}
+            {hasStaged && (
+              <CommitBox
+                value={commitMsg}
+                onChange={setCommitMsg}
                 disabled={busy !== null}
-                className="mb-2 mt-1 flex w-full items-center justify-center gap-1 rounded-md bg-surface-hover py-1 text-[11px] text-content transition-colors hover:bg-edge disabled:opacity-50"
-              >
-                {busy === "commit" ? <IconLoader2 size={11} className="animate-spin" /> : <IconCheck size={11} />}
-                暂存 {selected.size} 个文件
-              </button>
+                busy={busy === "commit"}
+                onCommit={handleCommit}
+              />
             )}
-            {/* Staged changes — display only (will be committed). */}
-            {hasStaged && (
-              <FileGroup label="已暂存" files={staged} selected={new Set()} onToggle={() => {}} repoPath={repo.path} staged />
-            )}
-            {/* Commit box — only when there are staged changes. */}
-            {hasStaged && (
-              <div className="mt-2 flex gap-1.5">
-                <input
-                  type="text"
-                  value={commitMsg}
-                  onChange={(e) => setCommitMsg(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && commitMsg.trim() && busy === null) {
-                      void handleCommit();
-                    }
-                  }}
-                  placeholder="提交信息…"
-                  disabled={busy !== null}
-                  className="min-w-0 flex-1 rounded-md border border-edge-input bg-surface px-2 py-1 text-[11px] text-content outline-none focus:border-accent disabled:opacity-50"
+
+            {/* 更改 group (bottom) */}
+            {hasUnstaged && (
+              <div className={hasStaged ? "mt-2" : ""}>
+                <FileGroup
+                  label="更改"
+                  files={unstaged}
+                  repoPath={repo.path}
+                  onBulkAction={handleStageAll}
+                  bulkActionLabel="全部暂存"
+                  busy={busy !== null}
+                  onDiscard={(paths) => setPendingDiscard(paths)}
                 />
-                <button
-                  type="button"
-                  onClick={handleCommit}
-                  disabled={!commitMsg.trim() || busy !== null}
-                  className="flex shrink-0 items-center gap-1 rounded-md bg-accent px-2 py-1 text-[11px] text-surface transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle"
-                >
-                  {busy === "commit" ? <IconLoader2 size={11} className="animate-spin" /> : <IconGitCommit size={11} />}
-                  提交
-                </button>
               </div>
             )}
           </>
         )}
+      </div>
+
+      {/* ── Discard confirmation dialog ── */}
+      <Dialog.Root open={pendingDiscard !== null} onOpenChange={(open) => { if (!open) setPendingDiscard(null); }}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup>
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-danger/10 text-danger">
+                <IconAlertTriangle size={18} />
+              </div>
+              <div className="flex-1">
+                <Dialog.Title className="text-sm font-semibold text-content">
+                  放弃更改?
+                </Dialog.Title>
+                <Dialog.Description className="mt-1 text-xs text-content-muted">
+                  将放弃 {pendingDiscard?.length ?? 0} 个文件的本地更改,此操作不可撤销。
+                </Dialog.Description>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingDiscard(null)}
+                className="rounded-md px-3 py-1.5 text-xs text-content-muted transition-colors hover:bg-surface-hover"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscard}
+                disabled={busy !== null}
+                className="flex items-center gap-1 rounded-md bg-danger px-3 py-1.5 text-xs text-surface transition-colors hover:brightness-110 disabled:opacity-50"
+              >
+                {busy === "commit" ? <IconLoader2 size={12} className="animate-spin" /> : <IconTrash size={12} />}
+                放弃更改
+              </button>
+            </div>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </div>
+  );
+}
+
+/* ───────────────────────── commit box with dropdown ───────────────────────── */
+
+function CommitBox({
+  value,
+  onChange,
+  disabled,
+  busy,
+  onCommit,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+  busy: boolean;
+  onCommit: (mode: "commit" | "push" | "sync") => void;
+}) {
+  return (
+    <div className="my-2 flex gap-1.5">
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && value.trim() && !disabled) {
+            void onCommit("commit");
+          }
+        }}
+        placeholder="提交信息…"
+        disabled={disabled}
+        className="min-w-0 flex-1 rounded-md border border-edge-input bg-surface px-2 py-1 text-[11px] text-content outline-none focus:border-accent disabled:opacity-50"
+      />
+      {/* Split button: main "提交" + dropdown for commit+push / commit+sync. */}
+      <div className="flex shrink-0 overflow-hidden rounded-md">
+        <button
+          type="button"
+          onClick={() => onCommit("commit")}
+          disabled={!value.trim() || disabled}
+          className="flex items-center gap-1 bg-accent px-2 py-1 text-[11px] text-surface transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle"
+        >
+          {busy ? <IconLoader2 size={11} className="animate-spin" /> : <IconGitCommit size={11} />}
+          提交
+        </button>
+        <Menu.Root>
+          <Menu.Trigger
+            disabled={!value.trim() || disabled}
+            className="flex items-center bg-accent px-1 text-surface transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle"
+          >
+            <IconChevronDown size={12} />
+          </Menu.Trigger>
+          <Menu.Portal>
+            <Menu.Positioner side="top" align="end" sideOffset={4}>
+              <Menu.Popup
+                className={cn(
+                  "z-50 min-w-[160px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
+                  "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+                  "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+                  "transition-[transform,opacity] duration-100",
+                )}
+              >
+                <Menu.Item
+                  onClick={() => onCommit("commit")}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+                >
+                  提交
+                </Menu.Item>
+                <Menu.Item
+                  onClick={() => onCommit("push")}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+                >
+                  提交并推送
+                </Menu.Item>
+                <Menu.Item
+                  onClick={() => onCommit("sync")}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+                >
+                  提交并同步
+                </Menu.Item>
+              </Menu.Popup>
+            </Menu.Positioner>
+          </Menu.Portal>
+        </Menu.Root>
       </div>
     </div>
   );
@@ -301,39 +443,52 @@ function ActionButton({
 function FileGroup({
   label,
   files,
-  selected,
-  onToggle,
   repoPath,
   staged,
+  onBulkAction,
+  bulkActionLabel,
+  busy,
+  onDiscard,
 }: {
   label: string;
   files: GitFileStatus[];
-  selected: Set<string>;
-  onToggle: (path: string) => void;
   repoPath: string;
   staged?: boolean;
+  onBulkAction: () => void;
+  bulkActionLabel: string;
+  busy: boolean;
+  onDiscard?: (paths: string[]) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   return (
-    <div className={cn("mb-2", staged && "mb-2")}>
-      <button
-        type="button"
-        onClick={() => setCollapsed((v) => !v)}
-        className="mb-1 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-content-subtle"
-      >
-        {collapsed ? <IconChevronRight size={10} /> : <IconChevronDown size={10} />}
-        {label} ({files.length})
-      </button>
+    <div>
+      <div className="mb-1 flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-content-subtle"
+        >
+          {collapsed ? <IconChevronRight size={10} /> : <IconChevronDown size={10} />}
+          {label} ({files.length})
+        </button>
+        <button
+          type="button"
+          onClick={onBulkAction}
+          disabled={busy}
+          className="ml-auto rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40"
+        >
+          {bulkActionLabel}
+        </button>
+      </div>
       {!collapsed && (
         <div className="space-y-0.5">
           {files.map((f) => (
             <FileRow
               key={f.path}
               file={f}
-              selected={selected.has(f.path)}
-              onToggle={() => onToggle(f.path)}
               repoPath={repoPath}
               staged={staged}
+              onDiscard={onDiscard}
             />
           ))}
         </div>
@@ -342,61 +497,135 @@ function FileGroup({
   );
 }
 
-/* ───────────────────────── file row + diff ───────────────────────── */
+/* ───────────────────────── file row ───────────────────────── */
 
 function FileRow({
   file,
-  selected,
-  onToggle,
   repoPath,
   staged,
+  onDiscard,
 }: {
   file: GitFileStatus;
-  selected: boolean;
-  onToggle: () => void;
   repoPath: string;
   staged?: boolean;
+  onDiscard?: (paths: string[]) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const openFileInIde = useSessionStore((s) => s.openFileInIde);
+  const setGitDiffBefore = useSessionStore((s) => s.setGitDiffBefore);
+  const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
+  const [diffTally, setDiffTally] = useState<{ adds: number; dels: number } | null>(null);
 
-  // The "effective" status for display: prefer the working-tree status for
-  // unstaged files, the index status for staged files.
+  const absPath = joinPath(repoPath, file.path);
   const code = staged ? file.index : file.workingTree;
 
+  // Async-load the +/- tally for this file (only for modified/added/deleted,
+  // not untracked — untracked has no diff to show).
+  useEffect(() => {
+    if (code === "untracked" || code === "unmodified") {
+      setDiffTally(null);
+      return;
+    }
+    let cancelled = false;
+    api.git
+      .diff({ repoPath, filePath: file.path })
+      .then(({ patch }) => {
+        if (cancelled || !patch) return;
+        const { before, after } = parsePatchToBeforeAfter(patch);
+        const diff = lineDiff(before, after);
+        setDiffTally(diffSummary(diff));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath, file.path, code]);
+
+  // Click → open in center editor with diff.
+  const handleClick = async () => {
+    // For staged files there's no unstaged diff; just open in edit mode.
+    if (staged) {
+      openFileInIde(absPath);
+      return;
+    }
+    // Unstaged: fetch diff, stash the before content, open in diff mode.
+    try {
+      const { patch } = await api.git.diff({ repoPath, filePath: file.path });
+      if (patch) {
+        const { before } = parsePatchToBeforeAfter(patch);
+        setGitDiffBefore(absPath, before);
+      }
+    } catch {
+      // fall through — open in edit mode
+    }
+    openFileInIde(absPath, { diff: true });
+  };
+
   return (
-    <div>
-      <div className="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-surface-hover/40">
-        {/* Checkbox (only for unstaged/selectable files). */}
-        {!staged && (
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={onToggle}
-            className="h-3 w-3 shrink-0 accent-[var(--accent)]"
-          />
-        )}
+    <ContextMenu.Root>
+      <ContextMenu.Trigger
+        render={
+          <div className="group flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-surface-hover/40" />
+        }
+      >
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={handleClick}
           className="flex min-w-0 flex-1 items-center gap-1 text-left"
-          title={expanded ? "收起 diff" : "展开 diff"}
+          title={absPath}
         >
           <StatusCodeIcon code={code} />
           <span className="truncate font-mono text-[11px] text-content-muted">{file.path}</span>
         </button>
-        {expanded && (
-          <IconChevronDown size={10} className="shrink-0 text-content-subtle" />
+        {/* +/- tally badge */}
+        {diffTally && (diffTally.adds > 0 || diffTally.dels > 0) && (
+          <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] tabular-nums">
+            {diffTally.adds > 0 && <span className="text-accent">+{diffTally.adds}</span>}
+            {diffTally.dels > 0 && <span className="text-danger">−{diffTally.dels}</span>}
+          </span>
         )}
-        {!expanded && (
-          <IconChevronRight size={10} className="shrink-0 text-content-subtle" />
-        )}
-      </div>
-      {expanded && <FileDiff repoPath={repoPath} filePath={file.path} />}
-    </div>
+      </ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Positioner>
+          <ContextMenu.Popup
+            className={cn(
+              "z-50 min-w-[140px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
+              "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+              "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+              "transition-[transform,opacity] duration-100",
+            )}
+          >
+            <ContextMenu.Item
+              onClick={handleClick}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+            >
+              <IconEye size={12} />
+              查看 Diff
+            </ContextMenu.Item>
+            <ContextMenu.Item
+              onClick={() => openFileInIde(absPath)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+            >
+              <IconGitCommit size={12} />
+              查看源文件
+            </ContextMenu.Item>
+            {!staged && onDiscard && (
+              <ContextMenu.Item
+                onClick={() => onDiscard([file.path])}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-danger outline-none select-none data-[highlighted]:bg-danger/10"
+              >
+                <IconTrash size={12} />
+                放弃更改…
+              </ContextMenu.Item>
+            )}
+          </ContextMenu.Popup>
+        </ContextMenu.Positioner>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
   );
 }
 
-/** Colored status code badge: M=modified, A=added, D=deleted, ?=untracked. */
+/* ───────────────────────── status code icon ───────────────────────── */
+
 function StatusCodeIcon({ code }: { code: GitFileStatus["index"] }) {
   const label =
     code === "modified" ? "M" :
@@ -416,64 +645,9 @@ function StatusCodeIcon({ code }: { code: GitFileStatus["index"] }) {
   );
 }
 
-/** Lazy-loaded diff for a single file. Fetches the unstaged patch via IPC,
- *  parses it into line-level hunks for DiffView. */
-function FileDiff({ repoPath, filePath }: { repoPath: string; filePath: string }) {
-  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
-  const [patch, setPatch] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    setState("loading");
-    api.git
-      .diff({ repoPath, filePath })
-      .then(({ patch }) => {
-        if (cancelled) return;
-        setPatch(patch);
-        setState(patch ? "ready" : "error");
-      })
-      .catch(() => {
-        if (!cancelled) setState("error");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [repoPath, filePath]);
-
-  if (state === "loading") {
-    return (
-      <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-content-subtle">
-        <IconLoader2 size={11} className="animate-spin" />
-        读取 diff…
-      </div>
-    );
-  }
-
-  if (state === "error" || !patch) {
-    return (
-      <div className="px-3 py-1.5 text-[11px] text-content-subtle">
-        无可用 diff(文件可能已全部暂存)
-      </div>
-    );
-  }
-
-  // Parse the unified diff patch into a before/after pair for DiffView.
-  // This is a simplified parser: extract +/- lines from hunks.
-  const { before, after } = parsePatchToBeforeAfter(patch);
-  const diff = lineDiff(before, after);
-  return (
-    <div className="px-1 pb-1 pt-0.5">
-      <DiffView diff={diff} />
-    </div>
-  );
-}
-
 /* ───────────────────────── patch parser ───────────────────────── */
 
-/** Parse a unified diff patch into before/after text for line-based diffing.
- *  Extracts removed (-) lines as "before" and added (+) lines as "after",
- *  preserving context lines in both. Lines outside hunks (file headers etc.)
- *  are ignored. */
+/** Parse a unified diff patch into before/after text for line-based diffing. */
 function parsePatchToBeforeAfter(patch: string): { before: string; after: string } {
   const beforeLines: string[] = [];
   const afterLines: string[] = [];
@@ -491,11 +665,9 @@ function parsePatchToBeforeAfter(patch: string): { before: string; after: string
     } else if (line.startsWith("-")) {
       beforeLines.push(line.slice(1));
     } else if (line.startsWith(" ")) {
-      // Context line — appears in both.
       beforeLines.push(line.slice(1));
       afterLines.push(line.slice(1));
     } else if (line === "") {
-      // Empty line in diff can be a context blank line.
       beforeLines.push("");
       afterLines.push("");
     }

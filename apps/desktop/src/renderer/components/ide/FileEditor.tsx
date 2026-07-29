@@ -47,12 +47,18 @@ export function FileEditor({
   const editorMode = useSessionStore((s) => s.ideEditorMode);
   const setEditorMode = useSessionStore((s) => s.setIdeEditorMode);
 
-  // Resolve the before-snapshot for diff mode (only present if this file was
-  // touched in the active session's latest turn).
+  // Resolve the before-snapshot for diff mode. Two sources, checked in order:
+  //  1. Git panel — the active project's gitDiffByProject bucket (the user
+  //     clicked a git-changed file in the Git panel).
+  //  2. Turn-files — the active session's latest-turn snapshot (the agent
+  //     edited the file, or the user clicked 审查 on a turn-files card).
   const turnFile = useTurnFileFor(filePath);
+  const gitBefore = useGitDiffBefore(filePath);
+  const diffBefore = gitBefore ?? turnFile?.before;
 
-  // Effective mode: diff only if explicitly requested AND a snapshot exists.
-  const effectiveMode: "edit" | "diff" = viewMode === "diff" && turnFile ? "diff" : "edit";
+  // Effective mode: diff only if explicitly requested AND a before-snapshot
+  // exists (from either source).
+  const effectiveMode: "edit" | "diff" = viewMode === "diff" && diffBefore != null ? "diff" : "edit";
 
   return (
     <div className="flex h-full flex-col">
@@ -60,14 +66,14 @@ export function FileEditor({
         filePath={filePath}
         projectPath={projectPath}
         mode={effectiveMode}
-        canDiff={!!turnFile}
+        canDiff={diffBefore != null}
         onToggleMode={() => setViewMode(filePath, effectiveMode === "edit" ? "diff" : "edit")}
         editorMode={editorMode}
         onToggleEditorMode={() => setEditorMode(editorMode === "tabs" ? "replace" : "tabs")}
       />
       <div className="min-h-0 flex-1">
-        {effectiveMode === "diff" && turnFile ? (
-          <DiffPane filePath={filePath} before={turnFile.before} />
+        {effectiveMode === "diff" && diffBefore != null ? (
+          <DiffPane filePath={filePath} before={diffBefore} />
         ) : (
           <EditPane filePath={filePath} />
         )}
@@ -344,6 +350,16 @@ function useTurnFileFor(filePath: string): TurnFileEntry | undefined {
   );
   if (!turnFiles) return undefined;
   return turnFiles.find((f) => f.filePath === filePath);
+}
+
+/** Look up the active project's git-diff "before" content for `filePath`.
+ *  Returns undefined if the Git panel hasn't stashed a diff for this file. */
+function useGitDiffBefore(filePath: string): string | undefined {
+  const pid = useSessionStore((s) => s.activeProjectId);
+  const projMap = useSessionStore((s) =>
+    pid ? s.gitDiffByProject[pid] : undefined,
+  );
+  return projMap?.[filePath];
 }
 
 /** Tracks the effective Monaco theme by watching the `.dark` class on <html>.

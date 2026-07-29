@@ -528,6 +528,16 @@ export const GitDiffSchema = z.object({
 });
 export type GitDiffInput = z.infer<typeof GitDiffSchema>;
 
+/** Discard (revert) local changes to specific files. For tracked files this
+ *  runs `git checkout -- <files>` (restores to index/HEAD); for untracked files
+ *  it runs `git clean -f -- <files>` (removes them). The handler decides per
+ *  file based on its status. */
+export const GitDiscardSchema = z.object({
+  repoPath: z.string(),
+  filePaths: z.array(z.string()),
+});
+export type GitDiscardInput = z.infer<typeof GitDiscardSchema>;
+
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
 export interface ClaudeEventMessage {
@@ -624,6 +634,8 @@ export interface RpcMap {
   "git.pull": (input: GitRepoPathInput) => Promise<GitOpResult>;
   /** Get the unstaged diff patch for a single file. */
   "git.diff": (input: GitDiffInput) => Promise<{ patch: string }>;
+  /** Discard local changes to specific files (checkout tracked / clean untracked). */
+  "git.discard": (input: GitDiscardInput) => Promise<GitOpResult>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -675,6 +687,7 @@ export const IPC = {
   GIT_PUSH: "git:push",
   GIT_PULL: "git:pull",
   GIT_DIFF: "git:diff",
+  GIT_DISCARD: "git:discard",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",

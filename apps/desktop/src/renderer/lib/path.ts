@@ -35,3 +35,13 @@ export function extname(p: string): string {
   if (dot <= 0) return ""; // dot at 0 = hidden file, no extension
   return base.slice(dot).toLowerCase();
 }
+
+/** Join two path segments with a single separator. Handles the case where
+ *  the base already ends with a separator and/or the add starts with one.
+ *  Uses `/` (works on macOS/Linux; Windows tolerates it in Node APIs). */
+export function joinPath(base: string, add: string): string {
+  if (!add) return base;
+  const left = base.endsWith("/") || base.endsWith("\\") ? base : base + "/";
+  const right = add.startsWith("/") || add.startsWith("\\") ? add.slice(1) : add;
+  return left + right;
+}
