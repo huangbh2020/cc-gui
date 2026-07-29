@@ -6,6 +6,8 @@
  * before create() is called; this class assumes cwd is already trusted.
  */
 import { randomUUID } from "node:crypto";
+import { existsSync, statSync, chmodSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import type { IPty } from "node-pty";
 import { IPC } from "@contracts/ipc";
@@ -49,7 +51,50 @@ interface LiveTerminal {
 /** Lazy-load node-pty so a missing native binary doesn't crash app boot —
  *  failure surfaces on first terminal.create instead. */
 function loadNodePty(): typeof import("node-pty") {
-  return require("node-pty") as typeof import("node-pty");
+  const mod = require("node-pty") as typeof import("node-pty");
+  ensureSpawnHelperExecutable();
+  return mod;
+}
+
+/** node-pty on POSIX spawns a tiny `spawn-helper` binary via posix_spawnp.
+ *  pnpm/tar extraction is known to drop the executable bit on that helper
+ *  (the prebuild ships it as `-rw-r--r--`), which makes every `pty.spawn()`
+ *  fail with the opaque `posix_spawnp failed.`. Fix it proactively: locate
+ *  the helper next to the native addon and `chmod 0o755` it if it lacks +x.
+ *  No-op on Windows (ConPTY path doesn't use a helper). */
+function ensureSpawnHelperExecutable(): void {
+  if (process.platform === "win32") return;
+  try {
+    // node-pty's utils.js resolves the native dir as one of
+    //   {build/Release, build/Debug, prebuilds/<plat>-<arch>}
+    // relative to node-pty's own lib dir. Replicate that lookup so the fix
+    // works both in dev (prebuilds/) and after a native rebuild (build/).
+    const ptyRoot = require.resolve("node-pty/lib/unixTerminal.js");
+    const libDir = dirname(ptyRoot);
+    const platArch = `${process.platform}-${process.arch}`;
+    const candidates = [
+      join(libDir, "..", "build", "Release"),
+      join(libDir, "..", "build", "Debug"),
+      join(libDir, "..", "prebuilds", platArch),
+    ];
+    for (const dir of candidates) {
+      const helper = join(dir, "spawn-helper");
+      if (!existsSync(helper)) continue;
+      try {
+        if (!(statSync(helper).mode & 0o111)) {
+          chmodSync(helper, 0o755);
+          log.info(`spawn-helper chmod +x: ${helper}`);
+        }
+      } catch (e) {
+        // chmod failing is non-fatal — the spawn will surface a clearer error.
+        log.warn(`spawn-helper chmod failed (${helper}): ${e instanceof Error ? e.message : String(e)}`);
+      }
+      return; // first existing helper wins
+    }
+  } catch {
+    // resolve failed / unexpected layout — fall through; node-pty will throw
+    // its own (typed) error from loadNativeModule instead.
+  }
 }
 
 class TerminalManagerImpl {

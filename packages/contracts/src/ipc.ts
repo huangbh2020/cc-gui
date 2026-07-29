@@ -73,6 +73,17 @@ export const UI_CHAT_FONT_SIZE_SETTING_KEY = "ui.chatFontSize";
 export const UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY = "ui.rightPanelFontSize";
 
 /**
+ * Setting key under which the draggable panel widths are persisted as a JSON
+ * object: `{ left, right, bottomTerminal, editor }`.
+ *  - `left` / `right`: side-bar widths in px (clamped 180–500 / 240–640).
+ *  - `bottomTerminal`: bottom terminal bar height in px (clamped 80–600).
+ *  - `editor`: editor-column share of the center pane as a percentage 0–100
+ *    (clamped 20–80); the chat column gets the remainder.
+ * Hydrated + clamped in sessionStore.init(); written (debounced) on drag end.
+ */
+export const UI_PANE_WIDTHS_SETTING_KEY = "ui.paneWidths";
+
+/**
  * Setting key under which the user's custom user-message background color
  * is persisted. Value is a space-separated "R G B" triplet (e.g.
  * "124 58 237") so it composes with Tailwind's <alpha-value> placeholder.

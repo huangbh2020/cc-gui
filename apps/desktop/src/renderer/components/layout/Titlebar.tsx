@@ -60,6 +60,11 @@ export function Titlebar({
 }: Props) {
   const isSettings = mode === "settings";
 
+  // The left strip tracks the sidebar's draggable width so the toggle button
+  // and the settings back button stay aligned with the panel edge below.
+  const leftWidth = useSessionStore((s) => s.leftWidth);
+  const showLeftStrip = leftOpen || isSettings;
+
   return (
     <div
       className="flex h-10 shrink-0 items-stretch"
@@ -68,11 +73,12 @@ export function Titlebar({
       <div
         className={cn(
           "flex shrink-0 items-center rounded-tl-lg bg-surface-muted pr-1.5",
-          // In settings mode the sidebar strip is always at the full sidebar
-          // width so the back button lines up with the settings menu below.
-          (leftOpen || isSettings) && "w-[280px] rounded-tr-lg border-r border-edge",
+          // In settings mode the sidebar strip is always shown so the back
+          // button lines up with the settings menu below.
+          showLeftStrip && "rounded-tr-lg border-r border-edge",
           isMac ? "pl-[78px]" : "pl-1.5",
         )}
+        style={showLeftStrip ? { width: leftWidth } : undefined}
       >
         {isSettings ? (
           <button

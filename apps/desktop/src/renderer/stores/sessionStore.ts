@@ -31,6 +31,7 @@ import {
   UI_COMMIT_GEN_PROMPT_SETTING_KEY,
   UI_GIT_COLLAPSED_REPOS_SETTING_KEY,
   UI_CUSTOM_COMMANDS_SETTING_KEY,
+  UI_PANE_WIDTHS_SETTING_KEY,
   type DisplayMode,
   type RightPanelTab,
   type IdeEditorMode,
@@ -135,7 +136,7 @@ export interface PlanDraft {
   phase: PlanUpdateEvent["phase"];
 }
 
-interface SessionState {
+export interface SessionState {
   /* ── projects & sessions (tree cache) ──
    * sessions are cached per-project so the left-bar tree can render every
    * project's threads without a round-trip per expand. `sessions` is kept
@@ -208,6 +209,35 @@ interface SessionState {
   claudeInstalled: boolean | null;
   /** Settings modal visibility (opened from the LeftBar ⚙ footer and the CLI-missing CTA). */
   settingsOpen: boolean;
+  /** Command palette (Cmd/Ctrl+K) visibility. Toggled by the global hotkey
+   *  wired in App.tsx and by any in-app "command palette" affordance. The
+   *  palette itself (CommandPalette.tsx) reads this to mount/unmount. */
+  commandPaletteOpen: boolean;
+  /** Left sidebar visibility. Lifted from App.tsx local state so the
+   *  command palette (and other store consumers) can toggle it. Workspace-only
+   *  — the settings view pins it open. NOT persisted (matches original behavior). */
+  leftOpen: boolean;
+  /** Right (IDE) panel visibility. Lifted from App.tsx local state. NOT persisted.
+   *  `ideFocusNonce` bumps still drive this to `true` (the App effect now
+   *  calls setRightOpen(true) instead of touching local state). */
+  rightOpen: boolean;
+  /** Bottom terminal bar visibility. Lifted from App.tsx local state. NOT
+   *  persisted. The bar stays mounted (keep-alive) regardless; this only
+   *  controls whether it's expanded. */
+  bottomTerminalOpen: boolean;
+  /* ── Draggable pane sizes ──
+   *  Persisted as one JSON blob (UI_PANE_WIDTHS_SETTING_KEY) and re-clamped
+   *  on hydrate. Updated live during drag (synchronous set); the DB write is
+   *  debounced so a drag doesn't hammer the settings table. */
+  /** Left sidebar width in px. */
+  leftWidth: number;
+  /** Right IDE panel width in px. */
+  rightWidth: number;
+  /** Bottom terminal bar height in px (when expanded). */
+  bottomTerminalHeight: number;
+  /** Editor-column share of the center pane, as a percentage 0–100. The chat
+   *  column gets the remainder. Only meaningful when a file is open. */
+  editorWidthPct: number;
   /** Permission mode for the next session. The 6-value union
    *  (default / acceptEdits / plan / bypassPermissions / dontAsk / auto)
    *  mirrors the Claude Agent SDK's accepted literals; the composer chip
@@ -380,6 +410,29 @@ interface SessionState {
   interrupt: () => Promise<void>;
   ingestEvent: (e: RuntimeEvent) => void;
   setSettingsOpen: (open: boolean) => void;
+  /** Toggle the Cmd/Ctrl+K command palette open/closed. */
+  setCommandPaletteOpen: (open: boolean) => void;
+  /** Toggle the left sidebar open/closed (direct set). NOT persisted. */
+  setLeftOpen: (open: boolean) => void;
+  /** Toggle the right IDE panel open/closed (direct set). NOT persisted. */
+  setRightOpen: (open: boolean) => void;
+  /** Toggle the bottom terminal bar open/closed (direct set). NOT persisted. */
+  setBottomTerminalOpen: (open: boolean) => void;
+  /** Apply an incremental delta to the left sidebar width (clamped, then a
+   *  debounced DB write). Called by the drag handle on every mousemove. */
+  adjustLeftWidth: (deltaPx: number) => void;
+  /** Apply an incremental delta to the right panel width. */
+  adjustRightWidth: (deltaPx: number) => void;
+  /** Apply an incremental delta to the bottom terminal height. */
+  adjustBottomTerminalHeight: (deltaPx: number) => void;
+  /** Apply an incremental delta to the editor-column percentage. The delta
+   *  is in px; the caller converts to pct via the container width. */
+  adjustEditorWidthPct: (deltaPx: number) => void;
+  /** Reset a pane width to its default (double-click on the divider). */
+  resetLeftWidth: () => void;
+  resetRightWidth: () => void;
+  resetBottomTerminalHeight: () => void;
+  resetEditorWidthPct: () => void;
   /** Update the center-pane display mode. Persists to the `settings`
    *  table so the choice survives restart. */
   setDisplayMode: (mode: DisplayMode) => Promise<void>;
@@ -585,6 +638,42 @@ export function clampRightPanelFontSize(px: number): number {
     RIGHT_PANEL_FONT_SIZE_MAX,
     Math.max(RIGHT_PANEL_FONT_SIZE_MIN, Math.round(px)),
   );
+}
+
+/* ─── Draggable pane-width bounds + clamps ───
+ * Each pane's width is persisted (UI_PANE_WIDTHS_SETTING_KEY) and re-clamped
+ * on hydrate so a corrupted/out-of-range stored value can't collapse a pane
+ * below its usable minimum or stretch it past the screen. */
+
+export const LEFT_WIDTH_MIN = 180;
+export const LEFT_WIDTH_MAX = 500;
+export const RIGHT_WIDTH_MIN = 240;
+export const RIGHT_WIDTH_MAX = 640;
+export const BOTTOM_TERMINAL_HEIGHT_MIN = 80;
+export const BOTTOM_TERMINAL_HEIGHT_MAX = 600;
+export const EDITOR_WIDTH_PCT_MIN = 20;
+export const EDITOR_WIDTH_PCT_MAX = 80;
+
+/** Clamp helper for the four persisted pane sizes. Falls back to defaults on
+ *  any non-finite value so the layout never breaks. */
+export function clampLeftWidth(px: number): number {
+  if (!Number.isFinite(px)) return 280;
+  return Math.min(LEFT_WIDTH_MAX, Math.max(LEFT_WIDTH_MIN, Math.round(px)));
+}
+export function clampRightWidth(px: number): number {
+  if (!Number.isFinite(px)) return 360;
+  return Math.min(RIGHT_WIDTH_MAX, Math.max(RIGHT_WIDTH_MIN, Math.round(px)));
+}
+export function clampBottomTerminalHeight(px: number): number {
+  if (!Number.isFinite(px)) return 280;
+  return Math.min(
+    BOTTOM_TERMINAL_HEIGHT_MAX,
+    Math.max(BOTTOM_TERMINAL_HEIGHT_MIN, Math.round(px)),
+  );
+}
+export function clampEditorWidthPct(pct: number): number {
+  if (!Number.isFinite(pct)) return 50;
+  return Math.min(EDITOR_WIDTH_PCT_MAX, Math.max(EDITOR_WIDTH_PCT_MIN, Math.round(pct)));
 }
 
 /** Matches a well-formed space-separated "R G B" triplet (0–255 each),
@@ -1263,6 +1352,33 @@ function forceDeltaFlush(): void {
   flushDeltas();
 }
 
+/* ─── Pane-width persistence (debounced) ───
+ * A drag fires many mousemove events; each calls an adjust* action that
+ * updates the store synchronously (instant UI). The DB write is debounced so
+ * the settings table only gets hit once, ~400ms after the last move. The
+ * timer is module-scoped so successive adjust calls reset the same timer. */
+let paneWidthPersistTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePaneWidthPersist(get: () => SessionState): void {
+  if (paneWidthPersistTimer) clearTimeout(paneWidthPersistTimer);
+  paneWidthPersistTimer = setTimeout(async () => {
+    paneWidthPersistTimer = null;
+    const s = get();
+    try {
+      await api.setting.set({
+        key: UI_PANE_WIDTHS_SETTING_KEY,
+        value: JSON.stringify({
+          left: s.leftWidth,
+          right: s.rightWidth,
+          bottomTerminal: s.bottomTerminalHeight,
+          editor: s.editorWidthPct,
+        }),
+      });
+    } catch (err) {
+      console.error("setting.set(paneWidths) failed:", err);
+    }
+  }, 400);
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   projects: [],
   activeProjectId: null,
@@ -1292,6 +1408,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   runningBySession: {},
   claudeInstalled: null,
   settingsOpen: false,
+  commandPaletteOpen: false,
+  // Layout panel visibility — lifted from App.tsx useState. Defaults mirror
+  // the original App.tsx useState initial values (left+right open, terminal
+  // collapsed). NOT persisted.
+  leftOpen: true,
+  rightOpen: true,
+  bottomTerminalOpen: false,
+  // Draggable pane sizes. Persisted as one JSON blob (UI_PANE_WIDTHS_SETTING_KEY);
+  // init() hydrates + clamps. These defaults match the original hardcoded
+  // widths so the first-run layout is unchanged.
+  leftWidth: 280,
+  rightWidth: 360,
+  bottomTerminalHeight: 280,
+  editorWidthPct: 50,
   permissionMode: "default",
   model: "default",
   customModelId: null,
@@ -1386,6 +1516,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       console.error("setting.get(appearance) failed:", err);
+    }
+
+    // Hydrate draggable pane widths (one JSON blob). Each field is clamped
+    // individually so a single corrupt value can't nuke the whole layout.
+    try {
+      const paneRes = await api.setting.get({ key: UI_PANE_WIDTHS_SETTING_KEY });
+      if (paneRes.value) {
+        const parsed = JSON.parse(paneRes.value) as Partial<{
+          left: number; right: number; bottomTerminal: number; editor: number;
+        }>;
+        const patch: Partial<SessionState> = {};
+        if (parsed && typeof parsed === "object") {
+          if (Number.isFinite(parsed.left)) patch.leftWidth = clampLeftWidth(parsed.left!);
+          if (Number.isFinite(parsed.right)) patch.rightWidth = clampRightWidth(parsed.right!);
+          if (Number.isFinite(parsed.bottomTerminal)) {
+            patch.bottomTerminalHeight = clampBottomTerminalHeight(parsed.bottomTerminal!);
+          }
+          if (Number.isFinite(parsed.editor)) patch.editorWidthPct = clampEditorWidthPct(parsed.editor!);
+          if (Object.keys(patch).length > 0) set(patch);
+        }
+      }
+    } catch (err) {
+      console.error("setting.get(paneWidths) failed:", err);
     }
 
     // Hydrate IDE right-panel prefs (active tab, open files, active file,
@@ -2546,6 +2699,56 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+
+  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  setLeftOpen: (open) => set({ leftOpen: open }),
+  setRightOpen: (open) => set({ rightOpen: open }),
+  setBottomTerminalOpen: (open) => set({ bottomTerminalOpen: open }),
+
+  // ── Draggable pane sizes ──
+  // adjust* apply an incremental delta (from the drag handle) to the current
+  // value, clamp, and set synchronously (instant UI). The DB write is
+  // debounced so a drag (many mousemove events) only hits the settings table
+  // once after the user stops. reset* restore the defaults (double-click).
+  adjustLeftWidth: (deltaPx) => {
+    const next = clampLeftWidth(get().leftWidth + deltaPx);
+    set({ leftWidth: next });
+    schedulePaneWidthPersist(get);
+  },
+  adjustRightWidth: (deltaPx) => {
+    const next = clampRightWidth(get().rightWidth - deltaPx);
+    set({ rightWidth: next });
+    schedulePaneWidthPersist(get);
+  },
+  adjustBottomTerminalHeight: (deltaPx) => {
+    // Divider sits on TOP of the terminal. Dragging the handle DOWN (delta>0)
+    // pushes it toward the terminal, so the terminal SHRINKS — same sign flip
+    // as the right-bar divider. Drag UP (delta<0) to grow it.
+    const next = clampBottomTerminalHeight(get().bottomTerminalHeight - deltaPx);
+    set({ bottomTerminalHeight: next });
+    schedulePaneWidthPersist(get);
+  },
+  adjustEditorWidthPct: (deltaPx) => {
+    const next = clampEditorWidthPct(get().editorWidthPct + deltaPx);
+    set({ editorWidthPct: next });
+    schedulePaneWidthPersist(get);
+  },
+  resetLeftWidth: () => {
+    set({ leftWidth: 280 });
+    schedulePaneWidthPersist(get);
+  },
+  resetRightWidth: () => {
+    set({ rightWidth: 360 });
+    schedulePaneWidthPersist(get);
+  },
+  resetBottomTerminalHeight: () => {
+    set({ bottomTerminalHeight: 280 });
+    schedulePaneWidthPersist(get);
+  },
+  resetEditorWidthPct: () => {
+    set({ editorWidthPct: 50 });
+    schedulePaneWidthPersist(get);
+  },
 
   /** Update the center-pane display mode. The local store flips
    *  immediately so the layout change is instant; the DB write is

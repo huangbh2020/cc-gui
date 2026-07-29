@@ -98,6 +98,7 @@ export function SettingsPage() {
       right={null}
       leftOpen
       rightOpen={false}
+      leftWidth={280}
     />
   );
 }
