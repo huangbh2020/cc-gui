@@ -77,6 +77,7 @@ export {
   IconGitBranch,
   IconGitCommit,
   IconFileSymlink,
+  IconSparkles,
   // Editing / actions
   IconPencil,
   IconRocket,

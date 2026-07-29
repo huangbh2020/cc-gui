@@ -26,9 +26,12 @@ import {
   GitCommitSchema,
   GitDiffSchema,
   GitDiscardSchema,
+  GitGenerateCommitSchema,
 } from "@contracts/ipc";
 import type { GitRepo, GitStatusResult, GitFileStatus, GitStatusCode } from "@contracts/ipc";
-import { ProjectRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SettingRepo } from "@main/store/repositories.js";
+import { CustomModelStore } from "@main/lib/secretStore.js";
+import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { log } from "@main/lib/logger.js";
 
 /** Max recursion depth for repo discovery. Keeps the scan fast on deep trees
@@ -340,4 +343,102 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: msg };
     }
   });
+
+  /* ── git:generateCommitMessage — LLM-generated commit message from staged diff ── */
+  ipcMain.handle(IPC.GIT_GENERATE_COMMIT, async (_evt, raw) => {
+    const input = GitGenerateCommitSchema.parse(raw);
+    if (!findContainingProject(input.repoPath)) {
+      return { ok: false, error: "仓库路径不在任何已添加的项目内" };
+    }
+    try {
+      // 1. Collect the staged diff (index vs HEAD).
+      const git = simpleGit(input.repoPath);
+      const diff = await git.diff(["--cached"]);
+      if (!diff.trim()) {
+        return { ok: false, error: "没有已暂存的更改可生成提交信息" };
+      }
+
+      // 2. Build the full prompt: user's template + the diff.
+      const promptTemplate = input.prompt?.trim() || DEFAULT_COMMIT_PROMPT;
+      const fullPrompt = `${promptTemplate}\n\n--- git diff --cached ---\n${diff}\n--- end diff ---`;
+
+      // 3. Resolve the model config. If a customModelId is given, use that
+      //    config's env + model; otherwise fall back to the built-in model.
+      const { query } = await import("@anthropic-ai/claude-agent-sdk");
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 60000); // 60s timeout
+
+      try {
+        let model: string | undefined;
+        let env: import("@anthropic-ai/claude-agent-sdk").Options["env"];
+
+        if (input.customModelId) {
+          const cfg = CustomModelStore.resolveApiConfig(input.customModelId);
+          if (!cfg) {
+            return { ok: false, error: "找不到指定的模型配置" };
+          }
+          model = resolveActiveModel(cfg);
+          env = buildCustomEnv(cfg);
+        }
+
+        const q = query({
+          prompt: fullPrompt,
+          options: {
+            abortController: ac,
+            maxTurns: 1,
+            model,
+            env,
+            settingSources: ["project", "local"],
+            includePartialMessages: false,
+          },
+        });
+
+        // 4. Collect the assistant's text response.
+        let message = "";
+        for await (const m of q) {
+          if (m.type === "assistant") {
+            // Extract text from content blocks.
+            const content = (m as { message?: { content?: Array<{ type: string; text?: string }> } }).message?.content;
+            if (Array.isArray(content)) {
+              message = content
+                .filter((b) => b.type === "text" && b.text)
+                .map((b) => b.text!)
+                .join("\n");
+            }
+          }
+          if (m.type === "result") {
+            break;
+          }
+        }
+
+        clearTimeout(timer);
+        if (!message.trim()) {
+          return { ok: false, error: "模型未返回有效内容" };
+        }
+        // Clean up: strip markdown code fences if the model wrapped the message.
+        message = message.trim().replace(/^```\w*\n?/, "").replace(/\n?```$/, "").trim();
+        log.info(`git.generateCommitMessage succeeded for ${input.repoPath} (${message.length} chars)`);
+        return { ok: true, message };
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (err) {
+      const msg = (err as Error).message || String(err);
+      log.warn(`git.generateCommitMessage failed for ${input.repoPath}: ${msg}`);
+      if (/401|unauthorized|invalid.*key/i.test(msg)) {
+        return { ok: false, error: "认证失败,请检查模型配置的 Token/Key" };
+      }
+      if (/503|no available channel/i.test(msg)) {
+        return { ok: false, error: "网关无此模型渠道,请检查模型名配置" };
+      }
+      return { ok: false, error: msg };
+    }
+  });
 }
+
+/** Default prompt used when the user hasn't configured a custom one. */
+const DEFAULT_COMMIT_PROMPT =
+  "请根据以下 git diff 生成一条简洁的提交信息。要求:\n" +
+  "1. 第一行是简短摘要(不超过 50 字符)\n" +
+  "2. 如果改动较复杂,空一行后写详细说明\n" +
+  "3. 只返回提交信息本身,不要包含多余的解释或代码块标记";

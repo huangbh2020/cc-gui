@@ -26,6 +26,8 @@ import {
   UI_IDE_ACTIVE_FILE_SETTING_KEY,
   UI_IDE_EXPANDED_DIRS_SETTING_KEY,
   UI_IDE_EDITOR_MODE_SETTING_KEY,
+  UI_COMMIT_GEN_MODEL_SETTING_KEY,
+  UI_COMMIT_GEN_PROMPT_SETTING_KEY,
   type DisplayMode,
   type RightPanelTab,
   type IdeEditorMode,
@@ -286,6 +288,12 @@ interface SessionState {
    *  can show a Monaco diff. Ephemeral (NOT persisted) — git state may be stale
    *  after a restart. Outer key = projectId, inner key = absolute filePath. */
   gitDiffByProject: Record<string, Record<string, string>>;
+  /** Custom-model id used for git-commit-message generation, or null for
+   *  built-in. Persisted in the settings table. */
+  commitGenModel: string | null;
+  /** Prompt template for commit-message generation. Persisted. Empty = use
+   *  the built-in default (defined in the main-process handler). */
+  commitGenPrompt: string;
   /** Monotonically-increasing counter bumped whenever something requests the
    *  right panel's attention (e.g. the 审查 button on a turn-files card).
    *  App.tsx watches this via effect and opens the panel if collapsed —
@@ -413,6 +421,10 @@ interface SessionState {
   /** Clear a file's git diff "before" content (e.g. after the file is staged
    *  or discarded). */
   clearGitDiffBefore: (filePath: string) => void;
+  /** Set the custom-model id used for commit-message generation. Persists. */
+  setCommitGenModel: (modelId: string | null) => void;
+  /** Set the prompt template for commit-message generation. Persists. */
+  setCommitGenPrompt: (prompt: string) => void;
 }
 
 /** Map of messageId → msg for fast delta accumulation. */
@@ -1225,6 +1237,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   ideEditorMode: "tabs",
   ideExpandedDirsByProject: {},
   gitDiffByProject: {},
+  commitGenModel: null,
+  commitGenPrompt: "",
   ideFocusNonce: 0,
 
   init: async () => {
@@ -1292,12 +1306,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // values leave the defaults. Paths that don't belong to any persisted
     // project are dropped on load (stale tabs from a removed project).
     try {
-      const [tabRes, openRes, activeRes, dirsRes, modeRes] = await Promise.all([
+      const [tabRes, openRes, activeRes, dirsRes, modeRes, commitModelRes, commitPromptRes] = await Promise.all([
         api.setting.get({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_OPEN_FILES_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_ACTIVE_FILE_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_EXPANDED_DIRS_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_EDITOR_MODE_SETTING_KEY }),
+        api.setting.get({ key: UI_COMMIT_GEN_MODEL_SETTING_KEY }),
+        api.setting.get({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY }),
       ]);
       if (
         tabRes.value === "files" ||
@@ -1309,6 +1325,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       if (modeRes.value === "tabs" || modeRes.value === "replace") {
         set({ ideEditorMode: modeRes.value });
+      }
+      // Commit-message generation settings.
+      set({ commitGenModel: commitModelRes.value || null });
+      if (commitPromptRes.value) {
+        set({ commitGenPrompt: commitPromptRes.value });
       }
       // IDE editor state is persisted as per-project JSON objects (keyed by
       // projectId). Parse them now; path validation happens after projects
@@ -2802,6 +2823,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete next[filePath];
       return { gitDiffByProject: { ...s.gitDiffByProject, [pid]: next } };
     });
+  },
+
+  setCommitGenModel: (modelId) => {
+    set({ commitGenModel: modelId });
+    void api.setting
+      .set({ key: UI_COMMIT_GEN_MODEL_SETTING_KEY, value: modelId ?? "" })
+      .catch((err) => console.error("setting.set(commitGenModel) failed:", err));
+  },
+
+  setCommitGenPrompt: (prompt) => {
+    set({ commitGenPrompt: prompt });
+    void api.setting
+      .set({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY, value: prompt })
+      .catch((err) => console.error("setting.set(commitGenPrompt) failed:", err));
   },
 }));
 

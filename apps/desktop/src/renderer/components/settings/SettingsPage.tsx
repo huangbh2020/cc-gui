@@ -5,6 +5,7 @@ import { ThreePaneLayout } from "@renderer/components/layout/ThreePaneLayout.js"
 import { ClaudePathPanel } from "./ClaudePathPanel.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
+import { GitPanel } from "./GitPanel.js";
 
 /**
  * Settings page with a left functional menu + right content panel layout.
@@ -25,7 +26,7 @@ import { AppearancePanel } from "./AppearancePanel.js";
  * kept alive — `ClaudePathPanel` is designed to reload its value on mount, so
  * fresh-mount per nav switch is the intended pattern.
  */
-type SectionId = "general" | "claude-path" | "custom-models" | "appearance" | "about";
+type SectionId = "general" | "claude-path" | "custom-models" | "appearance" | "git" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -37,6 +38,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "claude-path", label: "Claude CLI 路径" },
   { id: "custom-models", label: "模型配置" },
   { id: "appearance", label: "外观" },
+  { id: "git", label: "Git" },
   { id: "about", label: "关于" },
 ];
 
@@ -87,6 +89,7 @@ export function SettingsPage() {
           {active === "claude-path" && <ClaudePathPanel />}
           {active === "custom-models" && <CustomModelsPanel />}
           {active === "appearance" && <AppearancePanel />}
+          {active === "git" && <GitPanel />}
           {active === "about" && (
             <PlaceholderPanel title="关于" desc="版本信息、开源协议与更新检查(开发中)。" />
           )}

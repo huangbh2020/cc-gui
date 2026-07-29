@@ -130,6 +130,21 @@ export const UI_IDE_EXPANDED_DIRS_SETTING_KEY = "ui.ideExpandedDirs";
  */
 export const UI_IDE_EDITOR_MODE_SETTING_KEY = "ui.ideEditorMode";
 
+/**
+ * Setting key under which the custom-model id used for git-commit-message
+ * generation is persisted. Value is a config id from CustomModelStore, or
+ * empty/null for "use built-in model". Shared between main (the generator
+ * handler resolves the config) and renderer (the settings panel reads/writes).
+ */
+export const UI_COMMIT_GEN_MODEL_SETTING_KEY = "ui.commitGenModel";
+
+/**
+ * Setting key under which the prompt template for commit-message generation
+ * is persisted. Value is a string; the staged diff is appended after it.
+ * Empty/unset → use a built-in default prompt.
+ */
+export const UI_COMMIT_GEN_PROMPT_SETTING_KEY = "ui.commitGenPrompt";
+
 /** zod schema + TS union for the IDE editor open-mode preference. */
 export const IdeEditorModeSchema = z.enum(["tabs", "replace"]);
 export type IdeEditorMode = z.infer<typeof IdeEditorModeSchema>;
@@ -542,6 +557,20 @@ export const GitDiscardSchema = z.object({
 });
 export type GitDiscardInput = z.infer<typeof GitDiscardSchema>;
 
+/** Generate a commit message from the staged diff using an LLM.
+ *  `repoPath` scopes the diff; `customModelId` selects which custom-model
+ *  config to use (must be a persisted config id); `prompt` is the user's
+ *  configured prompt template. The handler collects the staged diff, feeds
+ *  it to the model via a one-shot SDK query, and returns the generated text. */
+export const GitGenerateCommitSchema = z.object({
+  repoPath: z.string(),
+  /** Custom-model config id (from CustomModelStore). null = use built-in. */
+  customModelId: z.string().nullable(),
+  /** The user's prompt template. The diff is appended after this. */
+  prompt: z.string(),
+});
+export type GitGenerateCommitInput = z.infer<typeof GitGenerateCommitSchema>;
+
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
 export interface ClaudeEventMessage {
@@ -640,6 +669,8 @@ export interface RpcMap {
   "git.diff": (input: GitDiffInput) => Promise<{ patch: string }>;
   /** Discard local changes to specific files (checkout tracked / clean untracked). */
   "git.discard": (input: GitDiscardInput) => Promise<GitOpResult>;
+  /** Generate a commit message from the staged diff via an LLM one-shot call. */
+  "git.generateCommitMessage": (input: GitGenerateCommitInput) => Promise<{ ok: boolean; message?: string; error?: string }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -692,6 +723,7 @@ export const IPC = {
   GIT_PULL: "git:pull",
   GIT_DIFF: "git:diff",
   GIT_DISCARD: "git:discard",
+  GIT_GENERATE_COMMIT: "git:generateCommitMessage",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",

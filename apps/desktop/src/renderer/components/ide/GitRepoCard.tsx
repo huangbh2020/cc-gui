@@ -24,6 +24,7 @@ import {
   IconEye,
   IconPlus,
   IconMinus,
+  IconSparkles,
 } from "@renderer/lib/icons.js";
 
 /**
@@ -265,6 +266,7 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
                 then reviews what's staged before committing). */}
             {hasStaged && (
               <CommitBox
+                repoPath={repo.path}
                 value={commitMsg}
                 onChange={setCommitMsg}
                 disabled={busy !== null}
@@ -354,18 +356,46 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
 /* ───────────────────────── commit box with dropdown ───────────────────────── */
 
 function CommitBox({
+  repoPath,
   value,
   onChange,
   disabled,
   busy,
   onCommit,
 }: {
+  repoPath: string;
   value: string;
   onChange: (v: string) => void;
   disabled: boolean;
   busy: boolean;
   onCommit: (mode: "commit" | "push" | "sync") => void;
 }) {
+  const commitGenModel = useSessionStore((s) => s.commitGenModel);
+  const commitGenPrompt = useSessionStore((s) => s.commitGenPrompt);
+  const [generating, setGenerating] = useState(false);
+
+  const handleGenerate = async () => {
+    if (generating || disabled) return;
+    setGenerating(true);
+    try {
+      const res = await api.git.generateCommitMessage({
+        repoPath,
+        customModelId: commitGenModel,
+        prompt: commitGenPrompt,
+      });
+      if (res.ok && res.message) {
+        onChange(res.message);
+      } else {
+        // Surface the error briefly by putting it in the input (user can edit/clear).
+        onChange(res.error ?? "生成失败");
+      }
+    } catch {
+      onChange("生成失败");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   return (
     <div className="my-2 flex gap-1.5">
       <input
@@ -378,9 +408,24 @@ function CommitBox({
           }
         }}
         placeholder="提交信息…"
-        disabled={disabled}
+        disabled={disabled || generating}
         className="min-w-0 flex-1 rounded-md border border-edge-input bg-surface px-2 py-1 text-[11px] text-content outline-none focus:border-accent disabled:opacity-50"
       />
+      {/* Generate button — uses the configured model + prompt to generate a
+          commit message from the staged diff. */}
+      <button
+        type="button"
+        onClick={handleGenerate}
+        disabled={disabled || generating}
+        title="使用 AI 生成提交信息"
+        className={cn(
+          "flex shrink-0 items-center gap-1 rounded-md border border-edge px-2 py-1 text-[11px] transition-colors",
+          "text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-40",
+        )}
+      >
+        {generating ? <IconLoader2 size={11} className="animate-spin" /> : <IconSparkles size={11} />}
+        生成
+      </button>
       {/* Split button: main "提交" + dropdown for commit+push / commit+sync. */}
       <div className="flex shrink-0 overflow-hidden rounded-md">
         <button
