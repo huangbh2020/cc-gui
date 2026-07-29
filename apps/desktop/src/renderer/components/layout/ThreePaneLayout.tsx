@@ -32,10 +32,12 @@ export function ThreePaneLayout({ left, center, right, leftOpen, rightOpen }: Pr
          through the notch against the pane's bg-surface. */}
       <main className="flex min-w-0 flex-1 flex-col rounded-bl-lg bg-surface">{center}</main>
 
-      {/* Right sidebar — plain rectangle (no corner rounding). */}
+      {/* Right sidebar — plain rectangle (no corner rounding).
+         overflow-hidden (not overflow-y-auto): Files/Git scroll internally,
+         and xterm FitAddon breaks under a scrolling ancestor. */}
       {rightOpen && (
         <aside className="flex h-full w-[360px] shrink-0 flex-col bg-surface-muted">
-          <div className="min-h-0 flex-1 overflow-y-auto border-l border-edge">{right}</div>
+          <div className="min-h-0 flex-1 overflow-hidden border-l border-edge">{right}</div>
         </aside>
       )}
     </>

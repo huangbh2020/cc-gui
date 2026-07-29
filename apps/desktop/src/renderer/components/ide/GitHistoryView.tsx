@@ -131,7 +131,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <IconGitCommit size={20} className="text-content-subtle" />
-        <p className="text-xs text-content-muted">未找到 Git 仓库</p>
+        <p className="[font-size:var(--right-panel-font-size)] text-content-muted">未找到 Git 仓库</p>
       </div>
     );
   }
@@ -144,7 +144,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
           <select
             value={repoPath}
             onChange={(e) => setRepoPath(e.target.value)}
-            className="min-w-0 flex-1 truncate rounded border border-edge bg-surface px-1.5 py-0.5 text-[11px] text-content outline-none focus:border-accent"
+            className="min-w-0 flex-1 truncate rounded border border-edge bg-surface px-1.5 py-0.5 [font-size:var(--right-panel-font-size)] text-content outline-none focus:border-accent"
             title="选择仓库"
           >
             {repos.map((r) => (
@@ -154,7 +154,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
             ))}
           </select>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-content-muted" title={repoPath}>
+          <span className="min-w-0 flex-1 truncate [font-size:var(--right-panel-font-size)] text-content-muted" title={repoPath}>
             {repos[0]?.name}
           </span>
         )}
@@ -169,7 +169,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
       </div>
 
       {error && (
-        <div className="flex items-start gap-1.5 border-b border-edge bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
+        <div className="flex items-start gap-1.5 border-b border-edge bg-danger/10 px-2 py-1.5 [font-size:var(--right-panel-font-size)] text-danger">
           <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span className="min-w-0 break-words">{error}</span>
         </div>
@@ -192,14 +192,14 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
             onOpenFile={(f) => void openFile(f)}
           />
         ) : loading ? (
-          <div className="flex items-center gap-1.5 px-3 py-3 text-[11px] text-content-subtle">
+          <div className="flex items-center gap-1.5 px-3 py-3 [font-size:var(--right-panel-font-size)] text-content-subtle">
             <IconLoader2 size={12} className="animate-spin" />
             加载提交历史…
           </div>
         ) : commits.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-1 px-4 py-10 text-center">
             <IconGitCommit size={18} className="text-content-subtle" />
-            <p className="text-xs text-content-muted">暂无提交记录</p>
+            <p className="[font-size:var(--right-panel-font-size)] text-content-muted">暂无提交记录</p>
           </div>
         ) : (
           <div className="py-1">
@@ -212,7 +212,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
                   type="button"
                   disabled={loadingMore}
                   onClick={() => void loadCommits({ append: true, skip: commits.length })}
-                  className="flex w-full items-center justify-center gap-1 rounded px-2 py-1.5 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-50"
+                  className="flex w-full items-center justify-center gap-1 rounded px-2 py-1.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-50"
                 >
                   {loadingMore ? (
                     <>
@@ -249,10 +249,10 @@ function CommitRow({
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <IconGitCommit size={12} className="shrink-0 text-content-subtle" />
-        <span className="shrink-0 font-mono text-[10px] text-accent">{commit.shortHash}</span>
-        <span className="min-w-0 truncate text-[11px] text-content">{commit.subject}</span>
+        <span className="shrink-0 font-mono [font-size:var(--rp-fs-xxs)] text-accent">{commit.shortHash}</span>
+        <span className="min-w-0 truncate [font-size:var(--right-panel-font-size)] text-content">{commit.subject}</span>
       </div>
-      <div className="flex items-center gap-1.5 pl-[18px] text-[10px] text-content-subtle">
+      <div className="flex items-center gap-1.5 pl-[18px] [font-size:var(--rp-fs-xxs)] text-content-subtle">
         <span className="truncate">{commit.author}</span>
         <span>·</span>
         <span className="shrink-0" title={formatFullTime(commit.authoredAt)}>
@@ -286,7 +286,7 @@ function CommitDetail({
         <button
           type="button"
           onClick={onBack}
-          className="mb-1.5 flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+          className="mb-1.5 flex items-center gap-1 rounded px-1 py-0.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
         >
           <IconArrowLeft size={12} />
           返回列表
@@ -295,13 +295,13 @@ function CommitDetail({
           <IconGitCommit size={13} className="mt-0.5 shrink-0 text-content-subtle" />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-baseline gap-1.5">
-              <span className="font-mono text-[10px] text-accent">{commit.shortHash}</span>
-              <span className="text-[12px] font-medium text-content">{commit.subject}</span>
+              <span className="font-mono [font-size:var(--rp-fs-xxs)] text-accent">{commit.shortHash}</span>
+              <span className="[font-size:var(--right-panel-font-size)] font-medium text-content">{commit.subject}</span>
             </div>
             {commit.body && (
-              <p className="mt-1 whitespace-pre-wrap text-[11px] text-content-muted">{commit.body}</p>
+              <p className="mt-1 whitespace-pre-wrap [font-size:var(--right-panel-font-size)] text-content-muted">{commit.body}</p>
             )}
-            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-content-subtle">
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 [font-size:var(--rp-fs-xxs)] text-content-subtle">
               <span>{commit.author}</span>
               <span>·</span>
               <span title={commit.authoredAt}>{formatFullTime(commit.authoredAt)}</span>
@@ -311,27 +311,27 @@ function CommitDetail({
       </div>
 
       {fileError && (
-        <div className="flex items-start gap-1.5 border-b border-edge bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
+        <div className="flex items-start gap-1.5 border-b border-edge bg-danger/10 px-2 py-1.5 [font-size:var(--right-panel-font-size)] text-danger">
           <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span className="min-w-0 break-words">{fileError}</span>
         </div>
       )}
 
       {loading ? (
-        <div className="flex items-center gap-1.5 px-3 py-3 text-[11px] text-content-subtle">
+        <div className="flex items-center gap-1.5 px-3 py-3 [font-size:var(--right-panel-font-size)] text-content-subtle">
           <IconLoader2 size={12} className="animate-spin" />
           加载变更文件…
         </div>
       ) : error ? (
-        <div className="flex items-start gap-1.5 px-3 py-3 text-[11px] text-danger">
+        <div className="flex items-start gap-1.5 px-3 py-3 [font-size:var(--right-panel-font-size)] text-danger">
           <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span>{error}</span>
         </div>
       ) : files.length === 0 ? (
-        <div className="px-3 py-4 text-center text-[11px] text-content-subtle">无文件变更</div>
+        <div className="px-3 py-4 text-center [font-size:var(--right-panel-font-size)] text-content-subtle">无文件变更</div>
       ) : (
         <div className="py-1">
-          <div className="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-content-subtle">
+          <div className="px-2.5 py-1 [font-size:var(--rp-fs-xxs)] font-medium uppercase tracking-wide text-content-subtle">
             {files.length} 个文件
           </div>
           {files.map((f) => (
@@ -363,9 +363,9 @@ function CommitFileRow({
       title={label}
     >
       <CommitFileStatusIcon status={file.status} />
-      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-content-muted">{label}</span>
+      <span className="min-w-0 flex-1 truncate font-mono [font-size:var(--right-panel-font-size)] text-content-muted">{label}</span>
       {(file.additions != null || file.deletions != null) && (
-        <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] tabular-nums">
+        <span className="flex shrink-0 items-center gap-0.5 font-mono [font-size:var(--rp-fs-xxs)] tabular-nums">
           {file.additions != null && file.additions > 0 && (
             <span className="text-accent">+{file.additions}</span>
           )}
@@ -392,7 +392,7 @@ function CommitFileStatusIcon({ status }: { status: GitCommitFileStatus }) {
   return (
     <span
       className={cn(
-        "w-3 shrink-0 text-center font-mono text-[10px] font-semibold",
+        "w-3 shrink-0 text-center font-mono [font-size:var(--rp-fs-xxs)] font-semibold",
         status === "added" && "text-accent",
         status === "deleted" && "text-danger",
         status === "modified" && "text-warning",

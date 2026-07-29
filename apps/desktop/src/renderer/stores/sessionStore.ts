@@ -19,6 +19,7 @@ import { api } from "@renderer/lib/api.js";
 import {
   DISPLAY_MODE_SETTING_KEY,
   UI_CHAT_FONT_SIZE_SETTING_KEY,
+  UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY,
   UI_USER_MSG_COLOR_SETTING_KEY,
   UI_ACCENT_COLOR_SETTING_KEY,
   UI_RIGHT_PANEL_TAB_SETTING_KEY,
@@ -169,6 +170,11 @@ interface SessionState {
    *  table. Applied to <html> as the --chat-font-size CSS var by
    *  lib/appearance.ts so it cascades into the message rows + markdown. */
   chatFontSize: number;
+  /** Right-panel (files / git / terminal) base font size in px (10–22).
+   *  Persisted in the `settings` table. Applied to <html> as the
+   *  --right-panel-font-size CSS var (plus --rp-fs-* derived variants) by
+   *  lib/appearance.ts, and also fed to the xterm terminal fontSize. */
+  rightPanelFontSize: number;
   /** Custom user-message background color as an "R G B" triplet string
    *  (e.g. "124 58 237"), or null to use the theme default. Persisted in
    *  the `settings` table. Applied to <html> as --user-bubble. */
@@ -288,6 +294,13 @@ interface SessionState {
    *  - History clicks stash `{ before, after }` → DiffPane uses both blobs (no disk).
    *  Ephemeral (NOT persisted). Outer key = projectId, inner key = abs filePath. */
   gitDiffByProject: Record<string, Record<string, { before: string; after?: string }>>;
+  /** Per-project per-file "open-as-diff" before-snapshot override. When a
+   *  turn-files card opens a file for review it passes the card's frozen
+   *  `before` (works for HISTORICAL turns too, whose snapshot is gone from
+   *  turnFilesBySession). FileEditor uses this as a fallback diff source.
+   *  Ephemeral (NOT persisted) - a stale before is harmless: the worst case
+   *  is an outdated left pane until the user closes the file. */
+  ideDiffBeforeByProject: Record<string, Record<string, string>>;
   /** Custom-model id used for git-commit-message generation, or null for
    *  built-in. Persisted in the settings table. */
   commitGenModel: string | null;
@@ -353,6 +366,9 @@ interface SessionState {
   /** Update the chat content font size (clamped to 12–20 px). Persists to
    *  the `settings` table. */
   setChatFontSize: (px: number) => Promise<void>;
+  /** Update the right-panel base font size (clamped to 10–22 px). Persists
+   *  to the `settings` table. */
+  setRightPanelFontSize: (px: number) => Promise<void>;
   /** Update the user-message background color (R G B triplet, or null =
    *  theme default). Persists to the `settings` table. */
   setUserMessageColor: (rgb: string | null) => Promise<void>;
@@ -400,7 +416,7 @@ interface SessionState {
    *  active). `opts.diff` opens it in diff mode (used by the 审查 button when
    *  a before-snapshot exists). Also bumps ideFocusNonce so App opens the
    *  right panel if it's collapsed. */
-  openFileInIde: (filePath: string, opts?: { diff?: boolean }) => void;
+  openFileInIde: (filePath: string, opts?: { diff?: boolean; before?: string }) => void;
   /** Remove a file from the editor's open list; active shifts to the
    *  previous file (or next, or null). */
   closeFileInIde: (filePath: string) => void;
@@ -530,6 +546,21 @@ export const CHAT_FONT_SIZE_MAX = 20;
 export function clampFontSize(px: number): number {
   if (!Number.isFinite(px)) return 14;
   return Math.min(CHAT_FONT_SIZE_MAX, Math.max(CHAT_FONT_SIZE_MIN, Math.round(px)));
+}
+
+/** Min/max right-panel (files / git / terminal) base font size (px). The
+ *  slider in Settings uses the same bounds; setRightPanelFontSize clamps to
+ *  this range defensively. */
+export const RIGHT_PANEL_FONT_SIZE_MIN = 10;
+export const RIGHT_PANEL_FONT_SIZE_MAX = 22;
+
+/** Clamp a right-panel font-size value to the allowed slider range. */
+export function clampRightPanelFontSize(px: number): number {
+  if (!Number.isFinite(px)) return 14;
+  return Math.min(
+    RIGHT_PANEL_FONT_SIZE_MAX,
+    Math.max(RIGHT_PANEL_FONT_SIZE_MIN, Math.round(px)),
+  );
 }
 
 /** Matches a well-formed space-separated "R G B" triplet (0–255 each),
@@ -1216,6 +1247,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // Persisted in `settings` table; init() overwrites from the DB. Defaults
   // mirror the CSS var defaults in styles.css (14px = text-sm).
   chatFontSize: 14,
+  // Persisted in `settings` table; init() overwrites from the DB. Default
+  // 14px mirrors the --right-panel-font-size CSS var in styles.css.
+  rightPanelFontSize: 14,
   userMessageColor: null,
   accentColor: null,
   messagesBySession: {},
@@ -1245,6 +1279,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   ideEditorMode: "tabs",
   ideExpandedDirsByProject: {},
   gitDiffByProject: {},
+  ideDiffBeforeByProject: {},
   commitGenModel: null,
   commitGenPrompt: "",
   collapsedGitRepos: {} as Record<string, boolean>,
@@ -1283,20 +1318,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.error("setting.get(displayMode) failed:", err);
     }
 
-    // Hydrate the appearance settings (font size, user-message bg color,
-    // and global accent color). All three are optional — missing/invalid
-    // values leave the store defaults in place. lib/appearance.ts picks
-    // these up and writes the corresponding CSS vars on <html> so the first
-    // paint uses the right values (no flash of the default font size / color).
+    // Hydrate the appearance settings (chat font size, right-panel font
+    // size, user-message bg color, and global accent color). All are
+    // optional - missing/invalid values leave the store defaults in place.
+    // lib/appearance.ts picks these up and writes the corresponding CSS vars
+    // on <html> so the first paint uses the right values (no flash of the
+    // default font size / color).
     try {
-      const [fontRes, colorRes, accentRes] = await Promise.all([
+      const [fontRes, rpFontRes, colorRes, accentRes] = await Promise.all([
         api.setting.get({ key: UI_CHAT_FONT_SIZE_SETTING_KEY }),
+        api.setting.get({ key: UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY }),
         api.setting.get({ key: UI_USER_MSG_COLOR_SETTING_KEY }),
         api.setting.get({ key: UI_ACCENT_COLOR_SETTING_KEY }),
       ]);
       if (fontRes.value != null) {
         const px = Number(fontRes.value);
         if (Number.isFinite(px)) set({ chatFontSize: clampFontSize(px) });
+      }
+      if (rpFontRes.value != null) {
+        const px = Number(rpFontRes.value);
+        if (Number.isFinite(px)) set({ rightPanelFontSize: clampRightPanelFontSize(px) });
       }
       // Accept only well-formed "R G B" triplets; anything else (incl.
       // empty string) is treated as "use theme default" → null.
@@ -2456,6 +2497,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  setRightPanelFontSize: async (px) => {
+    const clamped = clampRightPanelFontSize(px);
+    set({ rightPanelFontSize: clamped });
+    try {
+      await api.setting.set({
+        key: UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY,
+        value: String(clamped),
+      });
+    } catch (err) {
+      console.error("setting.set(rightPanelFontSize) failed:", err);
+    }
+  },
+
   setUserMessageColor: async (rgb) => {
     // null or malformed → treat as "use theme default" and clear any stored
     // value so the default re-asserts cleanly on reload.
@@ -2699,22 +2753,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   openFileInIde: (filePath, opts) => {
     const pid = get().activeProjectId;
-    if (!pid) return; // no active project — nothing to scope to
+    if (!pid) return; // no active project - nothing to scope to
     const prev = get().ideOpenFilesByProject[pid] ?? [];
     const mode = get().ideEditorMode;
-    // In "replace" mode, opening a file discards everything else — at most
+    // In "replace" mode, opening a file discards everything else - at most
     // one file is open at a time. In "tabs" mode, files accumulate (dedup:
     // re-opening an already-open file just activates it).
     const open = mode === "replace" ? [filePath] : prev.includes(filePath) ? prev : [...prev, filePath];
     const prevViewMode = get().ideFileViewModeByProject[pid] ?? {};
     const viewMode = { ...prevViewMode };
-    // Only set diff mode if requested AND not already set — don't clobber an
-    // explicit user choice made earlier for this file.
-    if (opts?.diff && viewMode[filePath] === undefined) viewMode[filePath] = "diff";
+    // A review/diff request is an explicit intent -> force diff mode (don't
+    // leave a stale "edit" the user may have toggled for a different purpose).
+    if (opts?.diff) viewMode[filePath] = "diff";
+    // A before-snapshot passed by a turn-files card (works for HISTORICAL
+    // turns whose snapshot is gone from turnFilesByProject). Stashed
+    // per-file so FileEditor can use it as the diff's left pane.
+    const prevDiffBefore = get().ideDiffBeforeByProject[pid] ?? {};
+    const diffBefore =
+      opts?.diff && opts.before != null
+        ? { ...prevDiffBefore, [filePath]: opts.before }
+        : prevDiffBefore;
     set((s) => ({
       ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
       ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: filePath },
       ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
+      ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: diffBefore },
       // Bump the focus nonce so App opens the right panel if collapsed.
       ideFocusNonce: s.ideFocusNonce + 1,
     }));
@@ -2737,10 +2800,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const prevViewMode = get().ideFileViewModeByProject[pid] ?? {};
     const viewMode = { ...prevViewMode };
     delete viewMode[filePath];
+    // Clean up the per-file before-snapshot override too.
+    const prevDiffBefore = get().ideDiffBeforeByProject[pid] ?? {};
+    const diffBefore = { ...prevDiffBefore };
+    delete diffBefore[filePath];
     set((s) => ({
       ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
       ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: active },
       ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
+      ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: diffBefore },
     }));
     persistIdeBuckets(get());
   },

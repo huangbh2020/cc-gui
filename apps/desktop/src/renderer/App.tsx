@@ -9,7 +9,7 @@ import { SettingsPage } from "./components/settings/SettingsPage.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
 import { useSessionStore } from "./stores/sessionStore.js";
 import { useTheme } from "./lib/theme.js";
-import { useChatAppearance } from "./lib/appearance.js";
+import { useChatAppearance, useRightPanelAppearance } from "./lib/appearance.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
 import { FileEditor } from "./components/ide/FileEditor.js";
 
@@ -21,6 +21,9 @@ export function App() {
   // Apply + keep in sync the chat appearance CSS vars (--chat-font-size,
   // --user-bubble) from the user-configurable settings.
   useChatAppearance();
+  // Apply + keep in sync the right-panel font-size CSS var
+  // (--right-panel-font-size) for the files / git / terminal tabs.
+  useRightPanelAppearance();
 
   const init = useSessionStore((s) => s.init);
   useEffect(() => {

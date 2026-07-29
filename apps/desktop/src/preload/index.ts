@@ -126,6 +126,21 @@ const api = {
       ipcRenderer.invoke(IPC.GIT_SHOW_FILE, input)) as RpcMap["git.showFile"],
   },
 
+  /** Integrated terminal (xterm in renderer ↔ node-pty in main). Paths on
+   *  create must resolve inside a known project root (main enforces this). */
+  terminal: {
+    create: ((input) =>
+      ipcRenderer.invoke(IPC.TERMINAL_CREATE, input)) as RpcMap["terminal.create"],
+    write: ((input) =>
+      ipcRenderer.invoke(IPC.TERMINAL_WRITE, input)) as RpcMap["terminal.write"],
+    resize: ((input) =>
+      ipcRenderer.invoke(IPC.TERMINAL_RESIZE, input)) as RpcMap["terminal.resize"],
+    kill: ((input) =>
+      ipcRenderer.invoke(IPC.TERMINAL_KILL, input)) as RpcMap["terminal.kill"],
+    list: ((input) =>
+      ipcRenderer.invoke(IPC.TERMINAL_LIST, input)) as RpcMap["terminal.list"],
+  },
+
   // ── Main-only helpers ──
   /** Open a native folder picker; returns the chosen path or null. */
   pickFolder: (): Promise<{ path: string | null }> =>
@@ -163,6 +178,16 @@ const api = {
       ipcRenderer.on(IPC.TERMINAL_DATA, listener);
       return () => {
         ipcRenderer.off(IPC.TERMINAL_DATA, listener);
+      };
+    },
+    /** Fires when a PTY exits (shell `exit`, crash, or kill). */
+    terminalExit(handler: (msg: Extract<MainToRendererMessage, { channel: "terminal:exit" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.TERMINAL_EXIT) handler(msg);
+      };
+      ipcRenderer.on(IPC.TERMINAL_EXIT, listener);
+      return () => {
+        ipcRenderer.off(IPC.TERMINAL_EXIT, listener);
       };
     },
     /** Fires when the effective theme changes (user picked one, or OS changed

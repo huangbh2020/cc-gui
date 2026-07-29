@@ -18,8 +18,8 @@ import { GitPanel } from "./GitPanel.js";
  * Available sections:
  *  - 通用           (placeholder)
  *  - Claude CLI 路径 (ClaudePathPanel)
- *  - 模型配置        (CustomModelsPanel — two-column: provider list + config form)
- *  - 外观           (AppearancePanel — flat one-row-per-feature list)
+ *  - 模型配置        (CustomModelsPanel - two-column: provider list + config form)
+ *  - 外观           (AppearancePanel - flat one-row-per-feature list)
  *  - 关于           (placeholder)
  *
  * Panels are conditionally rendered (mount/unmount on nav switch) rather than

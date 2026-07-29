@@ -60,15 +60,15 @@ export function GitPanel() {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <IconGitBranch size={20} className="text-content-subtle" />
-        <p className="text-xs text-content-muted">还没有项目</p>
-        <p className="text-[11px] text-content-subtle">添加项目后即可查看 Git 状态</p>
+        <p className="[font-size:var(--right-panel-font-size)] text-content-muted">还没有项目</p>
+        <p className="[font-size:var(--right-panel-font-size)] text-content-subtle">添加项目后即可查看 Git 状态</p>
       </div>
     );
   }
 
   if (loading) {
     return (
-      <div className="flex items-center gap-1.5 px-3 py-2 text-[11px] text-content-subtle">
+      <div className="flex items-center gap-1.5 px-3 py-2 [font-size:var(--right-panel-font-size)] text-content-subtle">
         <IconLoader2 size={12} className="animate-spin" />
         扫描 Git 仓库…
       </div>
@@ -79,14 +79,14 @@ export function GitPanel() {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <IconGitBranch size={20} className="text-content-subtle" />
-        <p className="text-xs text-content-muted">未找到 Git 仓库</p>
-        <p className="text-[11px] text-content-subtle">
+        <p className="[font-size:var(--right-panel-font-size)] text-content-muted">未找到 Git 仓库</p>
+        <p className="[font-size:var(--right-panel-font-size)] text-content-subtle">
           在「{projectPath}」及其子目录(3 层内)未发现 .git 目录
         </p>
         <button
           type="button"
           onClick={() => void scan(projectPath)}
-          className="mt-1 flex items-center gap-1 rounded px-2 py-1 text-[11px] text-content-muted hover:bg-surface-hover"
+          className="mt-1 flex items-center gap-1 rounded px-2 py-1 [font-size:var(--right-panel-font-size)] text-content-muted hover:bg-surface-hover"
         >
           <IconRefresh size={11} /> 重新扫描
         </button>
@@ -111,11 +111,11 @@ export function GitPanel() {
           label="历史"
         />
         <div className="ml-auto flex items-center gap-1 px-1.5">
-          <span className="text-[10px] text-content-subtle">{repos.length} 仓</span>
+          <span className="[font-size:var(--rp-fs-xxs)] text-content-subtle">{repos.length} 仓</span>
           <button
             type="button"
             onClick={() => void scan(projectPath)}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
             title="重新扫描仓库"
           >
             <IconRefresh size={12} />
@@ -156,7 +156,7 @@ function SubTabButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium transition-colors",
+        "flex items-center gap-1 px-3 py-1.5 [font-size:var(--right-panel-font-size)] font-medium transition-colors",
         active
           ? "border-b-2 border-accent text-content"
           : "border-b-2 border-transparent text-content-subtle hover:text-content-muted",

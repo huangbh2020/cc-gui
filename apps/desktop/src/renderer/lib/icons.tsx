@@ -31,6 +31,7 @@ export {
   IconDownload,
   IconUpload,
   IconRefresh,
+  IconEraser,
   IconShare,
   IconSend,
   IconSend2,
@@ -54,6 +55,7 @@ export {
   IconCircleCheck,
   IconCircleXFilled,
   IconLoader2,
+  IconActivity,
   // Media / content
   IconPlayerPlay,
   IconPlayerStop,
@@ -68,8 +70,12 @@ export {
   IconEyeOff,
   IconCode,
   IconTerminal2,
+  IconTerminal,
   IconFile,
   IconFileText,
+  IconFilePlus,
+  IconFileSearch,
+  IconNotebook,
   IconClipboard,
   IconFolder,
   IconFolderOpen,
@@ -80,6 +86,7 @@ export {
   IconSparkles,
   // Editing / actions
   IconPencil,
+  IconReplace,
   IconRocket,
   // Communication
   IconMessage,
@@ -120,9 +127,12 @@ export {
   IconAdjustmentsHorizontal,
   IconList,
   IconListDetails,
+  IconListCheck,
   IconSquare,
   IconLanguage,
   IconGlobe,
+  IconWorldWww,
+  IconWorldSearch,
   IconSun,
   IconMoon,
   // Status-capsule icons
@@ -136,6 +146,9 @@ export {
   IconShieldCheck,
   IconShieldLock,
   IconShieldHalfFilled,
+  // Cognition / AI (thinking, brainstorming)
+  IconBrain,
+  IconBulb,
 } from "@tabler/icons-react";
 
 /* ───────── Shorthand aliases (commonly used) ───────── */

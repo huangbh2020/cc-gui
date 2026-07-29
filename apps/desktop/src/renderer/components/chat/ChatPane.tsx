@@ -47,6 +47,10 @@ import { LegendList, type LegendListRef } from "@legendapp/list/react";
  * position are all 100% bound to this sessionId.
  */
 
+/** 第一条消息与顶部(标签条 / 标题栏)之间的留白。作为滚动内容的顶部
+ *  padding,停在顶部时可见,向下滚动后随内容滚走。 */
+const MESSAGE_LIST_TOP_PADDING = 10;
+
 /** Format a wall-clock ms timestamp as HH:MM:SS (local time). */
 function fmtClock(ms: number): string {
   const d = new Date(ms);
@@ -85,7 +89,7 @@ function TurnStatRow({ meta }: { meta: TurnMeta }) {
   const duration = Math.max(0, end - meta.startedAt);
 
   return (
-    <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[11px] text-content-subtle">
+    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-content-subtle">
       <span>开始</span>
       <span className="tabular-nums text-content-muted">{fmtClock(meta.startedAt)}</span>
       <span className="text-content-subtle">·</span>
@@ -564,17 +568,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
       {/* Virtual message list */}
       {!empty && (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {/* StatusCapsule — sticky above the list */}
-          {(todos.length > 0 || contextSnapshot || subagents.length > 0) && (
-            <div className="pointer-events-none sticky top-0 z-20 flex items-center justify-end gap-1.5 bg-gradient-to-b from-surface/80 to-transparent pb-2 pt-3 pr-8">
-              <StatusCapsule
-                snapshot={contextSnapshot}
-                subagents={subagents}
-                todos={todos}
-                plan={plan}
-              />
-            </div>
-          )}
           <div className="min-h-0 flex-1" style={{ position: "relative" }}>
             <LegendList
               ref={virtualListRef}
@@ -590,9 +583,26 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               onScroll={handleVirtualScroll}
               drawDistance={400}
               ListFooterComponent={listFooter}
+              contentContainerStyle={{ paddingTop: MESSAGE_LIST_TOP_PADDING }}
               style={{ height: "100%", width: "100%" }}
             />
           </div>
+        </div>
+      )}
+
+      {/* StatusCapsule - floating overlay pinned to the top-right. Sits
+          ABOVE the list (absolute) so it never takes layout space; only the
+          pill itself is clickable, the rest of the overlay passes pointer
+          events through to the scroll surface beneath. The popover drops
+          down from the pill inside this non-clipping wrapper. */}
+      {!empty && (todos.length > 0 || contextSnapshot || subagents.length > 0) && (
+        <div className="pointer-events-none absolute right-8 top-2 z-30 flex justify-end">
+          <StatusCapsule
+            snapshot={contextSnapshot}
+            subagents={subagents}
+            todos={todos}
+            plan={plan}
+          />
         </div>
       )}
 

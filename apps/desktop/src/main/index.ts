@@ -3,6 +3,7 @@ import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
 import { initDb, closeDb } from "@main/store/db.js";
 import { initTheme } from "@main/lib/theme.js";
+import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { is } from "@main/utils.js";
 
 // Single-instance lock — only one GUI instance runs at a time.
@@ -62,7 +63,8 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// Close the DB cleanly on shutdown (best-effort).
+// Close PTYs + DB cleanly on shutdown (best-effort).
 app.on("before-quit", () => {
+  TerminalManager.disposeAll();
   closeDb();
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
@@ -7,7 +7,7 @@ import { joinPath } from "@renderer/lib/path.js";
 import type { GitRepo, GitStatusResult, GitFileStatus } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
-import { Dialog } from "@renderer/components/ui/index.js";
+import { Button, Dialog } from "@renderer/components/ui/index.js";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -25,6 +25,7 @@ import {
   IconPlus,
   IconMinus,
   IconSparkles,
+  IconMaximize,
 } from "@renderer/lib/icons.js";
 
 /**
@@ -210,22 +211,22 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       {/* ── Header ── */}
       <div className="flex items-center gap-2 border-b border-edge px-2.5 py-1.5">
         <IconGitBranch size={13} className="shrink-0 text-content-subtle" />
-        <span className="truncate text-[11px] font-medium text-content" title={repo.path}>
+        <span className="truncate [font-size:var(--right-panel-font-size)] font-medium text-content" title={repo.path}>
           {repo.name}
         </span>
         {status?.branch && (
-          <span className="shrink-0 rounded bg-surface-muted px-1.5 py-0.5 font-mono text-[10px] text-content-muted">
+          <span className="shrink-0 rounded bg-surface-muted px-1.5 py-0.5 font-mono [font-size:var(--rp-fs-xxs)] text-content-muted">
             {status.branch}
           </span>
         )}
         {status && status.ahead > 0 && (
-          <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-accent" title="领先上游">
+          <span className="flex shrink-0 items-center gap-0.5 [font-size:var(--rp-fs-xxs)] text-accent" title="领先上游">
             <IconArrowUp size={10} />
             {status.ahead}
           </span>
         )}
         {status && status.behind > 0 && (
-          <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-info" title="落后上游">
+          <span className="flex shrink-0 items-center gap-0.5 [font-size:var(--rp-fs-xxs)] text-info" title="落后上游">
             <IconArrowDown size={10} />
             {status.behind}
           </span>
@@ -248,7 +249,7 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
 
       {/* ── Error banner ── */}
       {!collapsed && error && (
-        <div className="flex items-start gap-1.5 border-b border-danger/30 bg-danger/10 px-2.5 py-1.5 text-[11px] text-danger">
+        <div className="flex items-start gap-1.5 border-b border-danger/30 bg-danger/10 px-2.5 py-1.5 [font-size:var(--right-panel-font-size)] text-danger">
           <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span className="break-words">{error}</span>
         </div>
@@ -258,12 +259,12 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       {!collapsed && (
         <div className="p-2">
           {loading && !status ? (
-            <div className="flex items-center gap-1.5 py-2 text-[11px] text-content-subtle">
+            <div className="flex items-center gap-1.5 py-2 [font-size:var(--right-panel-font-size)] text-content-subtle">
               <IconLoader2 size={12} className="animate-spin" />
               读取状态…
             </div>
           ) : !status || (status.files.length === 0) ? (
-            <div className="flex items-center gap-1.5 py-2 text-[11px] text-content-subtle">
+            <div className="flex items-center gap-1.5 py-2 [font-size:var(--right-panel-font-size)] text-content-subtle">
               <IconCheck size={12} className="text-accent" />
               工作区干净
             </div>
@@ -322,38 +323,28 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       <Dialog.Root open={pendingDiscard !== null} onOpenChange={(open) => { if (!open) setPendingDiscard(null); }}>
         <Dialog.Portal>
           <Dialog.Backdrop />
-          <Dialog.Popup>
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-danger/10 text-danger">
-                <IconAlertTriangle size={18} />
-              </div>
-              <div className="flex-1">
-                <Dialog.Title className="text-sm font-semibold text-content">
-                  放弃更改?
-                </Dialog.Title>
-                <Dialog.Description className="mt-1 text-xs text-content-muted">
+          <Dialog.Popup className="w-[360px] max-w-[90vw] p-4">
+            <div className="flex items-start gap-3 pr-6">
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-danger/10 text-danger">
+                <IconAlertTriangle size={16} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <Dialog.Title>放弃更改?</Dialog.Title>
+                <Dialog.Description className="mt-1">
                   将放弃 {pendingDiscard?.length ?? 0} 个文件的本地更改,此操作不可撤销。
                 </Dialog.Description>
               </div>
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setPendingDiscard(null)}
-                className="rounded-md px-3 py-1.5 text-xs text-content-muted transition-colors hover:bg-surface-hover"
-              >
+              <Button variant="ghost" size="sm" onClick={() => setPendingDiscard(null)}>
                 取消
-              </button>
-              <button
-                type="button"
-                onClick={handleDiscard}
-                disabled={busy !== null}
-                className="flex items-center gap-1 rounded-md bg-danger px-3 py-1.5 text-xs text-surface transition-colors hover:brightness-110 disabled:opacity-50"
-              >
+              </Button>
+              <Button variant="danger" size="sm" onClick={handleDiscard} disabled={busy !== null}>
                 {busy === "commit" ? <IconLoader2 size={12} className="animate-spin" /> : <IconTrash size={12} />}
                 放弃更改
-              </button>
+              </Button>
             </div>
+            <Dialog.Close />
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
@@ -381,10 +372,32 @@ function CommitBox({
   const commitGenModel = useSessionStore((s) => s.commitGenModel);
   const commitGenPrompt = useSessionStore((s) => s.commitGenPrompt);
   const [generating, setGenerating] = useState(false);
+  // Maximize/preview panel - opened when the commit message overflows the
+  // 3-row cap, so the user can edit the full text comfortably.
+  const [previewOpen, setPreviewOpen] = useState(false);
+
+  // ── Auto-grow textarea: 1 row by default, up to MAX_ROWS, then cap and
+  //    surface a "maximize" affordance. Measured from scrollHeight so soft-
+  //    wraps count as visual rows, not just explicit newlines. ──
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const [overflowed, setOverflowed] = useState(false);
+  const MAX_ROWS = 3;
+  useLayoutEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    // Reset to auto so scrollHeight reflects the full content height.
+    ta.style.height = "auto";
+    const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 18;
+    const contentRows = Math.round(ta.scrollHeight / lineHeight);
+    const visibleRows = Math.min(Math.max(contentRows, 1), MAX_ROWS);
+    // Floor at the 36px base height so single-line never collapses below it.
+    ta.style.height = `${Math.max(visibleRows * lineHeight, 36)}px`;
+    setOverflowed(contentRows > MAX_ROWS);
+  }, [value]);
 
   const handleGenerate = async () => {
     if (generating || disabled) return;
-    // commitGenModel is stored as "configId:roleKey" — split it back.
+    // commitGenModel is stored as "configId:roleKey" - split it back.
     let customModelId: string | null = null;
     let customModelRole: string | null = null;
     if (commitGenModel) {
@@ -396,7 +409,7 @@ function CommitBox({
         customModelId = commitGenModel;
       }
     }
-    if (!customModelId) return; // no model configured — no-op
+    if (!customModelId) return; // no model configured - no-op
 
     setGenerating(true);
     try {
@@ -418,51 +431,74 @@ function CommitBox({
     }
   };
 
+  // Ctrl/Cmd+Enter commits (Enter itself inserts a newline, as expected in a
+  // multi-line field). Shared by the inline textarea and the preview panel.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && value.trim() && !disabled) {
+      e.preventDefault();
+      onCommit("commit");
+    }
+  };
+
   return (
-    <div className="my-2 flex gap-1.5">
-      {/* Input with an inline generate icon on the right. The icon sits
-          inside a relative wrapper so it overlays the input's right padding. */}
-      <div className="relative min-w-0 flex-1">
-        <input
-          type="text"
+    <div className="my-2 space-y-1.5">
+      {/* Textarea with inline generate + maximize icons at the top-right. */}
+      <div className="relative">
+        <textarea
+          ref={taRef}
+          rows={1}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && value.trim() && !disabled) {
-              void onCommit("commit");
-            }
-          }}
-          placeholder="提交信息…"
+          onKeyDown={handleKeyDown}
+          placeholder="提交信息…  (Ctrl+Enter 提交)"
           disabled={disabled || generating}
-          className="w-full rounded-md border border-edge-input bg-surface py-1 pl-2 pr-7 text-[11px] text-content outline-none focus:border-accent disabled:opacity-50"
+          className="w-full resize-none rounded-md border border-edge-input bg-surface py-1 pl-2 pr-14 [font-size:var(--right-panel-font-size)] leading-relaxed text-content outline-none focus:border-accent disabled:opacity-50 min-h-[36px]"
         />
-        {/* Generate icon — only shows when a model is configured. */}
-        {commitGenModel && (
-          <button
-            type="button"
-            onClick={handleGenerate}
-            disabled={disabled || generating}
-            title="使用 AI 生成提交信息"
-            className={cn(
-              "absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-content-subtle transition-colors",
-              "hover:bg-surface-hover hover:text-accent disabled:opacity-40",
-            )}
-          >
-            {generating ? (
-              <IconLoader2 size={12} className="animate-spin" />
-            ) : (
-              <IconSparkles size={12} />
-            )}
-          </button>
-        )}
+        {/* Top-right icon row: AI generate (when configured) + maximize
+            (when the content overflows the 3-row cap). Horizontal so a single
+            row still fits both icons without overflowing. */}
+        <div className="absolute right-1 top-1 flex items-center gap-0.5">
+          {commitGenModel && (
+            <button
+              type="button"
+              onClick={handleGenerate}
+              disabled={disabled || generating}
+              title="使用 AI 生成提交信息"
+              className={cn(
+                "flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors",
+                "hover:bg-surface-hover hover:text-accent disabled:opacity-40",
+              )}
+            >
+              {generating ? (
+                <IconLoader2 size={12} className="animate-spin" />
+              ) : (
+                <IconSparkles size={12} />
+              )}
+            </button>
+          )}
+          {overflowed && (
+            <button
+              type="button"
+              onClick={() => setPreviewOpen(true)}
+              title="展开编辑"
+              className="flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+            >
+              <IconMaximize size={12} />
+            </button>
+          )}
+        </div>
       </div>
-      {/* Split button: main "提交" + dropdown for commit+push / commit+sync. */}
-      <div className="flex shrink-0 overflow-hidden rounded-md">
+
+      {/* Commit split button - main "提交" fills the row, with the dropdown
+          trigger spliced on the right (shared rounded corners). Main action
+          stays a raw button so the two pieces visually fuse; the Menu
+          interaction is unchanged. */}
+      <div className="flex overflow-hidden rounded-md">
         <button
           type="button"
           onClick={() => onCommit("commit")}
           disabled={!value.trim() || disabled}
-          className="flex items-center gap-1 bg-accent px-2 py-1 text-[11px] text-surface transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle"
+          className="flex flex-1 items-center justify-center gap-1 bg-accent px-2 py-1 [font-size:var(--right-panel-font-size)] text-surface transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle"
         >
           {busy ? <IconLoader2 size={11} className="animate-spin" /> : <IconGitCommit size={11} />}
           提交
@@ -470,43 +506,84 @@ function CommitBox({
         <Menu.Root>
           <Menu.Trigger
             disabled={!value.trim() || disabled}
-            className="flex items-center bg-accent px-1 text-surface transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle"
+            className="flex items-center bg-accent px-1.5 text-surface transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle"
           >
             <IconChevronDown size={12} />
           </Menu.Trigger>
-          <Menu.Portal>
-            <Menu.Positioner side="top" align="end" sideOffset={4}>
-              <Menu.Popup
-                className={cn(
-                  "z-50 min-w-[160px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
-                  "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
-                  "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
-                  "transition-[transform,opacity] duration-100",
-                )}
+            <Menu.Portal>
+              <Menu.Positioner side="top" align="end" sideOffset={4}>
+                <Menu.Popup
+                  className={cn(
+                    "z-50 min-w-[160px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
+                    "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+                    "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+                    "transition-[transform,opacity] duration-100",
+                  )}
+                >
+                  <Menu.Item
+                    onClick={() => onCommit("commit")}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left [font-size:var(--right-panel-font-size)] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+                  >
+                    提交
+                  </Menu.Item>
+                  <Menu.Item
+                    onClick={() => onCommit("push")}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left [font-size:var(--right-panel-font-size)] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+                  >
+                    提交并推送
+                  </Menu.Item>
+                  <Menu.Item
+                    onClick={() => onCommit("sync")}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left [font-size:var(--right-panel-font-size)] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+                  >
+                    提交并同步
+                  </Menu.Item>
+                </Menu.Popup>
+              </Menu.Positioner>
+            </Menu.Portal>
+          </Menu.Root>
+        </div>
+
+      {/* ── Maximize / preview panel ──
+          A lightweight Dialog with a large editable textarea bound to the same
+          `value`/`onChange`, so edits sync back to the inline field on close. */}
+      <Dialog.Root open={previewOpen} onOpenChange={setPreviewOpen}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup className="w-[480px] max-w-[90vw] p-4">
+            <Dialog.Title>编辑提交信息</Dialog.Title>
+            <Dialog.Description className="mt-1">
+              在此完整编辑提交信息,Ctrl+Enter 可直接提交。
+            </Dialog.Description>
+            <textarea
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              onKeyDown={handleKeyDown}
+              rows={10}
+              autoFocus
+              className="mt-3 w-full resize-y rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-xs leading-relaxed text-content outline-none focus:border-accent"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setPreviewOpen(false)}>
+                完成
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={!value.trim() || disabled}
+                onClick={() => {
+                  setPreviewOpen(false);
+                  onCommit("commit");
+                }}
               >
-                <Menu.Item
-                  onClick={() => onCommit("commit")}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
-                >
-                  提交
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => onCommit("push")}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
-                >
-                  提交并推送
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => onCommit("sync")}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
-                >
-                  提交并同步
-                </Menu.Item>
-              </Menu.Popup>
-            </Menu.Positioner>
-          </Menu.Portal>
-        </Menu.Root>
-      </div>
+                <IconGitCommit size={12} />
+                提交
+              </Button>
+            </div>
+            <Dialog.Close />
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -576,7 +653,7 @@ function FileGroup({
         <button
           type="button"
           onClick={() => setCollapsed((v) => !v)}
-          className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-content-subtle"
+          className="flex items-center gap-1 [font-size:var(--rp-fs-xxs)] font-medium uppercase tracking-wide text-content-subtle"
         >
           {collapsed ? <IconChevronRight size={10} /> : <IconChevronDown size={10} />}
           {label} ({files.length})
@@ -585,7 +662,7 @@ function FileGroup({
           type="button"
           onClick={onBulkAction}
           disabled={busy}
-          className="ml-auto rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40"
+          className="ml-auto rounded px-1.5 py-0.5 [font-size:var(--rp-fs-xxs)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40"
         >
           {bulkActionLabel}
         </button>
@@ -688,11 +765,11 @@ function FileRow({
           title={absPath}
         >
           <StatusCodeIcon code={code} />
-          <span className="truncate font-mono text-[11px] text-content-muted">{file.path}</span>
+          <span className="truncate font-mono [font-size:var(--right-panel-font-size)] text-content-muted">{file.path}</span>
         </button>
         {/* +/- tally badge — hidden on hover so the action buttons have room. */}
         {diffTally && (diffTally.adds > 0 || diffTally.dels > 0) && (
-          <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] tabular-nums group-hover:opacity-0">
+          <span className="flex shrink-0 items-center gap-0.5 font-mono [font-size:var(--rp-fs-xxs)] tabular-nums group-hover:opacity-0">
             {diffTally.adds > 0 && <span className="text-accent">+{diffTally.adds}</span>}
             {diffTally.dels > 0 && <span className="text-danger">−{diffTally.dels}</span>}
           </span>
@@ -745,14 +822,14 @@ function FileRow({
           >
             <ContextMenu.Item
               onClick={handleClick}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left [font-size:var(--right-panel-font-size)] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
             >
               <IconEye size={12} />
               查看 Diff
             </ContextMenu.Item>
             <ContextMenu.Item
               onClick={() => openFileInIde(absPath)}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left [font-size:var(--right-panel-font-size)] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted"
             >
               <IconGitCommit size={12} />
               查看源文件
@@ -760,7 +837,7 @@ function FileRow({
             {!staged && onDiscard && (
               <ContextMenu.Item
                 onClick={() => onDiscard([file.path])}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-danger outline-none select-none data-[highlighted]:bg-danger/10"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left [font-size:var(--right-panel-font-size)] text-danger outline-none select-none data-[highlighted]:bg-danger/10"
               >
                 <IconTrash size={12} />
                 放弃更改…
@@ -816,7 +893,7 @@ function StatusCodeIcon({ code }: { code: GitFileStatus["index"] }) {
     code === "modified" || code === "renamed" || code === "copied" ? "text-warning" :
     code === "deleted" ? "text-danger" : "text-content-subtle";
   return (
-    <span className={cn("w-3 shrink-0 text-center font-mono text-[10px] font-bold", color)} title={code}>
+    <span className={cn("w-3 shrink-0 text-center font-mono [font-size:var(--rp-fs-xxs)] font-bold", color)} title={code}>
       {label}
     </span>
   );

@@ -3,12 +3,13 @@ import { cn } from "@renderer/lib/cn.js";
 import { useTheme } from "@renderer/lib/theme.js";
 import { api } from "@renderer/lib/api.js";
 import { hexToTriplet, tripletToHex } from "@renderer/lib/colorUtils.js";
-import { useSessionStore, CHAT_FONT_SIZE_MIN, CHAT_FONT_SIZE_MAX } from "@renderer/stores/sessionStore.js";
+import { useSessionStore, CHAT_FONT_SIZE_MIN, CHAT_FONT_SIZE_MAX, RIGHT_PANEL_FONT_SIZE_MIN, RIGHT_PANEL_FONT_SIZE_MAX } from "@renderer/stores/sessionStore.js";
 import { Button, Select } from "@renderer/components/ui/index.js";
 import { IconRefresh } from "@renderer/lib/icons.js";
 import type { ThemeName } from "@contracts/theme";
 import { DISPLAY_MODE_SETTING_KEY, type DisplayMode } from "@contracts/ipc";
 import { SettingRow } from "./SettingRow.js";
+import { FontSizeStepper } from "./FontSizeStepper.js";
 
 /**
  * Appearance settings — a flat, one-row-per-feature list.
@@ -70,6 +71,10 @@ export function AppearancePanel() {
   // ── Chat font size ──
   const chatFontSize = useSessionStore((s) => s.chatFontSize);
   const setChatFontSize = useSessionStore((s) => s.setChatFontSize);
+
+  // ── Side-panel (left bar + right panel) font size ──
+  const rightPanelFontSize = useSessionStore((s) => s.rightPanelFontSize);
+  const setRightPanelFontSize = useSessionStore((s) => s.setRightPanelFontSize);
 
   // ── User message bg color ──
   const userMessageColor = useSessionStore((s) => s.userMessageColor);
@@ -186,25 +191,34 @@ export function AppearancePanel() {
           </Select.Root>
         </SettingRow>
 
+        {/* ── Side-panel font size (left bar + right panel) ── */}
+        <SettingRow
+          title="侧边栏字体大小"
+          desc={`统一设置左侧项目栏与右侧文件树、Git、终端的字体大小(${RIGHT_PANEL_FONT_SIZE_MIN}–${RIGHT_PANEL_FONT_SIZE_MAX} px)。`}
+          htmlFor="setting-sidepanel-fontsize"
+        >
+          <FontSizeStepper
+            id="setting-sidepanel-fontsize"
+            value={rightPanelFontSize}
+            min={RIGHT_PANEL_FONT_SIZE_MIN}
+            max={RIGHT_PANEL_FONT_SIZE_MAX}
+            onChange={(px) => void setRightPanelFontSize(px)}
+          />
+        </SettingRow>
+
         {/* ── Chat font size ── */}
         <SettingRow
           title="聊天字体大小"
           desc={`自定义聊天内容的字体大小(${CHAT_FONT_SIZE_MIN}–${CHAT_FONT_SIZE_MAX} px)。`}
           htmlFor="setting-fontsize"
         >
-          <input
+          <FontSizeStepper
             id="setting-fontsize"
-            type="range"
+            value={chatFontSize}
             min={CHAT_FONT_SIZE_MIN}
             max={CHAT_FONT_SIZE_MAX}
-            step={1}
-            value={chatFontSize}
-            onChange={(e) => void setChatFontSize(Number(e.target.value))}
-            className="h-1.5 w-28 cursor-pointer appearance-none rounded-full bg-surface-hover accent-accent"
+            onChange={(px) => void setChatFontSize(px)}
           />
-          <span className="w-10 text-right text-[11px] tabular-nums text-content-muted">
-            {chatFontSize}px
-          </span>
         </SettingRow>
 
         {/* ── User message background color ── */}

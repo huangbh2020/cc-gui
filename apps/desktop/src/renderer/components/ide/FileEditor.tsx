@@ -47,14 +47,20 @@ export function FileEditor({
   const editorMode = useSessionStore((s) => s.ideEditorMode);
   const setEditorMode = useSessionStore((s) => s.setIdeEditorMode);
 
-  // Resolve the before-snapshot for diff mode. Two sources, checked in order:
-  //  1. Git panel — the active project's gitDiffByProject bucket (working-tree
+  // Resolve the before-snapshot for diff mode. Three sources, in priority:
+  //  1. Turn-files card override - the card's frozen `before` (passed when
+  //     the user clicks a file to review). Works for HISTORICAL turns whose
+  //     snapshot is gone from turnFilesBySession.
+  //  2. Git panel - the active project's gitDiffByProject bucket (working-tree
   //     or history click). History pairs also carry an explicit `after` blob.
-  //  2. Turn-files — the active session's latest-turn snapshot (the agent
-  //     edited the file, or the user clicked 审查 on a turn-files card).
+  //  3. Turn-files - the active session's latest-turn snapshot (the agent
+  //     edited the file, or the user clicked 审查 on the latest turn's card).
   const turnFile = useTurnFileFor(filePath);
   const gitPair = useGitDiffPair(filePath);
-  const diffBefore = gitPair?.before ?? turnFile?.before;
+  const diffBeforeOverride = useSessionStore((s) =>
+    pid ? s.ideDiffBeforeByProject[pid]?.[filePath] : undefined,
+  );
+  const diffBefore = diffBeforeOverride ?? gitPair?.before ?? turnFile?.before;
   const diffAfter = gitPair?.after;
   // History diffs are pure blobs — don't offer switching into the live editor,
   // which would show unrelated working-tree content.
@@ -391,10 +397,20 @@ function DiffPane({
       options={{
         readOnly: true,
         renderSideBySide: true,
+        // Center column is often <900px (chat | editor split). Monaco's default
+        // then collapses side-by-side into inline mode, which paints TWO line-
+        // number gutters (original | modified) on a single pane — looks like a
+        // duplicated 行号栏. Keep true side-by-side regardless of width.
+        useInlineViewWhenSpaceIsLimited: false,
         minimap: { enabled: false },
         fontSize: 12,
         scrollBeyondLastLine: false,
         automaticLayout: true,
+        // Slim gutters: no breakpoint glyph column, tighter line-number width.
+        glyphMargin: false,
+        folding: false,
+        lineDecorationsWidth: 8,
+        lineNumbersMinChars: 3,
         scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
       }}
     />

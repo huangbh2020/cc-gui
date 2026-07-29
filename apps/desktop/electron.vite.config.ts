@@ -22,7 +22,9 @@ export default defineConfig({
         // contracts is a workspace source package — bundle it into main.
         // sql.js (asm.js build) is externalized and required at runtime like
         // electron/zod — its ~6MB asm.js file is too large to inline cleanly.
-        external: ["electron", "zod", "sql.js", /^sql\.js\//],
+        // node-pty is a native addon — must load from node_modules at runtime
+        // (never bundle the .node binary into the main chunk).
+        external: ["electron", "zod", "sql.js", /^sql\.js\//, "node-pty"],
       },
     },
     resolve: {

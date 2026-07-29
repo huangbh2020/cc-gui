@@ -29,11 +29,15 @@ export function DiffView({ diff }: { diff: ReturnType<typeof lineDiff> }) {
   return (
     <div className="overflow-x-auto rounded bg-surface/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]">
       {rows.map((d, i) => {
+        // Fixed red/green diff colors that don't shift with the theme - the
+        // accent/danger tokens change between light/dark (and track the
+        // accent hue), but diff added/removed lines read best as stable,
+        // conventional red vs green in both themes.
         const opBg =
           d.op === "delete"
-            ? "bg-danger/15 text-danger"
+            ? "bg-red-500/15 text-red-600"
             : d.op === "insert"
-            ? "bg-accent/15 text-accent"
+            ? "bg-green-500/15 text-green-600"
             : "text-content-muted";
         return (
           <div key={i} className={cn("flex items-start whitespace-pre", opBg)}>

@@ -59,7 +59,7 @@ export function FileTree({ projectPath }: { projectPath: string }) {
 
   if (loading) {
     return (
-      <div className="flex items-center gap-1.5 px-3 py-2 text-[11px] text-content-subtle">
+      <div className="flex items-center gap-1.5 px-3 py-2 text-content-subtle [font-size:var(--rp-fs-xs)]">
         <IconLoader2 size={12} className="animate-spin" />
         读取目录…
       </div>
@@ -68,14 +68,14 @@ export function FileTree({ projectPath }: { projectPath: string }) {
 
   if (entries.length === 0) {
     return (
-      <div className="px-3 py-2 text-[11px] text-content-subtle">
+      <div className="px-3 py-2 text-content-subtle [font-size:var(--rp-fs-xs)]">
         空目录
       </div>
     );
   }
 
   return (
-    <div className="py-1 text-xs">
+    <div className="py-1 [font-size:var(--right-panel-font-size)]">
       {entries.map((e) => (
         <TreeNode key={e.path} entry={e} depth={0} projectPath={projectPath} />
       ))}

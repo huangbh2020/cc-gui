@@ -32,6 +32,14 @@ export function applyChatFontSize(px: number): void {
   document.documentElement.style.setProperty("--chat-font-size", `${px}px`);
 }
 
+/** Write the right-panel base font size as `--right-panel-font-size` on
+ *  <html>. The derived `--rp-fs-sm/xs/xxs` variants (defined in styles.css
+ *  via calc) track this automatically. Also mirrored into the xterm
+ *  terminal fontSize directly from the store (see TerminalView). */
+export function applyRightPanelFontSize(px: number): void {
+  document.documentElement.style.setProperty("--right-panel-font-size", `${px}px`);
+}
+
 /** Write the user-message bg color (R G B triplet) as `--user-bubble` on
  *  <html>. Pass null to remove the override and fall back to the theme
  *  default defined in styles.css. */
@@ -76,4 +84,22 @@ export function useChatAppearance(): void {
   useEffect(() => {
     applyAccentColor(accentColor);
   }, [accentColor]);
+}
+
+/**
+ * Keep the right-panel font-size CSS var in sync with the session store.
+ * Mount once at the app root (alongside useChatAppearance). Re-runs whenever
+ * the store value changes (user dragged the slider in Settings), re-applying
+ * the var idempotently. The derived --rp-fs-* variants (calc'd in
+ * styles.css) track this base automatically.
+ *
+ * The xterm terminal consumes the store value directly (not the CSS var)
+ * since its fontSize is a JS option, not a style - see TerminalView.
+ */
+export function useRightPanelAppearance(): void {
+  const rightPanelFontSize = useSessionStore((s) => s.rightPanelFontSize);
+
+  useEffect(() => {
+    applyRightPanelFontSize(rightPanelFontSize);
+  }, [rightPanelFontSize]);
 }

@@ -87,7 +87,7 @@
 | **class-variance-authority** | ^0.7 | `cva()` variant 管理 |
 | **tailwind-merge** / **clsx** | ^3.6 / ^2.1 | 合并 Tailwind class 的 `cn()` 工具 |
 
-> **TanStack Router / Query、Lexical、Monaco、xterm、react-markdown** 等在总体方案中规划,但**当前尚未安装**。按阶段引入:P4(xterm/Monaco)、P5(浏览器)。组件库(`@base-ui/react`)和图标库(`@tabler/icons-react`)已安装可用。
+> **TanStack Router / Query、Lexical** 等在总体方案中规划,但**当前尚未安装**。Monaco / xterm / react-markdown / node-pty 已随 P4 引入。组件库(`@base-ui/react`)和图标库(`@tabler/icons-react`)已安装可用。
 
 ### 3.4 共享契约(packages/contracts)
 
@@ -215,6 +215,14 @@ Synara 拆独立 server 后用 WebSocket 通信(为多客户端/多 provider)。
 **解决**:`ClaudePathResolver` 不依赖 PATH,而是定位到真实入口 `cli-wrapper.cjs` 并用 `node` 启动;若只能用 `.cmd` 则 `shell: true`。
 
 ---
+
+## 六.x、集成终端 (node-pty + xterm)
+
+- **渲染层**: `@xterm/xterm` + `@xterm/addon-fit`（`TerminalPanel` / `TerminalView`）
+- **主进程**: `node-pty` 由 `TerminalManager` 持有；IPC 见 `terminal.create|write|resize|kill|list`，推送 `terminal:data` / `terminal:exit`
+- **安全**: create 的 `cwd` 必须落在已知 `Project.path` 内（`pathGuard`）
+- **原生模块**: `node-pty` 必须 external，不可打进 main bundle。开发机若 ABI 不匹配，在 `apps/desktop` 执行 `pnpm rebuild:native`（`electron-builder install-app-deps`）。Windows 需对应 Electron ABI 的 prebuild；pnpm 若忽略 build scripts，prebuild 目录仍可用。
+- **Shell 默认**: Win `pwsh → powershell → git-bash → cmd`；POSIX `$SHELL → bash → zsh → sh`。可用 settings key `terminal.shell` 覆盖。
 
 ## 七、版本与升级注意
 
@@ -369,6 +377,6 @@ RuntimeManager.emit()
 | P2 会话持久化 | sql.js(纯 JS SQLite) | ✅ 完成 |
 | P2.5 SDK 迁移 | @anthropic-ai/claude-agent-sdk / AgentProvider 抽象层 / ProviderRegistry / ApprovalBridge | ✅ 完成 |
 | P3 工具审批 | canUseTool 回调 → approval.request/approve IPC 桥(后端已通,前端审批 UI 待 P5 打磨) | ✅ 基础完成 |
-| P4 IDE 右栏 | xterm.js + node-pty / isomorphic-git / Monaco | ⬜ |
+| P4 IDE 右栏 | xterm.js + node-pty / simple-git / Monaco | 🟡 文件/Git/终端已实现；Browser 待 P5 |
 | P5 体验打磨 | react-markdown + remark / KaTeX / Cmd+K / 审批 UI 完善 | ⬜ |
 | P6 发布 | electron-builder / electron-updater / Vitest / Playwright | ⬜ |

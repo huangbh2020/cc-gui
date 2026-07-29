@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useDeferredValue, type ReactNode } from "react";
+import { memo, useState, useMemo, useDeferredValue, type ReactNode, type ComponentType } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconChevronDown,
@@ -10,6 +10,20 @@ import {
   IconClipboard,
   IconFile,
   IconCopy,
+  IconActivity,
+  // Tool-kind icons (left glyph of each action card).
+  IconBulb,
+  IconTerminal,
+  IconFileSearch,
+  IconFilePlus,
+  IconReplace,
+  IconNotebook,
+  IconSearch,
+  IconListCheck,
+  IconRobot,
+  IconWorldWww,
+  IconWorldSearch,
+  IconHelpCircle,
 } from "@renderer/lib/icons.js";
 import type { Block } from "@renderer/stores/sessionStore.js";
 import { Markdown } from "./Markdown.js";
@@ -53,7 +67,7 @@ const MessageBlocks = memo(function MessageBlocks({
     <div className="space-y-2">
       {segments.map((seg, i) =>
         seg.kind === "single" ? (
-          <BlockView key={i} block={seg.block} beforeMap={beforeMap} isStreamingTail={isStreamingTail} />
+          <BlockView key={i} block={seg.block} defaultOpen={seg.defaultOpen} beforeMap={beforeMap} isStreamingTail={isStreamingTail} />
         ) : (
           <ProceduralGroup key={i} blocks={seg.blocks} beforeMap={beforeMap} />
         ),
@@ -70,13 +84,23 @@ export type ThinkingBlock = Extract<Block, { kind: "thinking" }>;
  *  tools reads as one compact card, not a wall of cards. */
 export type ProceduralBlock = ThinkingBlock | ToolUseBlock;
 type Segment =
-  | { kind: "single"; block: Block }
+  | { kind: "single"; block: Block; defaultOpen?: boolean }
   | { kind: "procedural"; blocks: ProceduralBlock[] };
+
+/** Edit tool calls render INLINE in the stream (diff shown by default),
+ *  bypassing the "思考 + N 个操作" procedural-group collapse. Keeping them
+ *  flat makes the actual file changes immediately scannable instead of
+ *  buried two clicks deep. */
+function isInlineEditBlock(b: Block): boolean {
+  return b.kind === "tool_use" && b.toolName === "Edit";
+}
 
 /** Linear scan: collect consecutive thinking / tool_use blocks into a run.
  *  Any text or error block flushes the run (and renders as its own segment).
- *  Even a single tool_use with no surrounding text becomes a procedural
- *  group — that's the whole point: keep the prose stream clean. */
+ *  Edit tool calls are pulled OUT of the run and emitted as their own
+ *  single segment (default-open) so their diff shows inline. Even a single
+ *  non-Edit tool_use with no surrounding text becomes a procedural group -
+ *  that's the whole point: keep the prose stream clean. */
 function groupBlocks(blocks: Block[]): Segment[] {
   const out: Segment[] = [];
   let run: ProceduralBlock[] = [];
@@ -87,7 +111,12 @@ function groupBlocks(blocks: Block[]): Segment[] {
     }
   };
   for (const b of blocks) {
-    if (b.kind === "thinking" || b.kind === "tool_use") {
+    if (isInlineEditBlock(b)) {
+      // An inline Edit breaks the procedural run: flush whatever has
+      // accumulated, then emit the Edit as a standalone open segment.
+      flush();
+      out.push({ kind: "single", block: b, defaultOpen: true });
+    } else if (b.kind === "thinking" || b.kind === "tool_use") {
       run.push(b);
     } else {
       flush();
@@ -111,7 +140,10 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
-/** Status icon for tool calls: running→spinner, error→X, done→check. */
+/** Status icon for tool calls: running→spinner, error→X, done→nothing.
+ *  Success is the common case and doesn't need a green checkmark cluttering
+ *  every row; only surface a glyph when something is actually happening
+ *  (running) or went wrong (error). */
 function StatusIcon({ status }: { status: "running" | "done" | "error" }) {
   if (status === "running") {
     return <IconLoader2 size={12} className="animate-spin text-warning" />;
@@ -119,7 +151,7 @@ function StatusIcon({ status }: { status: "running" | "done" | "error" }) {
   if (status === "error") {
     return <IconX size={12} className="text-danger" />;
   }
-  return <IconCheck size={12} className="text-accent" />;
+  return null;
 }
 
 /** Collapsible box for a run of procedural blocks (thinking + tool calls).
@@ -169,10 +201,10 @@ export function ProceduralGroup({
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-1 py-1.5 text-left hover:bg-surface-muted/40"
+        className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/40"
       >
         <StatusIcon status={aggregateStatus} />
-        <IconTools size={14} className="shrink-0 text-content-muted" />
+        <IconActivity size={14} className="shrink-0 text-content-muted" />
         <span className="font-medium text-content-muted">{label}</span>
         {breakdown && <span className="truncate text-content-subtle">{breakdown}</span>}
         <Chevron open={open} />
@@ -418,7 +450,11 @@ function ToolCard({
   return <GenericToolCard block={block} defaultOpen={defaultOpen} />;
 }
 
-/** Edit tool card: line-level diff view, collapsed by default. */
+/** Edit tool card: line-level diff view. When rendered inline in the stream
+ *  (the default path - Edit blocks bypass the procedural-group collapse),
+ *  `defaultOpen` is true so the diff shows immediately; inside an expanded
+ *  ProceduralGroup it defaults to collapsed. The header stays clickable so the
+ *  user can still fold an individual edit out of the way. */
 function EditToolCard({
   filePath,
   oldString,
@@ -449,6 +485,7 @@ function EditToolCard({
         className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/50"
       >
         <StatusIcon status={status} />
+        <ToolIcon name="Edit" className="text-content-subtle" />
         <span className="font-medium text-content-muted">Edit</span>
         <span className="truncate font-mono text-content-subtle">{filePath}</span>
         <span className="ml-auto flex items-center gap-1.5 [font-size:var(--chat-fs-xxs)]">
@@ -523,6 +560,7 @@ function WriteToolCard({
         className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/50"
       >
         <StatusIcon status={status} />
+        <ToolIcon name="Write" className="text-content-subtle" />
         <span className="font-medium text-content-muted">Write</span>
         <span className="truncate font-mono text-content-subtle">{filePath}</span>
         <span className="ml-auto flex items-center gap-1.5 [font-size:var(--chat-fs-xxs)]">
@@ -580,6 +618,7 @@ function GenericToolCard({
         className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/50"
       >
         <StatusIcon status={block.status} />
+        <ToolIcon name={block.toolName} className="text-content-subtle" />
         <span className="font-medium text-content-muted">{block.toolName}</span>
         <span className="truncate text-content-subtle">{toolSummary(block.toolName, block.input)}</span>
         <Chevron open={open} />
@@ -626,6 +665,7 @@ function Collapsible({
         className="flex w-full items-center gap-2 py-1.5 text-left text-content-muted hover:bg-surface-muted/40"
       >
         <Chevron open={open} />
+        <IconBulb size={13} className="shrink-0 text-content-subtle" />
         <span className="font-medium text-content-muted">{label}</span>
         <span className="ml-1 truncate text-content-subtle">{hint}</span>
       </button>
@@ -643,6 +683,52 @@ function Collapsible({
 function summarize(text: string): string {
   const t = text.trim();
   return t.length > 60 ? t.slice(0, 60) + "…" : t;
+}
+
+/** Resolve a left-glyph icon for a tool-use block by its name. Unknown names
+ *  (incl. MCP `mcp__*` tools) fall back to the generic toolbox (`IconTools`).
+ *
+ *  Mapping rationale:
+ *   - Read / Glob   -> file-search (looking up files by path or pattern)
+ *   - Write         -> file-plus  (creating / overwriting a file)
+ *   - Edit          -> replace    (string-replace edit)
+ *   - MultiEdit     -> replace    (batched string-replace edits)
+ *   - NotebookEdit  -> notebook   (Jupyter notebook edit)
+ *   - Bash / shell  -> terminal   (command shell)
+ *   - Grep          -> search     (content search)
+ *   - TodoWrite et al -> list-check (task list)
+ *   - Task          -> robot      (subagent spawn)
+ *   - WebSearch     -> world-search
+ *   - WebFetch      -> world      (fetch a URL)
+ *   - AskUserQuestion -> help-circle
+ *   - Enter/ExitPlanMode -> clipboard (matches the plan card glyph)
+ *   - default       -> tools      (generic) */
+const TOOL_ICON_MAP: Record<string, ComponentType<{ size?: number; className?: string }>> = {
+  Read: IconFileSearch,
+  Glob: IconFileSearch,
+  Write: IconFilePlus,
+  Edit: IconReplace,
+  MultiEdit: IconReplace,
+  NotebookEdit: IconNotebook,
+  Bash: IconTerminal,
+  PowerShell: IconTerminal,
+  Grep: IconSearch,
+  TodoWrite: IconListCheck,
+  TaskCreate: IconListCheck,
+  TaskUpdate: IconListCheck,
+  Task: IconRobot,
+  WebSearch: IconWorldSearch,
+  WebFetch: IconWorldWww,
+  AskUserQuestion: IconHelpCircle,
+  EnterPlanMode: IconClipboard,
+  ExitPlanMode: IconClipboard,
+};
+
+/** The left-side glyph of an action card. Sized 13 to sit between the 12px
+ *  status icon and the label without dominating the row. */
+function ToolIcon({ name, className }: { name: string; className?: string }) {
+  const Icon = TOOL_ICON_MAP[name] ?? IconTools;
+  return <Icon size={13} className={cn("shrink-0", className)} />;
 }
 
 /** A one-line hint for common tools (Read/Edit/Bash etc.) shown on the card header. */

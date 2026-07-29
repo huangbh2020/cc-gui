@@ -86,10 +86,10 @@ export function LeftBar() {
   const archivedCount = archivedProjects.length + archivedGroups.reduce((n, g) => n + g.sessions.length, 0);
 
   return (
-    <div className="flex h-full flex-col px-2 py-2 text-sm">
+    <div className="flex h-full flex-col px-2 py-2 [font-size:var(--right-panel-font-size)]">
       {/* Header */}
       <div className="group mb-1 flex items-center justify-between px-1">
-        <h3 className="text-[13px] font-semibold uppercase tracking-wide text-content-subtle">
+        <h3 className="font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--rp-fs-md)]">
           项目
         </h3>
         <button
@@ -147,7 +147,7 @@ export function LeftBar() {
           <button
             onClick={() => setArchivedViewOpen(!archivedViewOpen)}
             className={cn(
-              "flex w-full items-center gap-1 rounded px-1 py-0.5 text-[13px] font-medium uppercase tracking-wide",
+              "flex w-full items-center gap-1 rounded px-1 py-0.5 font-medium uppercase tracking-wide [font-size:var(--rp-fs-md)]",
               "text-content-subtle transition-colors hover:bg-surface-muted/50",
             )}
           >
@@ -178,7 +178,7 @@ export function LeftBar() {
               {archivedGroups.map(({ project, sessions }) => (
                 <li key={project.id} className="mt-0.5">
                   {/* Group header: parent project name (non-interactive). */}
-                  <div className="flex items-center gap-1 px-1 py-0.5 text-[13px] text-content-subtle">
+                  <div className="flex items-center gap-1 px-1 py-0.5 text-content-subtle [font-size:var(--rp-fs-md)]">
                     <IconFolder size={12} className="opacity-50" />
                     <span className="truncate">{project.name}</span>
                   </div>
@@ -211,7 +211,7 @@ export function LeftBar() {
         <button
           onClick={() => setSettingsOpen(true)}
           className={cn(
-            "flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm text-content-muted transition-colors",
+            "flex w-full items-center gap-2 rounded px-2 py-1.5 text-content-muted transition-colors [font-size:var(--right-panel-font-size)]",
             "hover:bg-surface-muted hover:text-content",
           )}
           title="设置"
@@ -257,7 +257,7 @@ function ProjectNode(props: ProjectNodeProps) {
     <li>
       <div
         className={cn(
-          "group flex items-center gap-1 rounded px-1 py-1 text-sm",
+          "group flex items-center gap-1 rounded px-1 py-1 [font-size:var(--right-panel-font-size)]",
           isActiveProject
             ? "bg-surface-muted text-content"
             : "text-content-muted hover:bg-surface-muted/50",
@@ -309,7 +309,7 @@ function ProjectNode(props: ProjectNodeProps) {
       {expanded && (
         <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-edge/50 pl-2">
           {loaded === 0 ? (
-            <li className="px-2 py-1 text-[13px] text-content-subtle">暂无线程</li>
+            <li className="px-2 py-1 text-content-subtle [font-size:var(--rp-fs-md)]">暂无线程</li>
           ) : (
             sessions.map((s) => (
               <SessionRow
@@ -328,7 +328,7 @@ function ProjectNode(props: ProjectNodeProps) {
               <button
                 onClick={onLoadMore}
                 className={cn(
-                  "w-full rounded px-2 py-1 text-left text-[13px] text-content-subtle transition-colors",
+                  "w-full rounded px-2 py-1 text-left text-content-subtle transition-colors [font-size:var(--rp-fs-md)]",
                   "hover:bg-surface-muted/50 hover:text-accent",
                 )}
               >
@@ -365,7 +365,7 @@ function SessionRow({
     <li
       onClick={handleRowClick}
       className={cn(
-        "group flex cursor-pointer items-center gap-1 rounded-md px-1 py-1 text-sm",
+        "group flex cursor-pointer items-center gap-1 rounded-md px-1 py-1 [font-size:var(--right-panel-font-size)]",
         active
           ? "bg-surface-hover text-content shadow-sm ring-1 ring-accent/35"
           : "text-content-muted hover:bg-surface-muted/50",
@@ -486,7 +486,7 @@ function ArchivedRow({
   return (
     <li
       className={cn(
-        "flex items-center gap-1 rounded px-1 py-1 text-sm text-content-subtle",
+        "flex items-center gap-1 rounded px-1 py-1 text-content-subtle [font-size:var(--right-panel-font-size)]",
         "hover:bg-surface-muted/50",
       )}
     >
@@ -494,7 +494,7 @@ function ArchivedRow({
       <span className="min-w-0 flex-1 truncate">
         {title}
         {subtitle && (
-          <span className="ml-1 text-[12px] text-content-subtle/70">
+          <span className="ml-1 text-content-subtle/70 [font-size:var(--rp-fs-sm)]">
             · {subtitle}
           </span>
         )}
@@ -502,7 +502,7 @@ function ArchivedRow({
       <button
         onClick={(e) => { e.stopPropagation(); onRestore(); }}
         className={cn(
-          "shrink-0 rounded px-1 text-[12px] text-content-subtle transition-colors",
+          "shrink-0 rounded px-1 text-content-subtle transition-colors [font-size:var(--rp-fs-sm)]",
           "hover:text-accent",
         )}
         title="恢复到列表"
@@ -512,7 +512,7 @@ function ArchivedRow({
       <button
         onClick={(e) => { e.stopPropagation(); onDelete(); }}
         className={cn(
-          "shrink-0 rounded px-1 text-[12px] text-content-subtle transition-colors",
+          "shrink-0 rounded px-1 text-content-subtle transition-colors [font-size:var(--rp-fs-sm)]",
           "hover:text-danger",
         )}
         title="彻底删除"
