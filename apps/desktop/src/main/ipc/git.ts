@@ -286,7 +286,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
     }
   });
 
-  /* ── git:diff — unstaged diff of a single file ── */
+  /* ── git:diff — diff of a single file (staged or unstaged) ── */
   ipcMain.handle(IPC.GIT_DIFF, async (_evt, raw) => {
     const input = GitDiffSchema.parse(raw);
     if (!findContainingProject(input.repoPath)) {
@@ -294,7 +294,10 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
     }
     try {
       const git = simpleGit(input.repoPath);
-      const patch = await git.diff(["--", input.filePath]);
+      // --cached shows the staged diff (index vs HEAD); without it, the
+      // working-tree diff (index vs working tree) is shown.
+      const args = input.staged ? ["--cached", "--", input.filePath] : ["--", input.filePath];
+      const patch = await git.diff(args);
       return { patch };
     } catch (err) {
       log.warn(`git.diff failed for ${input.repoPath}/${input.filePath}: ${(err as Error).message}`);

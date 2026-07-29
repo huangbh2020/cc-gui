@@ -521,10 +521,14 @@ export const GitCommitSchema = z.object({
 });
 export type GitCommitInput = z.infer<typeof GitCommitSchema>;
 
-/** Diff of a single file (unstaged changes). `filePath` is relative to repo. */
+/** Diff of a single file. `filePath` is relative to repo. When `staged` is
+ *  true, diffs the index against HEAD (what will be committed); otherwise
+ *  diffs the working tree against the index (unstaged changes). */
 export const GitDiffSchema = z.object({
   repoPath: z.string(),
   filePath: z.string(),
+  /** If true, show staged (cached) diff — index vs HEAD. */
+  staged: z.boolean().optional(),
 });
 export type GitDiffInput = z.infer<typeof GitDiffSchema>;
 

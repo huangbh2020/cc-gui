@@ -22,6 +22,8 @@ import {
   IconDotsVertical,
   IconTrash,
   IconEye,
+  IconPlus,
+  IconMinus,
 } from "@renderer/lib/icons.js";
 
 /**
@@ -100,6 +102,28 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         repoPath: repo.path,
         filePaths: staged.map((f) => f.path),
       });
+      if (!res.ok) setError(res.error ?? "取消暂存失败");
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleSingleStage = async (filePath: string) => {
+    setBusy("commit");
+    try {
+      const res = await api.git.stage({ repoPath: repo.path, filePaths: [filePath] });
+      if (!res.ok) setError(res.error ?? "暂存失败");
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleSingleUnstage = async (filePath: string) => {
+    setBusy("commit");
+    try {
+      const res = await api.git.unstage({ repoPath: repo.path, filePaths: [filePath] });
       if (!res.ok) setError(res.error ?? "取消暂存失败");
       await refresh();
     } finally {
@@ -237,20 +261,8 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
           </div>
         ) : (
           <>
-            {/* 已暂存 group (top) */}
-            {hasStaged && (
-              <FileGroup
-                label="已暂存"
-                files={staged}
-                repoPath={repo.path}
-                staged
-                onBulkAction={handleUnstageAll}
-                bulkActionLabel="全部取消"
-                busy={busy !== null}
-              />
-            )}
-
-            {/* Commit box (below staged) */}
+            {/* Commit box (above staged, so the user writes the message first
+                then reviews what's staged before committing). */}
             {hasStaged && (
               <CommitBox
                 value={commitMsg}
@@ -261,7 +273,22 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
               />
             )}
 
-            {/* 更改 group (bottom) */}
+            {/* 已暂存 group */}
+            {hasStaged && (
+              <FileGroup
+                label="已暂存"
+                files={staged}
+                repoPath={repo.path}
+                staged
+                onBulkAction={handleUnstageAll}
+                bulkActionLabel="全部取消"
+                busy={busy !== null}
+                onSingleUnstage={(path) => void handleSingleUnstage(path)}
+                onSingleDiscard={undefined}
+              />
+            )}
+
+            {/* 更改 group */}
             {hasUnstaged && (
               <div className={hasStaged ? "mt-2" : ""}>
                 <FileGroup
@@ -272,6 +299,8 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
                   bulkActionLabel="全部暂存"
                   busy={busy !== null}
                   onDiscard={(paths) => setPendingDiscard(paths)}
+                  onSingleStage={(path) => void handleSingleStage(path)}
+                  onSingleDiscard={(path) => setPendingDiscard([path])}
                 />
               </div>
             )}
@@ -449,6 +478,9 @@ function FileGroup({
   bulkActionLabel,
   busy,
   onDiscard,
+  onSingleStage,
+  onSingleUnstage,
+  onSingleDiscard,
 }: {
   label: string;
   files: GitFileStatus[];
@@ -458,6 +490,9 @@ function FileGroup({
   bulkActionLabel: string;
   busy: boolean;
   onDiscard?: (paths: string[]) => void;
+  onSingleStage?: (filePath: string) => void;
+  onSingleUnstage?: (filePath: string) => void;
+  onSingleDiscard?: (filePath: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   return (
@@ -489,6 +524,9 @@ function FileGroup({
               repoPath={repoPath}
               staged={staged}
               onDiscard={onDiscard}
+              onSingleStage={onSingleStage}
+              onSingleUnstage={onSingleUnstage}
+              onSingleDiscard={onSingleDiscard}
             />
           ))}
         </div>
@@ -504,22 +542,27 @@ function FileRow({
   repoPath,
   staged,
   onDiscard,
+  onSingleStage,
+  onSingleUnstage,
+  onSingleDiscard,
 }: {
   file: GitFileStatus;
   repoPath: string;
   staged?: boolean;
   onDiscard?: (paths: string[]) => void;
+  onSingleStage?: (filePath: string) => void;
+  onSingleUnstage?: (filePath: string) => void;
+  onSingleDiscard?: (filePath: string) => void;
 }) {
   const openFileInIde = useSessionStore((s) => s.openFileInIde);
   const setGitDiffBefore = useSessionStore((s) => s.setGitDiffBefore);
-  const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
   const [diffTally, setDiffTally] = useState<{ adds: number; dels: number } | null>(null);
 
   const absPath = joinPath(repoPath, file.path);
   const code = staged ? file.index : file.workingTree;
 
-  // Async-load the +/- tally for this file (only for modified/added/deleted,
-  // not untracked — untracked has no diff to show).
+  // Async-load the +/- tally for this file. For staged files we diff against
+  // HEAD (what will be committed); for unstaged we diff the working tree.
   useEffect(() => {
     if (code === "untracked" || code === "unmodified") {
       setDiffTally(null);
@@ -527,7 +570,7 @@ function FileRow({
     }
     let cancelled = false;
     api.git
-      .diff({ repoPath, filePath: file.path })
+      .diff({ repoPath, filePath: file.path, staged: !!staged })
       .then(({ patch }) => {
         if (cancelled || !patch) return;
         const { before, after } = parsePatchToBeforeAfter(patch);
@@ -538,24 +581,20 @@ function FileRow({
     return () => {
       cancelled = true;
     };
-  }, [repoPath, file.path, code]);
+  }, [repoPath, file.path, code, staged]);
 
-  // Click → open in center editor with diff.
+  // Click → open in center editor with diff. Fetches the appropriate diff
+  // (staged vs HEAD for staged files, working tree for unstaged), stashes
+  // the "before" content, and opens the file in diff mode.
   const handleClick = async () => {
-    // For staged files there's no unstaged diff; just open in edit mode.
-    if (staged) {
-      openFileInIde(absPath);
-      return;
-    }
-    // Unstaged: fetch diff, stash the before content, open in diff mode.
     try {
-      const { patch } = await api.git.diff({ repoPath, filePath: file.path });
+      const { patch } = await api.git.diff({ repoPath, filePath: file.path, staged: !!staged });
       if (patch) {
         const { before } = parsePatchToBeforeAfter(patch);
         setGitDiffBefore(absPath, before);
       }
     } catch {
-      // fall through — open in edit mode
+      // fall through — open in edit mode if diff fetch fails
     }
     openFileInIde(absPath, { diff: true });
   };
@@ -576,13 +615,48 @@ function FileRow({
           <StatusCodeIcon code={code} />
           <span className="truncate font-mono text-[11px] text-content-muted">{file.path}</span>
         </button>
-        {/* +/- tally badge */}
+        {/* +/- tally badge — hidden on hover so the action buttons have room. */}
         {diffTally && (diffTally.adds > 0 || diffTally.dels > 0) && (
-          <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] tabular-nums">
+          <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] tabular-nums group-hover:opacity-0">
             {diffTally.adds > 0 && <span className="text-accent">+{diffTally.adds}</span>}
             {diffTally.dels > 0 && <span className="text-danger">−{diffTally.dels}</span>}
           </span>
         )}
+        {/* Hover action buttons — appear on hover, replacing the tally badge. */}
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          {/* Staged files: unstage button. Unstaged: stage button. */}
+          {staged ? (
+            <RowActionIcon
+              icon={<IconMinus size={11} />}
+              title="取消暂存"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSingleUnstage?.(file.path);
+              }}
+            />
+          ) : (
+            <RowActionIcon
+              icon={<IconPlus size={11} />}
+              title="暂存"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSingleStage?.(file.path);
+              }}
+            />
+          )}
+          {/* Discard — only for unstaged files (staged files can be unstaged first). */}
+          {!staged && onSingleDiscard && (
+            <RowActionIcon
+              icon={<IconTrash size={11} />}
+              title="放弃更改"
+              danger
+              onClick={(e) => {
+                e.stopPropagation();
+                onSingleDiscard(file.path);
+              }}
+            />
+          )}
+        </div>
       </ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Positioner>
@@ -621,6 +695,34 @@ function FileRow({
         </ContextMenu.Positioner>
       </ContextMenu.Portal>
     </ContextMenu.Root>
+  );
+}
+
+/** A tiny icon button shown on file-row hover. */
+function RowActionIcon({
+  icon,
+  title,
+  onClick,
+  danger,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  onClick: (e: React.MouseEvent) => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={cn(
+        "flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors",
+        "hover:bg-surface-hover",
+        danger ? "hover:text-danger" : "hover:text-content",
+      )}
+    >
+      {icon}
+    </button>
   );
 }
 
