@@ -12,7 +12,7 @@ import {
  * Composer-area tool-approval card.
  *
  * Sits inside the composer's width-constrained wrapper, so it inherits the
- * same `px-8` + `mx-auto max-w-5xl` column as the input box — i.e. exactly
+ * same `px-[var(--chat-gutter)]` + `mx-auto max-w-5xl` column as the input box - i.e. exactly
  * as wide as the composer. The composer is disabled and pointer-blocked by
  * the parent while a decision is pending, so the user can't type a
  * competing prompt (matches Claude Code's own UI, which gates the input on

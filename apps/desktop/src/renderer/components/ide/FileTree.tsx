@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
+import { dirname } from "@renderer/lib/path.js";
 import type { FileTreeEntry } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -17,6 +18,16 @@ import {
 /** Stable empty array for the expanded-dirs selector (Zustand Object.is). */
 const EMPTY_EXPANDED: string[] = [];
 
+/**
+ * Registry of mounted file-node DOM buttons, keyed by absolute file path.
+ * The FileTree root owns the Map and exposes a ref callback via context so
+ * every FileNodeRow can register/unregister itself. Used by the reveal
+ * effect to scrollIntoView the active file's node once it mounts (which may
+ * be delayed while ancestor directories lazily load their children).
+ */
+type FileNodeRegister = (path: string, el: HTMLButtonElement | null) => void;
+const FileNodeRegistryContext = createContext<FileNodeRegister | null>(null);
+
 /* ───────────────────────── FileTree root ───────────────────────── */
 
 /**
@@ -30,8 +41,14 @@ const EMPTY_EXPANDED: string[] = [];
  * what the agent just changed without scanning every node.
  */
 export function FileTree({ projectPath }: { projectPath: string }) {
+  const pid = useSessionStore((s) => s.activeProjectId);
+  const activeFile = useSessionStore((s) =>
+    pid ? s.ideActiveFileByProject[pid] ?? null : null,
+  );
+  const setDirExpanded = useSessionStore((s) => s.setDirExpanded);
+
   // Root-level listing. Refetched when the project root changes (different
-  // active session → different project).
+  // active session -> different project).
   const [entries, setEntries] = useState<FileTreeEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -57,6 +74,59 @@ export function FileTree({ projectPath }: { projectPath: string }) {
     };
   }, [projectPath]);
 
+  // Registry of mounted file-node buttons, used by the reveal effect below.
+  // useRef (not state) so register/unregister never triggers a re-render; the
+  // reveal effect polls it via rAF. Cleared implicitly on remount
+  // (key={projectPath} in FilesPanel).
+  const nodeMap = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const registerNode = useCallback((path: string, el: HTMLButtonElement | null) => {
+    if (el) nodeMap.current.set(path, el);
+    else nodeMap.current.delete(path);
+  }, []);
+
+  // Reveal the active file in the tree: expand its ancestor dirs (so the node
+  // mounts - DirNode only renders children when open) then scroll it into view.
+  // Ancestor expansion is an async chain (setDirExpanded -> re-render ->
+  // DirNode lazy-loads children -> child mounts), so we can't scroll
+  // synchronously; we poll the node registry across rAF frames until the node
+  // appears (or give up after ~500ms).
+  useEffect(() => {
+    if (!activeFile || !activeFile.startsWith(projectPath)) return;
+    // Build the ancestor dir chain from the file's dir up to (excluding) the
+    // project root. E.g. "D:/proj/src/sub/a.ts" + root "D:/proj" ->
+    // ["D:/proj/src", "D:/proj/src/sub"] (shallow-to-deep). We expand
+    // shallow-first so each level's lazy load can kick off in mount order.
+    const ancestors: string[] = [];
+    let dir = dirname(activeFile);
+    while (dir && dir !== projectPath) {
+      // Guard: if dirname stops making progress (filesystem root), stop.
+      ancestors.unshift(dir); // prepend -> shallowest first
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    for (const ancestor of ancestors) {
+      setDirExpanded(ancestor, true);
+    }
+
+    let frames = 0;
+    const MAX_FRAMES = 30; // ~500ms @60fps - enough for a few async dir loads
+    let raf = 0;
+    const tryScroll = () => {
+      const node = nodeMap.current.get(activeFile);
+      if (node) {
+        node.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+      if (++frames < MAX_FRAMES) {
+        raf = requestAnimationFrame(tryScroll);
+      }
+      // else: ancestors still loading after the budget - give up silently.
+    };
+    raf = requestAnimationFrame(tryScroll);
+    return () => cancelAnimationFrame(raf);
+  }, [activeFile, projectPath, setDirExpanded]);
+
   if (loading) {
     return (
       <div className="flex items-center gap-1.5 px-3 py-2 text-content-subtle [font-size:var(--rp-fs-xs)]">
@@ -75,11 +145,13 @@ export function FileTree({ projectPath }: { projectPath: string }) {
   }
 
   return (
-    <div className="py-1 [font-size:var(--right-panel-font-size)]">
-      {entries.map((e) => (
-        <TreeNode key={e.path} entry={e} depth={0} projectPath={projectPath} />
-      ))}
-    </div>
+    <FileNodeRegistryContext.Provider value={registerNode}>
+      <div className="py-1 [font-size:var(--right-panel-font-size)]">
+        {entries.map((e) => (
+          <TreeNode key={e.path} entry={e} depth={0} projectPath={projectPath} />
+        ))}
+      </div>
+    </FileNodeRegistryContext.Provider>
   );
 }
 
@@ -227,10 +299,15 @@ function FileNodeRow({
 }) {
   // Agent-touched marker: look up this file in the active session's turn-files.
   const turnFile = useAgentTouchedFile(path);
+  // Register this button with the FileTree's node registry so the reveal
+  // effect can scrollIntoView it once mounted (may be delayed while ancestor
+  // dirs lazily load). Null when rendered outside a FileTree (defensive).
+  const registerNode = useContext(FileNodeRegistryContext);
 
   return (
     <button
       type="button"
+      ref={registerNode ? (el) => registerNode(path, el) : undefined}
       draggable
       onDragStart={(e) => {
         // Stash the file path in a custom MIME type so the composer's drop

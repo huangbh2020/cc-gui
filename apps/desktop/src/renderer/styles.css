@@ -150,7 +150,7 @@ body,
 }
 
 /* AskUserQuestion bottom-sheet slide-up. Tailwind's arbitrary-animation
- * syntax `animate-[qa-sheet-in_140ms_ease-out]` references this name. */
+   syntax `animate-[qa-sheet-in_140ms_ease-out]` references this name. */
 @keyframes qa-sheet-in {
   from {
     transform: translateY(8px);
@@ -161,3 +161,46 @@ body,
     opacity: 1;
   }
 }
+
+/* ───────────── Chat side gutter (responsive) ─────────────
+ * The message stream + composer share a horizontal gutter that scales with
+ * the chat pane's own width (NOT the viewport - the pane shrinks when the
+ * sidebars are open). The pane's root (`data-chat-root`) is declared a query
+ * container, and its descendants read --chat-gutter via `px-[var(...)]`.
+ *
+ * IMPORTANT: a container cannot query ITSELF - @container rules match
+ * elements whose ANCESTOR container satisfies the condition, so setting the
+ * variable on [data-chat-root] inside @container would never apply. Instead
+ * the default (floor) value lives on [data-chat-root] directly, and each
+ * @container block overrides --chat-gutter on [data-chat-root]'s descendants
+ * (which inherit it). Narrow panes get a tight gutter so text isn't squeezed;
+ * wide panes breathe. Stepped (not clamp()) so each breakpoint is a clean,
+ * predictable padding. */
+[data-chat-root] {
+  container-type: inline-size;
+  --chat-gutter: 0.625rem; /* 10px floor - always keep >=10px so content never
+                              touches the pane edges, even at the narrowest
+                              width (both sidebars open). */
+}
+
+@container (width < 28rem) {
+  [data-chat-root] * {
+    --chat-gutter: 0.625rem; /* 10px */
+  }
+}
+@container (28rem <= width < 44rem) {
+  [data-chat-root] * {
+    --chat-gutter: 1.5rem; /* 24px */
+  }
+}
+@container (44rem <= width < 64rem) {
+  [data-chat-root] * {
+    --chat-gutter: 2.5rem; /* 40px */
+  }
+}
+@container (width >= 64rem) {
+  [data-chat-root] * {
+    --chat-gutter: 4rem; /* 64px - wide, max breathing room */
+  }
+}
+

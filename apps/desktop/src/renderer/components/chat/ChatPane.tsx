@@ -349,6 +349,12 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   const [showJumpBottom, setShowJumpBottom] = useState(false);
   const virtualListRef = useRef<LegendListRef>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** Guards the one-shot "scroll to bottom on session open" effect. Reset to
+   *  false on mount (keyed by sessionId upstream, so a switch re-mounts us).
+   *  Set true after the first successful scroll so streaming appends after that
+   *  respect the user's scroll position (maintainScrollAtEnd handles the
+   *  follow-along case) instead of yanking them back down. */
+  const initialScrollDoneRef = useRef(false);
   /** When set, an @ mention is pending a file picker; the number is the caret
    * index where the triggering "@" sits, so we can splice the path in there. */
   const pendingAtRef = useRef<number | null>(null);
@@ -505,13 +511,38 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
 
   const empty = messages.length === 0;
 
+  // On opening a session, jump to the bottom so the latest exchange is in view
+  // (the keyed remount above starts the list scrolled to the top). This fires
+  // once per mount: it waits for messages to load, then scrolls and latches
+  // `initialScrollDoneRef` so subsequent streaming appends don't yank the view
+  // back down if the user has scrolled up to read history.
+  useEffect(() => {
+    if (empty || initialScrollDoneRef.current) return;
+    // LegendList measures item heights asynchronously on first layout, so a
+    // single rAF may run before the list has real scroll length. Two rAFs give
+    // it a layout pass + a settle pass; scrollToEnd is a no-op if the list
+    // still isn't ready, so we retry within the second frame as a fallback.
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        virtualListRef.current?.scrollToEnd({ animated: false });
+        initialScrollDoneRef.current = true;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [empty]);
+
   // Render a single item for LegendList's renderItem.
   const renderListItem = useCallback(
     ({ item }: { item: RenderItem }) => {
       if (item.kind === "single") {
         const m = item.msg;
         return (
-          <div className="px-8">
+          <div className="px-[var(--chat-gutter)]">
             <div className="mx-auto max-w-5xl">
               <MessageRow
                 msg={m}
@@ -525,7 +556,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
       }
       const blocks = flattenCluster(item.msgs);
       return (
-        <div key={item.msgs[0].id} className="px-8">
+        <div key={item.msgs[0].id} className="px-[var(--chat-gutter)]">
           <div className="mx-auto max-w-5xl">
             {item.turnMeta && <TurnStatRow meta={item.turnMeta} />}
             <ProceduralGroup blocks={blocks} beforeMap={beforeMap} />
@@ -551,7 +582,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   const listFooter = null;
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div className="relative flex h-full flex-col" data-chat-root>
       {/* Message stream area */}
       <div className={cn("relative flex min-h-0", empty ? "h-0" : "flex-1")}>
       {/* Left-edge timeline of user messages */}
@@ -629,7 +660,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           the box sits flush against the message area. When the session is
           empty the wrapper takes flex-1 and centers the box vertically. */}
       <div className={cn(
-        "px-8",
+        "px-[var(--chat-gutter)]",
         empty
           ? "flex flex-1 items-center justify-center"
           : "shrink-0 pb-3",

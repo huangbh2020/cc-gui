@@ -15,7 +15,7 @@ import type { UserInputAnswers } from "@contracts/provider";
  *
  * Anchored to the bottom of the ChatPane root (`relative`), positioned so
  * it visually replaces the composer: the outer wrapper mirrors the
- * composer's horizontal sizing — `px-8` side gutters + `mx-auto max-w-5xl`
+ * composer's horizontal sizing — `px-[var(--chat-gutter)]` side gutters + `mx-auto max-w-5xl`
  * inner column — so the card is exactly as wide as the input box and left/
  * right-aligned with the message stream. It sits slightly above the pane's
  * bottom edge (`pb-3`, matching the composer wrapper) so its rounded
@@ -122,11 +122,12 @@ export function QuestionPrompt({
 
   return (
     // Outer wrapper mirrors the composer's horizontal sizing so the card is
-    // exactly as wide as the input box: `px-8` side gutters (32px) +
-    // `mx-auto max-w-5xl` centered inner column. `pb-3` lifts the card off
-    // the pane's bottom edge so the rounded corners + shadow read as a
-    // floating card (matches the composer wrapper's own bottom padding).
-    <div className="absolute inset-x-0 bottom-0 z-30 px-8 pb-3">
+    // exactly as wide as the input box: `px-[var(--chat-gutter)]` side
+    // gutters (responsive to pane width - see styles.css) + `mx-auto
+    // max-w-5xl` centered inner column. `pb-3` lifts the card off the pane's
+    // bottom edge so the rounded corners + shadow read as a floating card
+    // (matches the composer wrapper's own bottom padding).
+    <div className="absolute inset-x-0 bottom-0 z-30 px-[var(--chat-gutter)] pb-3">
       <div
         role="dialog"
         aria-modal="false"

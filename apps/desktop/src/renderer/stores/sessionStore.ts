@@ -639,19 +639,31 @@ function syncConfigFromSession(
 ): void {
   const sess = findSession(get().sessionsByProject, get().archivedSessionsByProject, sessionId);
   if (!sess) return;
-  set({
+  // Keep activeProjectId in lockstep with the active session's owning project.
+  // Without this, switching to a thread in project B while activeProjectId
+  // still points at project A would leave the IDE file tree (and any
+  // project-scoped UI) showing the wrong project. Every entry point that
+  // activates a session (selectSession / openTab / rewindTurn) routes through
+  // this helper, so this single sync covers all of them.
+  const prevPid = get().activeProjectId;
+  const patch: Partial<SessionState> = {
     model: sess.model,
     effort: sess.effort,
     permissionMode: sess.permissionMode,
     customModelId: sess.customModelId,
-    // Keep activeProjectId in lockstep with the active session's owning
-    // project. Without this, switching to a thread in project B while the
-    // activeProjectId still points at project A would leave the IDE file tree
-    // (and any project-scoped UI) showing the wrong project. Every entry
-    // point that activates a session (selectSession / openTab / rewindTurn)
-    // routes through this helper, so this single sync covers all of them.
     activeProjectId: sess.projectId,
-  });
+  };
+  // The `sessions` field is a derived view of the ACTIVE project's session
+  // list (see its field doc). selectProject refreshes it, but selectSession /
+  // openTab do NOT - so activating a thread in a different project left
+  // `sessions` pointing at the old project's list. Titlebar resolves the
+  // active thread's title via `sessions.find(activeSessionId)`, which then
+  // missed (the thread isn't in the old list) and the title chip vanished.
+  // Refresh the alias whenever the owning project changes.
+  if (prevPid !== sess.projectId) {
+    patch.sessions = get().sessionsByProject[sess.projectId] ?? EMPTY_SESSIONS;
+  }
+  set(patch);
 }
 
 /** Hydrate the per-session context-window snapshot from the session row.

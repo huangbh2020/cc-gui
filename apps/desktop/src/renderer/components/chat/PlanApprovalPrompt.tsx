@@ -58,9 +58,10 @@ export function PlanApprovalPrompt({
 
   return (
     // Outer wrapper mirrors the composer's horizontal sizing so the sheet is
-    // exactly as wide as the input box: `px-8` side gutters + `mx-auto
-    // max-w-5xl` centered inner column. `pb-2` lifts it off the composer.
-    <div className="px-8 pb-2">
+    // exactly as wide as the input box: `px-[var(--chat-gutter)]` side gutters
+    // (responsive to pane width - see styles.css) + `mx-auto max-w-5xl`
+    // centered inner column. `pb-2` lifts it off the composer.
+    <div className="px-[var(--chat-gutter)] pb-2">
       <div
         className={cn(
           "mx-auto max-w-5xl rounded-2xl border border-edge-input bg-surface px-4 py-2.5 text-xs text-content shadow-2xl",
