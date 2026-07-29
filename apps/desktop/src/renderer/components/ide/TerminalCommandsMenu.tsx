@@ -8,6 +8,7 @@ import {
   IconPlus,
   IconPencil,
   IconTrash,
+  IconPlayerPlay,
 } from "@renderer/lib/icons.js";
 import type { CustomCommand } from "@contracts/ipc";
 
@@ -115,8 +116,16 @@ export function TerminalCommandsMenu({ onRun }: { onRun: (command: string) => vo
                         {cmd.command}
                       </span>
                     </button>
-                    {/* Hover-revealed edit / delete */}
-                    <div className="flex shrink-0 items-center opacity-0 group-hover:opacity-100">
+                    {/* Hover-revealed run / edit / delete */}
+                    <div className="flex shrink-0 items-center opacity-0 group-hover:opacity-100 data-[highlighted]:opacity-100">
+                      <button
+                        type="button"
+                        className="rounded p-0.5 text-content-subtle hover:bg-surface-hover hover:text-accent"
+                        title="执行"
+                        onClick={() => onRun(cmd.command)}
+                      >
+                        <IconPlayerPlay size={11} />
+                      </button>
                       <button
                         type="button"
                         className="rounded p-0.5 text-content-subtle hover:bg-surface-hover hover:text-content"

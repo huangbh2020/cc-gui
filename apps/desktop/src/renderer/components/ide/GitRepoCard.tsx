@@ -3,7 +3,7 @@ import { Menu } from "@base-ui/react/menu";
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
-import { joinPath } from "@renderer/lib/path.js";
+import { joinPath, basename } from "@renderer/lib/path.js";
 import type { GitRepo, GitStatusResult, GitFileStatus } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
@@ -765,7 +765,7 @@ function FileRow({
           title={absPath}
         >
           <StatusCodeIcon code={code} />
-          <span className="truncate font-mono [font-size:var(--right-panel-font-size)] text-content-muted">{file.path}</span>
+          <span className="truncate font-mono [font-size:var(--right-panel-font-size)] text-content-muted">{basename(file.path)}</span>
         </button>
         {/* +/- tally badge — hidden on hover so the action buttons have room. */}
         {diffTally && (diffTally.adds > 0 || diffTally.dels > 0) && (

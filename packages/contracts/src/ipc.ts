@@ -184,6 +184,14 @@ export interface CustomCommand {
 export const IdeEditorModeSchema = z.enum(["tabs", "replace"]);
 export type IdeEditorMode = z.infer<typeof IdeEditorModeSchema>;
 
+/** Per-file view mode for the center file editor.
+ *  - "edit": editable Monaco instance
+ *  - "diff": read-only Monaco DiffEditor (vs a before-snapshot)
+ *  - "preview": rendered Markdown preview (read-only)
+ *  Markdown files default to "preview" on first open; the user can toggle back
+ *  to "edit". Pure renderer state - not validated over IPC. */
+export type FileViewMode = "edit" | "diff" | "preview";
+
 /**
  * Permission mode literals accepted by the Claude Agent SDK's
  * `permissionMode` option (and the CLI's --permission-mode flag). Kept in

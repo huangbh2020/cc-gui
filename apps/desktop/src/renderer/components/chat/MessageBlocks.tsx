@@ -87,10 +87,10 @@ type Segment =
   | { kind: "single"; block: Block; defaultOpen?: boolean }
   | { kind: "procedural"; blocks: ProceduralBlock[] };
 
-/** Edit tool calls render INLINE in the stream (diff shown by default),
+/** Edit tool calls render INLINE in the stream (collapsed by default),
  *  bypassing the "思考 + N 个操作" procedural-group collapse. Keeping them
- *  flat makes the actual file changes immediately scannable instead of
- *  buried two clicks deep. */
+ *  flat makes the actual file changes scannable as a one-line summary
+ *  (+N -M) without burying the prose stream under diff bodies. */
 function isInlineEditBlock(b: Block): boolean {
   return b.kind === "tool_use" && b.toolName === "Edit";
 }
@@ -98,9 +98,10 @@ function isInlineEditBlock(b: Block): boolean {
 /** Linear scan: collect consecutive thinking / tool_use blocks into a run.
  *  Any text or error block flushes the run (and renders as its own segment).
  *  Edit tool calls are pulled OUT of the run and emitted as their own
- *  single segment (default-open) so their diff shows inline. Even a single
- *  non-Edit tool_use with no surrounding text becomes a procedural group -
- *  that's the whole point: keep the prose stream clean. */
+ *  single segment (collapsed) so their diff is available inline but doesn't
+ *  dominate the stream. Even a single non-Edit tool_use with no surrounding
+ *  text becomes a procedural group - that's the whole point: keep the prose
+ *  stream clean. */
 function groupBlocks(blocks: Block[]): Segment[] {
   const out: Segment[] = [];
   let run: ProceduralBlock[] = [];
@@ -113,9 +114,9 @@ function groupBlocks(blocks: Block[]): Segment[] {
   for (const b of blocks) {
     if (isInlineEditBlock(b)) {
       // An inline Edit breaks the procedural run: flush whatever has
-      // accumulated, then emit the Edit as a standalone open segment.
+      // accumulated, then emit the Edit as a standalone collapsed segment.
       flush();
-      out.push({ kind: "single", block: b, defaultOpen: true });
+      out.push({ kind: "single", block: b, defaultOpen: false });
     } else if (b.kind === "thinking" || b.kind === "tool_use") {
       run.push(b);
     } else {

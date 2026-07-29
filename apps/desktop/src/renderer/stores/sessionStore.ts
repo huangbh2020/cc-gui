@@ -34,9 +34,18 @@ import {
   type DisplayMode,
   type RightPanelTab,
   type IdeEditorMode,
+  type FileViewMode,
   type CustomCommand,
 } from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
+
+/** True for `.md` / `.markdown` files - used to default the editor into preview
+ *  mode on first open. Kept here (not in lib/path) because it's a content-type
+ *  decision, not a pure path operation. */
+function isMarkdownPath(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  return lower.endsWith(".md") || lower.endsWith(".markdown");
+}
 
 /** A single content block within a message (mirrors how claude structures output). */
 export type Block =
@@ -285,7 +294,7 @@ interface SessionState {
    *  is the normal editor). Outer key = projectId, inner key = filePath.
    *  NOT persisted — resets each session, since the `before` snapshot only
    *  exists for the latest turn anyway. */
-  ideFileViewModeByProject: Record<string, Record<string, "edit" | "diff">>;
+  ideFileViewModeByProject: Record<string, Record<string, FileViewMode>>;
   /** How opening a file affects the open-file list:
    *   - "tabs"    (default): each file accumulates as a tab.
    *   - "replace": opening a file replaces whatever was open (≤1 file at a
@@ -438,7 +447,7 @@ interface SessionState {
   /** Set the active file (must already be open). */
   setIdeActiveFile: (filePath: string) => void;
   /** Set a file's view mode (edit/diff). */
-  setIdeFileViewMode: (filePath: string, mode: "edit" | "diff") => void;
+  setIdeFileViewMode: (filePath: string, mode: FileViewMode) => void;
   /** Switch the editor open-mode (tabs vs replace). Persists. When switching
    *  to "replace", if more than one file is open, keeps only the active one. */
   setIdeEditorMode: (mode: IdeEditorMode) => void;
@@ -2827,6 +2836,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // A review/diff request is an explicit intent -> force diff mode (don't
     // leave a stale "edit" the user may have toggled for a different purpose).
     if (opts?.diff) viewMode[filePath] = "diff";
+    // Markdown files default to "preview" on FIRST open (no prior view-mode for
+    // this file). Re-opening respects the user's earlier choice (e.g. they
+    // switched to "edit") since the entry already exists. A diff request above
+    // takes precedence over this default.
+    else if (!(filePath in prevViewMode) && isMarkdownPath(filePath)) {
+      viewMode[filePath] = "preview";
+    }
     // A before-snapshot passed by a turn-files card (works for HISTORICAL
     // turns whose snapshot is gone from turnFilesByProject). Stashed
     // per-file so FileEditor can use it as the diff's left pane.

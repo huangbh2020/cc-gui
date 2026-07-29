@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
@@ -25,19 +25,37 @@ interface TermSession {
   detail?: string;
 }
 
+/** Stable empty array for the no-project read-only view (avoids a fresh `[]`
+ *  each render that would churn downstream selectors). */
+const EMPTY_SESSIONS: TermSession[] = [];
+
 let nextSeq = 1;
 function makeSession(): TermSession {
   const n = nextSeq++;
   return { key: `term-${n}-${Date.now().toString(36)}`, title: `终端 ${n}`, status: "starting" };
 }
 
+/** Per-project terminal state. `sessions` are the open tabs; `activeKey` is the
+ *  visible one. Kept out of React state on purpose - see `termsRef` below. */
+interface ProjectTermState {
+  sessions: TermSession[];
+  activeKey: string | null;
+}
+
 /**
- * Right-panel Terminal tab body.
+ * Bottom-bar Terminal panel body.
  *
  * - Scoped to the active project's path (cwd = project root).
- * - Supports multiple local sessions (tabs); each mounts a TerminalView.
- * - Parent RightPanel keep-alives this component across tab switches so PTYs
- *   and scrollback survive leaving/returning to the Terminal tab.
+ * - Supports multiple local sessions (tabs) per project; each mounts a
+ *   TerminalView.
+ * - Parent BottomTerminalBar keep-alives this component (collapses to height 0
+ *   instead of unmounting) so PTYs and scrollback survive the bar toggling.
+ * - Cross-project keep-alive: every project that has ever opened a terminal
+ *   keeps its TerminalViews mounted while the user switches projects. Only the
+ *   current project's active tab is visible; the rest are CSS-hidden with
+ *   active=false. Switching back to a project restores its tabs, active tab and
+ *   running PTYs exactly as they were. Terminals are torn down only when a
+ *   project is deleted/archived (see the projects effect below).
  */
 export function TerminalPanel({ active }: { active: boolean }) {
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
@@ -48,65 +66,151 @@ export function TerminalPanel({ active }: { active: boolean }) {
     return projects.find((p) => p.id === activeProjectId)?.path ?? null;
   }, [activeProjectId, projects]);
 
-  const [sessions, setSessions] = useState<TermSession[]>([]);
-  const [activeKey, setActiveKey] = useState<string | null>(null);
-  // Tracks which projectPath the current sessions belong to.
-  const boundPathRef = useRef<string | null>(null);
-  const handlesRef = useRef<Map<string, TerminalViewHandle>>(new Map());
+  // Terminal state is keyed by project path and kept in refs (NOT React state).
+  // The reason: when the user switches projects we must NOT unmount the other
+  // projects' TerminalViews - unmounting kills the PTY (cleanup calls
+  // api.terminal.kill) and destroys scrollback. Instead every project's
+  // TerminalViews stay mounted; only the visible one (current project + active
+  // tab) is shown, the rest are hidden via CSS. refs are the single source of
+  // truth and `forceRender` re-renders after a mutation so the UI reflects it.
+  const termsRef = useRef<Map<string, ProjectTermState>>(new Map()); // projectPath -> state
+  const handlesRef = useRef<Map<string, TerminalViewHandle>>(new Map()); // sessionKey -> handle (sessionKey is globally unique)
+  const keyToPathRef = useRef<Map<string, string>>(new Map()); // sessionKey -> projectPath (routes status callbacks back to the right bucket)
+  const [, forceRender] = useReducer((n: number) => n + 1, 0);
 
-  // Reset sessions when the active project changes.
+  // Read-only view of the CURRENT project's state (empty when no project).
+  const current = projectPath ? termsRef.current.get(projectPath) : undefined;
+  const sessions = current?.sessions ?? EMPTY_SESSIONS;
+  const activeKey = current?.activeKey ?? null;
+
+  // Ensure the current project has a terminal bucket: create the first session
+  // on first visit, but leave existing buckets untouched so switching back to a
+  // project restores its tabs + active tab + live PTYs.
   useEffect(() => {
-    if (!projectPath) {
-      // Kill any live handles via unmount of TerminalViews (below returns empty).
-      boundPathRef.current = null;
-      setSessions([]);
-      setActiveKey(null);
-      handlesRef.current.clear();
-      return;
-    }
-    if (boundPathRef.current === projectPath) return;
-    boundPathRef.current = projectPath;
-    handlesRef.current.clear();
+    if (!projectPath) return; // no project -> empty state; don't touch the map
+    if (termsRef.current.has(projectPath)) return; // already has terminals -> restore as-is
     const first = makeSession();
-    setSessions([first]);
-    setActiveKey(first.key);
+    termsRef.current.set(projectPath, { sessions: [first], activeKey: first.key });
+    keyToPathRef.current.set(first.key, projectPath);
+    forceRender();
   }, [projectPath]);
 
+  // Clean up terminals for projects that no longer exist (deleted/archived out).
+  // The store has already switched activeProjectId away by the time this runs,
+  // so dropping the bucket is safe. Unmounting the TerminalViews re-kills the
+  // PTYs (cleanup), which is harmless.
+  useEffect(() => {
+    const livePaths = new Set(projects.map((p) => p.path));
+    let changed = false;
+    for (const [p, st] of termsRef.current) {
+      if (livePaths.has(p)) continue;
+      for (const s of st.sessions) {
+        handlesRef.current.get(s.key)?.kill();
+        handlesRef.current.delete(s.key);
+        keyToPathRef.current.delete(s.key);
+      }
+      termsRef.current.delete(p);
+      changed = true;
+    }
+    if (changed) forceRender();
+  }, [projects]);
+
   const addSession = useCallback(() => {
+    if (!projectPath) return;
     const s = makeSession();
-    setSessions((prev) => [...prev, s]);
-    setActiveKey(s.key);
-  }, []);
+    const st = termsRef.current.get(projectPath);
+    if (st) {
+      st.sessions = [...st.sessions, s];
+      st.activeKey = s.key;
+    } else {
+      termsRef.current.set(projectPath, { sessions: [s], activeKey: s.key });
+    }
+    keyToPathRef.current.set(s.key, projectPath);
+    forceRender();
+  }, [projectPath]);
 
   const closeSession = useCallback(
     (key: string) => {
+      const path = keyToPathRef.current.get(key);
+      // Kill + deregister the handle regardless of whether we find its bucket.
       handlesRef.current.get(key)?.kill();
       handlesRef.current.delete(key);
-      setSessions((prev) => {
-        const next = prev.filter((s) => s.key !== key);
-        if (next.length === 0 && projectPath) {
+      keyToPathRef.current.delete(key);
+
+      if (!path) {
+        forceRender();
+        return;
+      }
+      const st = termsRef.current.get(path);
+      if (st) {
+        const next = st.sessions.filter((s) => s.key !== key);
+        if (next.length === 0 && path === projectPath) {
+          // Closing the last tab of the current project spawns a fresh terminal
+          // so the current project is never left empty.
           const fresh = makeSession();
-          // Defer activeKey update to keep React batching clean.
-          queueMicrotask(() => setActiveKey(fresh.key));
-          return [fresh];
+          keyToPathRef.current.set(fresh.key, path);
+          termsRef.current.set(path, { sessions: [fresh], activeKey: fresh.key });
+        } else if (next.length === 0) {
+          // Last tab of a non-current project - drop the bucket entirely.
+          termsRef.current.delete(path);
+        } else {
+          st.sessions = next;
+          if (st.activeKey === key) {
+            st.activeKey = next[next.length - 1]?.key ?? null;
+          }
         }
-        if (activeKey === key) {
-          const fallback = next[next.length - 1]?.key ?? null;
-          queueMicrotask(() => setActiveKey(fallback));
-        }
-        return next;
-      });
+      }
+      forceRender();
     },
-    [activeKey, projectPath],
+    [projectPath],
   );
 
   const updateStatus = useCallback(
     (key: string, status: TerminalSessionStatus, detail?: string) => {
-      setSessions((prev) =>
-        prev.map((s) => (s.key === key ? { ...s, status, detail } : s)),
+      const path = keyToPathRef.current.get(key);
+      if (!path) return;
+      const st = termsRef.current.get(path);
+      if (!st) return;
+      st.sessions = st.sessions.map((s) =>
+        s.key === key ? { ...s, status, detail } : s,
       );
+      // Only re-render if the changed tab belongs to the visible project - a
+      // hidden project's status dot isn't on screen, so a render would be
+      // wasted work.
+      if (path === projectPath) forceRender();
     },
-    [],
+    [projectPath],
+  );
+
+  // NOTE: all hooks must be declared before any early return (Rules of Hooks).
+  // activeSession/activeHandle resolve to null/undefined when there is no
+  // project, which is harmless - the runCommand body and the toolbar buttons
+  // all guard on activeHandle themselves.
+  const activeSession = sessions.find((s) => s.key === activeKey) ?? sessions[0] ?? null;
+  const activeHandle = activeSession ? handlesRef.current.get(activeSession.key) : undefined;
+
+  // Run a saved quick-command: write the command to the active PTY so the
+  // shell executes it immediately. Silently no-ops when no terminal is running
+  // (no session yet, or the shell has exited) - matches the kill button's guard.
+  //
+  // Line endings: shell line editors (PowerShell PSReadLine, cmd cooked mode,
+  // readline) commit the current line on a carriage return ("\r"), NOT on a
+  // line feed ("\n"). xterm sends Enter as "\r" for normal typing, so we mirror
+  // that. A bare "\n" is not a submit signal - feeding a multi-line command
+  // like "cd ./dir\nnpm run dev\r" (only the final "\r") confuses the line
+  // editor: it treats the whole block as one unsubmitted line, scrambles its
+  // buffer, and ends up executing the lines OUT OF ORDER (repro: on PowerShell
+  // the second line ran before the first). Normalizing every newline to "\r"
+  // makes each line its own submit, preserving the user's intended order. Safe
+  // for single-line commands too (no newlines -> unchanged).
+  const runCommand = useCallback(
+    (command: string) => {
+      const id = activeHandle?.getTerminalId();
+      if (id && activeHandle?.getStatus() === "running") {
+        void api.terminal.write({ terminalId: id, data: `${command.replace(/\r\n|\n|\r/g, "\r")}\r` });
+      }
+    },
+    [activeHandle],
   );
 
   if (!projectPath) {
@@ -123,21 +227,13 @@ export function TerminalPanel({ active }: { active: boolean }) {
     );
   }
 
-  const activeSession = sessions.find((s) => s.key === activeKey) ?? sessions[0] ?? null;
-  const activeHandle = activeSession ? handlesRef.current.get(activeSession.key) : undefined;
-
-  // Run a saved quick-command: write `command + "\n"` to the active PTY so the
-  // shell executes it immediately. Silently no-ops when no terminal is running
-  // (no session yet, or the shell has exited) — matches the kill button's guard.
-  const runCommand = useCallback(
-    (command: string) => {
-      const id = activeHandle?.getTerminalId();
-      if (id && activeHandle?.getStatus() === "running") {
-        void api.terminal.write({ terminalId: id, data: `${command}\n` });
-      }
-    },
-    [activeHandle],
-  );
+  // Flatten every project's terminals into a single render list. All of them
+  // stay mounted (cross-project keep-alive); visibility is decided per-entry
+  // below. Computed from the ref source-of-truth each render.
+  const allTermEntries: Array<{ s: TermSession; path: string }> = [];
+  for (const [p, st] of termsRef.current) {
+    for (const s of st.sessions) allTermEntries.push({ s, path: p });
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -159,8 +255,15 @@ export function TerminalPanel({ active }: { active: boolean }) {
                 <button
                   type="button"
                   className="min-w-0 truncate"
-                  onClick={() => setActiveKey(s.key)}
-                  title={s.detail ? `${s.title} — ${s.detail}` : s.title}
+                  onClick={() => {
+                    if (!projectPath) return;
+                    const st = termsRef.current.get(projectPath);
+                    if (st && st.activeKey !== s.key) {
+                      st.activeKey = s.key;
+                      forceRender();
+                    }
+                  }}
+                  title={s.detail ? `${s.title} - ${s.detail}` : s.title}
                 >
                   <span
                     className={cn(
@@ -248,11 +351,15 @@ export function TerminalPanel({ active }: { active: boolean }) {
           </div>
         )}
 
-      {/* Terminal hosts — keep all sessions mounted; hide inactive ones so
-          scrollback + PTY survive tab switches inside this panel. */}
-      <div className="relative min-h-0 flex-1 bg-surface-muted">
-        {sessions.map((s) => {
-          const isActive = s.key === activeKey;
+      {/* Terminal hosts — keep ALL terminals across ALL projects mounted so
+          PTYs + scrollback survive both intra-project tab switches and
+          inter-project switches. Only the current project's active tab is
+          visible; everything else is hidden via CSS (invisible) and its
+          TerminalView is fed active=false so it skips fit/focus. */}
+      <div className="relative min-h-0 flex-1 bg-surface">
+        {allTermEntries.map(({ s, path: p }) => {
+          const st = termsRef.current.get(p);
+          const isActive = p === projectPath && s.key === st?.activeKey;
           return (
             <div
               key={s.key}
@@ -264,7 +371,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
             >
               <TerminalView
                 sessionKey={s.key}
-                projectPath={projectPath}
+                projectPath={p}
                 active={active && isActive}
                 onStatusChange={(status, detail) => updateStatus(s.key, status, detail)}
                 onReady={(handle) => {

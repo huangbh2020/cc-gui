@@ -34,7 +34,7 @@ interface Props {
 function buildTheme(dark: boolean): ITheme {
   if (dark) {
     return {
-      background: "#27272a", // surface-muted zinc-800
+      background: "#18181b", // surface zinc-900
       foreground: "#f4f4f5", // content zinc-100
       cursor: "#10b981", // accent emerald-500
       cursorAccent: "#18181b",
@@ -59,7 +59,7 @@ function buildTheme(dark: boolean): ITheme {
     };
   }
   return {
-    background: "#f4f4f5", // surface-muted zinc-100
+    background: "#ffffff", // surface white
     foreground: "#18181b", // content zinc-900
     cursor: "#059669", // accent emerald-600
     cursorAccent: "#ffffff",

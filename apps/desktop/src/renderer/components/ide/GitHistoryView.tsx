@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
-import { joinPath } from "@renderer/lib/path.js";
+import { joinPath, basename } from "@renderer/lib/path.js";
 import type { GitRepo, GitCommitInfo, GitCommitFile, GitCommitFileStatus } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
@@ -350,17 +350,24 @@ function CommitFileRow({
   file: GitCommitFile;
   onClick: () => void;
 }) {
+  // Tooltip shows the full repo-relative path (with the rename arrow for
+  // renamed/copied files); the visible label is just the file name(s) so the
+  // list stays scannable when paths are deep.
+  const fullPath =
+    file.status === "renamed" || file.status === "copied"
+      ? `${file.oldPath ?? "?"} -> ${file.path}`
+      : file.path;
   const label =
     file.status === "renamed" || file.status === "copied"
-      ? `${file.oldPath ?? "?"} → ${file.path}`
-      : file.path;
+      ? `${basename(file.oldPath ?? "?")} -> ${basename(file.path)}`
+      : basename(file.path);
 
   return (
     <button
       type="button"
       onClick={onClick}
       className="group flex w-full items-center gap-1.5 px-2.5 py-1 text-left transition-colors hover:bg-surface-hover/50"
-      title={label}
+      title={fullPath}
     >
       <CommitFileStatusIcon status={file.status} />
       <span className="min-w-0 flex-1 truncate font-mono [font-size:var(--right-panel-font-size)] text-content-muted">{label}</span>

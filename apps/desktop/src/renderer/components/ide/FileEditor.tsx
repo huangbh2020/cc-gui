@@ -8,6 +8,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { ideDirtyTracker } from "./OpenTabsBar.js";
 import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3 } from "@renderer/lib/icons.js";
+import { Markdown } from "../chat/Markdown.js";
 // Side-effect import: configures Monaco's worker environment + local instance
 // (no CDN). Must run before any <Editor> mounts. See monacoSetup.ts.
 import "@renderer/lib/monacoSetup.js";
@@ -66,10 +67,18 @@ export function FileEditor({
   // which would show unrelated working-tree content.
   const historyOnly = diffAfter != null;
 
-  // Effective mode: diff only if explicitly requested AND a before-snapshot
-  // exists (from either source). History pairs force diff mode.
-  const effectiveMode: "edit" | "diff" =
-    historyOnly || (viewMode === "diff" && diffBefore != null) ? "diff" : "edit";
+  // Effective mode:
+  //  - diff: history pairs (forced) OR explicitly requested with a snapshot.
+  //  - preview: explicitly requested (Markdown rendered read-only).
+  //  - edit: the normal editable Monaco instance (default for non-md files).
+  const effectiveMode: "edit" | "diff" | "preview" =
+    historyOnly || (viewMode === "diff" && diffBefore != null)
+      ? "diff"
+      : viewMode === "preview"
+        ? "preview"
+        : "edit";
+
+  const markdown = isMarkdown(filePath);
 
   return (
     <div className="flex h-full flex-col">
@@ -79,12 +88,18 @@ export function FileEditor({
         mode={effectiveMode}
         canDiff={diffBefore != null && !historyOnly}
         onToggleMode={() => setViewMode(filePath, effectiveMode === "edit" ? "diff" : "edit")}
+        isMarkdown={markdown}
+        onTogglePreview={() =>
+          setViewMode(filePath, effectiveMode === "preview" ? "edit" : "preview")
+        }
         editorMode={editorMode}
         onToggleEditorMode={() => setEditorMode(editorMode === "tabs" ? "replace" : "tabs")}
       />
       <div className="min-h-0 flex-1">
         {effectiveMode === "diff" && diffBefore != null ? (
           <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
+        ) : effectiveMode === "preview" ? (
+          <MarkdownPreviewPane filePath={filePath} />
         ) : (
           <EditPane filePath={filePath} />
         )}
@@ -101,14 +116,18 @@ function EditorToolbar({
   mode,
   canDiff,
   onToggleMode,
+  isMarkdown,
+  onTogglePreview,
   editorMode,
   onToggleEditorMode,
 }: {
   filePath: string;
   projectPath: string;
-  mode: "edit" | "diff";
+  mode: "edit" | "diff" | "preview";
   canDiff: boolean;
   onToggleMode: () => void;
+  isMarkdown: boolean;
+  onTogglePreview: () => void;
   editorMode: "tabs" | "replace";
   onToggleEditorMode: () => void;
 }) {
@@ -124,7 +143,7 @@ function EditorToolbar({
         {rel}
       </span>
       <div className="ml-auto flex items-center gap-1">
-        {canDiff && (
+        {canDiff && mode !== "preview" && (
           <button
             type="button"
             onClick={onToggleMode}
@@ -136,6 +155,23 @@ function EditorToolbar({
           >
             {mode === "edit" ? <IconEye size={12} /> : <IconEdit size={12} />}
             {mode === "edit" ? "Diff" : "Edit"}
+          </button>
+        )}
+        {/* Markdown preview/edit toggle - only for .md files. In preview mode
+            the button switches to the source editor; in edit/diff mode it
+            switches to the rendered preview. */}
+        {isMarkdown && (
+          <button
+            type="button"
+            onClick={onTogglePreview}
+            className={cn(
+              "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
+              "text-content-muted hover:bg-surface-hover hover:text-content",
+            )}
+            title={mode === "preview" ? "切换到源码编辑" : "切换到预览"}
+          >
+            {mode === "preview" ? <IconEdit size={12} /> : <IconEye size={12} />}
+            {mode === "preview" ? "Edit" : "Preview"}
           </button>
         )}
         {/* Editor open-mode toggle: tabs (multi-file) ↔ replace (single-file).
@@ -292,6 +328,47 @@ function EditPane({ filePath }: { filePath: string }) {
           {saveState === "saving" && "保存中…"}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ───────────────────────── Markdown preview ───────────────────────── */
+
+/** Read-only rendered Markdown preview for `.md` files. Loads the file content
+ *  via the same `file.readFile` API as EditPane, then renders it with the chat
+ *  Markdown renderer (Shiki code highlighting, GFM, math). The outer container
+ *  overrides `--chat-font-size` so the rendered text uses an editor-appropriate
+ *  size instead of the chat bubble size. Read-only - no save / dirty tracking.
+ *  Re-reads on filePath change. */
+function MarkdownPreviewPane({ filePath }: { filePath: string }) {
+  const [content, setContent] = useState<string | null>(null); // null = loading
+  useEffect(() => {
+    let cancelled = false;
+    setContent(null);
+    api.file
+      .readFile({ filePath })
+      .then(({ content }) => {
+        if (!cancelled) setContent(content);
+      })
+      .catch(() => {
+        if (!cancelled) setContent(""); // degrade to empty
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [filePath]);
+
+  if (content === null) {
+    return (
+      <div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-content-subtle">
+        <IconLoader2 size={12} className="animate-spin" />
+        读取文件…
+      </div>
+    );
+  }
+  return (
+    <div className="h-full overflow-auto bg-surface px-6 py-4 [--chat-font-size:13px]">
+      <Markdown>{content}</Markdown>
     </div>
   );
 }
@@ -458,6 +535,13 @@ function useMonacoTheme(): string {
     return () => observer.disconnect();
   }, []);
   return dark ? "vs-dark" : "light";
+}
+
+/** True for `.md` / `.markdown` files - gates the preview/edit toolbar toggle
+ *  and the preview render branch. */
+function isMarkdown(filePath: string): boolean {
+  const ext = extname(filePath);
+  return ext === ".md" || ext === ".markdown";
 }
 
 /** Map a file extension to a Monaco language id. Covers the common cases;
