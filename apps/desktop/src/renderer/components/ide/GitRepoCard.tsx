@@ -86,8 +86,14 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
   const [commitMsg, setCommitMsg] = useState("");
   const [busy, setBusy] = useState<"push" | "pull" | "commit" | null>(null);
   const [pendingDiscard, setPendingDiscard] = useState<string[] | null>(null);
+  // Merge-conflict state: when git pull produces conflicts we surface a
+  // confirmation dialog offering to resolve them via AI. `conflictFiles`
+  // doubles as the dialog's open trigger (null = closed).
+  const [conflictFiles, setConflictFiles] = useState<string[] | null>(null);
+  const [resolving, setResolving] = useState(false);
   const collapsedGitRepos = useSessionStore((s) => s.collapsedGitRepos);
   const toggleCollapsedGitRepo = useSessionStore((s) => s.toggleCollapsedGitRepo);
+  const conflictResolveModel = useSessionStore((s) => s.conflictResolveModel);
   const collapsed = !!collapsedGitRepos[repo.path];
 
   const refresh = useCallback(async () => {
@@ -298,6 +304,10 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       if (!res.ok) {
         setError(res.error ?? "拉取失败");
         prependLog({ op: "pull", status: "failure", message: res.error });
+      } else if (res.conflict && res.conflictedFiles && res.conflictedFiles.length > 0) {
+        // Pull succeeded but left a merge conflict. Offer AI resolution via a
+        // confirmation dialog instead of just a red banner.
+        setConflictFiles(res.conflictedFiles);
       } else {
         prependLog({ op: "pull", status: "success" });
       }
@@ -308,6 +318,50 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       prependLog({ op: "pull", status: "failure", message: msg });
     } finally {
       setBusy(null);
+    }
+  };
+
+  // Resolve the current merge conflicts via AI. Reads the conflict-resolution
+  // model from settings, asks the backend to resolve every conflicted file,
+  // then (on success) clears the dialog and pre-fills a merge commit message
+  // for the user to review and submit manually.
+  const handleResolveConflicts = async () => {
+    if (!conflictFiles) return;
+    // conflictResolveModel is stored as "configId:roleKey" — split it back,
+    // mirroring CommitBox's commitGenModel handling.
+    let customModelId: string | null = null;
+    let customModelRole: string | null = null;
+    if (conflictResolveModel) {
+      const colonIdx = conflictResolveModel.lastIndexOf(":");
+      if (colonIdx > 0) {
+        customModelId = conflictResolveModel.slice(0, colonIdx);
+        customModelRole = conflictResolveModel.slice(colonIdx + 1);
+      } else {
+        customModelId = conflictResolveModel;
+      }
+    }
+    setResolving(true);
+    try {
+      const res = await api.git.resolveConflicts({
+        repoPath: repo.path,
+        customModelId,
+        customModelRole,
+      });
+      if (res.ok) {
+        setConflictFiles(null);
+        const resolvedCount = res.resolvedFiles?.length ?? 0;
+        // Pre-fill a merge commit message so the user can finish the merge.
+        // The repo is now staged for the merge commit (files added by AI).
+        setCommitMsg(`Merge: conflicts auto-resolved by AI${resolvedCount ? ` (${resolvedCount} files)` : ""}`);
+        setError(null);
+        await refresh();
+      } else {
+        setError(res.error ?? "AI 解决冲突失败");
+      }
+    } catch {
+      setError("AI 解决冲突失败");
+    } finally {
+      setResolving(false);
     }
   };
 
@@ -492,6 +546,51 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
               <Button variant="danger" size="sm" onClick={handleDiscard} disabled={busy !== null}>
                 {busy === "commit" ? <IconLoader2 size={12} className="animate-spin" /> : <IconTrash size={12} />}
                 放弃更改
+              </Button>
+            </div>
+            <Dialog.Close />
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* ── Merge-conflict: AI resolution dialog ── */}
+      <Dialog.Root open={conflictFiles !== null} onOpenChange={(open) => { if (!open && !resolving) setConflictFiles(null); }}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup className="w-[400px] max-w-[90vw] p-4">
+            <div className="flex items-start gap-3 pr-6">
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warning/10 text-warning">
+                <IconAlertTriangle size={16} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <Dialog.Title>检测到 Git 合并冲突</Dialog.Title>
+                <Dialog.Description className="mt-1">
+                  拉取后产生 {conflictFiles?.length ?? 0} 个冲突文件。可以由 AI 自动读取冲突标记并解决冲突,
+                  解决后会写回文件并暂存,保留合并状态供你检查后手动提交。
+                </Dialog.Description>
+                {conflictFiles && conflictFiles.length > 0 && (
+                  <div className="mt-2 max-h-28 overflow-y-auto rounded-md border border-edge bg-surface-muted px-2 py-1.5">
+                    <ul className="space-y-0.5">
+                      {conflictFiles.slice(0, 20).map((f) => (
+                        <li key={f} className="truncate font-mono text-[11px] text-content-muted" title={f}>
+                          {f}
+                        </li>
+                      ))}
+                      {conflictFiles.length > 20 && (
+                        <li className="text-[11px] text-content-subtle">…还有 {conflictFiles.length - 20} 个</li>
+                      )}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setConflictFiles(null)} disabled={resolving}>
+                稍后手动处理
+              </Button>
+              <Button size="sm" onClick={handleResolveConflicts} disabled={resolving}>
+                {resolving ? <IconLoader2 size={12} className="animate-spin" /> : <IconSparkles size={12} />}
+                用 AI 解决
               </Button>
             </div>
             <Dialog.Close />

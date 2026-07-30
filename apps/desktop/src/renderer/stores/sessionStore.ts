@@ -30,6 +30,7 @@ import {
   UI_GIT_DIFF_OPEN_MODE_SETTING_KEY,
   UI_COMMIT_GEN_MODEL_SETTING_KEY,
   UI_COMMIT_GEN_PROMPT_SETTING_KEY,
+  UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY,
   UI_GIT_COLLAPSED_REPOS_SETTING_KEY,
   UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY,
   UI_PANE_WIDTHS_SETTING_KEY,
@@ -433,6 +434,10 @@ export interface SessionState {
   /** Prompt template for commit-message generation. Persisted. Empty = use
    *  the built-in default (defined in the main-process handler). */
   commitGenPrompt: string;
+  /** Custom-model id used for AI git-conflict resolution, or null for the
+   *  built-in model. Stored as `"configId:roleKey"`. Persisted in the settings
+   *  table; independent of commitGenModel so the two can use different models. */
+  conflictResolveModel: string | null;
   /** Per-repo collapsed state in the Git panel. Persisted in the settings
    *  table as a JSON-encoded Record<string, boolean>. */
   collapsedGitRepos: Record<string, boolean>;
@@ -634,6 +639,8 @@ export interface SessionState {
   setCommitGenModel: (modelId: string | null) => void;
   /** Set the prompt template for commit-message generation. Persists. */
   setCommitGenPrompt: (prompt: string) => void;
+  /** Set the custom-model id used for AI git-conflict resolution. Persists. */
+  setConflictResolveModel: (modelId: string | null) => void;
   /** Toggle a git repo card's collapsed state. Persists. */
   toggleCollapsedGitRepo: (repoPath: string) => void;
 }
@@ -1599,6 +1606,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   ideDiffBeforeByProject: {},
   commitGenModel: null,
   commitGenPrompt: "",
+  conflictResolveModel: null,
   collapsedGitRepos: {} as Record<string, boolean>,
   ideFocusNonce: 0,
 
@@ -1696,7 +1704,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // values leave the defaults. Paths that don't belong to any persisted
     // project are dropped on load (stale tabs from a removed project).
     try {
-      const [tabRes, openRes, activeRes, dirsRes, modeRes, diffModeRes, commitModelRes, commitPromptRes, commandsByProjectRes] = await Promise.all([
+      const [tabRes, openRes, activeRes, dirsRes, modeRes, diffModeRes, commitModelRes, commitPromptRes, commandsByProjectRes, conflictModelRes] = await Promise.all([
         api.setting.get({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_OPEN_FILES_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_ACTIVE_FILE_SETTING_KEY }),
@@ -1706,6 +1714,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         api.setting.get({ key: UI_COMMIT_GEN_MODEL_SETTING_KEY }),
         api.setting.get({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY }),
         api.setting.get({ key: UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY }),
+        api.setting.get({ key: UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY }),
       ]);
       // Terminal moved to the bottom bar, so "terminal" is no longer a valid
       // right-panel tab - a stale persisted value falls through to the default
@@ -1728,6 +1737,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (commitPromptRes.value) {
         set({ commitGenPrompt: commitPromptRes.value });
       }
+      // AI conflict-resolution model (from the local conflict-resolution feature).
+      set({ conflictResolveModel: conflictModelRes.value || null });
       // Per-project terminal quick-commands: JSON-encoded
       // Record<string, CustomCommand[]> keyed by projectId. Parsed below
       // (after `parseBucket` is defined) so each project's array can be
@@ -3523,6 +3534,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void api.setting
       .set({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY, value: prompt })
       .catch((err) => console.error("setting.set(commitGenPrompt) failed:", err));
+  },
+
+  setConflictResolveModel: (modelId) => {
+    set({ conflictResolveModel: modelId });
+    void api.setting
+      .set({ key: UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, value: modelId ?? "" })
+      .catch((err) => console.error("setting.set(conflictResolveModel) failed:", err));
   },
 
   toggleCollapsedGitRepo: (repoPath) => {

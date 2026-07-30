@@ -14,7 +14,7 @@
  * empty results) rather than throwing into the renderer.
  */
 import type { IpcMain } from "electron";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import simpleGit from "simple-git";
 import {
@@ -27,6 +27,7 @@ import {
   GitDiffSchema,
   GitDiscardSchema,
   GitGenerateCommitSchema,
+  GitResolveConflictsSchema,
   GitLogSchema,
   GitShowCommitSchema,
   GitShowFileSchema,
@@ -291,7 +292,31 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
     }
     try {
       const git = simpleGit(input.repoPath);
-      await git.pull();
+      // `git.pull()` resolves a merge conflict by throwing, OR (for some merge
+      // strategies) returns with the working tree left in a conflicted state.
+      // We re-check `git.status().conflicted` so both paths are reported.
+      try {
+        await git.pull();
+      } catch (pullErr) {
+        // A conflict during merge surfaces as an error here. Inspect status to
+        // decide whether this is a conflict (ok:true + conflict flag, so the UI
+        // can offer AI resolution) vs. a genuine failure (ok:false).
+        const st = await git.status().catch(() => null);
+        const conflicted = st?.conflicted ?? [];
+        if (conflicted.length > 0) {
+          log.warn(`git.pull produced ${conflicted.length} conflict(s) in ${input.repoPath}`);
+          return { ok: true, conflict: true, conflictedFiles: conflicted };
+        }
+        throw pullErr;
+      }
+      // Pull succeeded without throwing — still verify there's no lingering
+      // conflicted state (some auto-merge strategies leave markers silently).
+      const st = await git.status().catch(() => null);
+      const conflicted = st?.conflicted ?? [];
+      if (conflicted.length > 0) {
+        log.warn(`git.pull left ${conflicted.length} conflict(s) in ${input.repoPath}`);
+        return { ok: true, conflict: true, conflictedFiles: conflicted };
+      }
       log.info(`git.pull succeeded in ${input.repoPath}`);
       return { ok: true };
     } catch (err) {
@@ -533,6 +558,176 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: msg };
     }
   });
+
+  /* ── git:resolveConflicts — AI-resolve all merge conflicts in a repo ── */
+  ipcMain.handle(IPC.GIT_RESOLVE_CONFLICTS, async (_evt, raw) => {
+    const input = GitResolveConflictsSchema.parse(raw);
+    if (!findContainingProject(input.repoPath)) {
+      return { ok: false, error: "仓库路径不在任何已添加的项目内" };
+    }
+    try {
+      const git = simpleGit(input.repoPath);
+      // 1. Gather the current conflicted files. (simple-git exposes them via
+      //    `status().conflicted`.)
+      const status = await git.status();
+      let conflicted = status.conflicted ?? [];
+      if (conflicted.length === 0) {
+        return { ok: false, error: "未检测到冲突文件" };
+      }
+
+      // 2. Read each conflicted file's full content (with conflict markers).
+      //    Skip files that are too large (> MAX_CONFLICT_FILE_BYTES) to avoid
+      //    blowing up the prompt; they are left unresolved and reported back.
+      const MAX_CONFLICT_FILE_BYTES = 100_000;
+      const files: { path: string; content: string }[] = [];
+      const skipped: string[] = [];
+      for (const relPath of conflicted) {
+        const abs = resolve(input.repoPath, relPath);
+        try {
+          const buf = await readFile(abs);
+          if (buf.byteLength > MAX_CONFLICT_FILE_BYTES) {
+            skipped.push(relPath);
+            continue;
+          }
+          files.push({ path: relPath, content: buf.toString("utf8") });
+        } catch (readErr) {
+          log.warn(`git.resolveConflicts: failed to read ${relPath}: ${(readErr as Error).message}`);
+          skipped.push(relPath);
+        }
+      }
+      if (files.length === 0) {
+        return { ok: false, error: "冲突文件无法读取(可能过大或已损坏),请手动解决" };
+      }
+
+      // 3. Build the user prompt. Each file is wrapped with a header carrying
+      //    its path so the model can map its JSON output back to the file.
+      const filesBlock = files
+        .map(
+          (f) =>
+            `=== FILE: ${f.path} ===\n${f.content}\n=== END FILE: ${f.path} ===`,
+        )
+        .join("\n\n");
+      const userPrompt =
+        `仓库 ${input.repoPath} 在合并后产生了 ${conflicted.length} 个冲突文件。` +
+        `请逐一解决冲突并输出每个文件的完整最终内容。\n\n${filesBlock}`;
+
+      // 4. Resolve the model config (optional custom endpoint).
+      const { query } = await import("@anthropic-ai/claude-agent-sdk");
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 120000); // 120s — conflicts can be large
+
+      try {
+        let model: string | undefined;
+        let env: import("@anthropic-ai/claude-agent-sdk").Options["env"];
+
+        if (input.customModelId) {
+          const cfg = CustomModelStore.resolveApiConfig(
+            input.customModelId,
+            input.customModelRole ?? undefined,
+          );
+          if (!cfg) {
+            return { ok: false, error: "找不到指定的模型配置" };
+          }
+          model = resolveActiveModel(cfg);
+          env = buildCustomEnv(cfg);
+        }
+
+        const q = query({
+          prompt: userPrompt,
+          options: {
+            abortController: ac,
+            maxTurns: 1,
+            model,
+            env,
+            systemPrompt: CONFLICT_RESOLVE_SYSTEM_PROMPT,
+            settingSources: ["project", "local"],
+            includePartialMessages: false,
+          },
+        });
+
+        // 5. Collect the assistant's text response.
+        let message = "";
+        for await (const m of q) {
+          if (m.type === "assistant") {
+            const content = (m as { message?: { content?: Array<{ type: string; text?: string }> } }).message?.content;
+            if (Array.isArray(content)) {
+              message = content
+                .filter((b) => b.type === "text" && b.text)
+                .map((b) => b.text!)
+                .join("\n");
+            }
+          }
+          if (m.type === "result") break;
+        }
+        clearTimeout(timer);
+
+        // 6. Parse the JSON array the model was instructed to emit, write each
+        //    resolved file back to disk, and `git add` it.
+        const parsed = parseConflictResolution(message);
+        if (!parsed) {
+          return {
+            ok: false,
+            error: "模型未返回可解析的冲突解决方案(JSON)。请检查模型能力或手动解决。",
+          };
+        }
+
+        const resolvedFiles: string[] = [];
+        const seenPaths = new Set(parsed.map((r) => r.path));
+        for (const { path: relPath, content } of parsed) {
+          if (!relPath || typeof content !== "string") continue;
+          // Guard against path traversal: the resolved path must remain inside
+          // the repo and must be one of the conflicted files.
+          const abs = resolve(input.repoPath, relPath);
+          if (!pathWithin(input.repoPath, abs)) {
+            log.warn(`git.resolveConflicts: skipping out-of-repo path ${relPath}`);
+            continue;
+          }
+          if (!conflicted.includes(relPath)) {
+            log.warn(`git.resolveConflicts: skipping path not in conflict set: ${relPath}`);
+            continue;
+          }
+          try {
+            await writeFile(abs, content, "utf8");
+            await git.add(relPath);
+            resolvedFiles.push(relPath);
+          } catch (writeErr) {
+            log.warn(`git.resolveConflicts: failed to write/add ${relPath}: ${(writeErr as Error).message}`);
+          }
+        }
+
+        if (resolvedFiles.length === 0) {
+          return { ok: false, error: "模型未给出可写回的冲突解决方案" };
+        }
+
+        const note =
+          skipped.length > 0
+            ? `(${skipped.length} 个文件过大被跳过,需手动解决)`
+            : undefined;
+        const unresolved = conflicted.filter((p) => !seenPaths.has(p));
+        log.info(
+          `git.resolveConflicts resolved ${resolvedFiles.length}/${conflicted.length} file(s) in ${input.repoPath}` +
+            (unresolved.length ? `, ${unresolved.length} unresolved` : ""),
+        );
+        return {
+          ok: true,
+          resolvedFiles,
+          error: note,
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (err) {
+      const msg = (err as Error).message || String(err);
+      log.warn(`git.resolveConflicts failed for ${input.repoPath}: ${msg}`);
+      if (/401|unauthorized|invalid.*key/i.test(msg)) {
+        return { ok: false, error: "认证失败,请检查模型配置的 Token/Key" };
+      }
+      if (/503|no available channel/i.test(msg)) {
+        return { ok: false, error: "网关无此模型渠道,请检查模型名配置" };
+      }
+      return { ok: false, error: msg };
+    }
+  });
 }
 
 /**
@@ -559,6 +754,68 @@ const COMMIT_GEN_SYSTEM_PROMPT = [
  * {@link COMMIT_GEN_SYSTEM_PROMPT} carries all output-shape constraints.
  */
 const DEFAULT_COMMIT_FORMAT_PROMPT = "使用中文生成提交信息,默认遵循 Conventional Commits 规范。";
+
+/**
+ * Fixed system prompt for AI conflict resolution. NEVER overridden — this is
+ * what guarantees parseable JSON output of resolved file contents. The model
+ * must keep BOTH sides' necessary changes, drop the conflict markers, and
+ * emit a clean final version of every file.
+ */
+const CONFLICT_RESOLVE_SYSTEM_PROMPT = [
+  "你是一个 Git 合并冲突解决助手。你的唯一职责是阅读带有冲突标记(`<<<<<<<`、`=======`、`>>>>>>>`)的文件,输出每个文件解决冲突后的完整最终内容。",
+  "",
+  "解决原则:",
+  "1. 综合考虑「我们的改动」(ours)与「他们的改动」(theirs)两边的意图,尽可能保留双方必要的改动;若两边确有矛盾无法兼顾,选择语义上更合理的一方,并在该处用注释简要说明。",
+  "2. 删除所有冲突标记行(`<<<<<<<`、`=======`、`>>>>>>>`)及其分支标签,输出干净的最终文件。",
+  "3. 不要臆造文件中原本不存在的内容;不要新增功能;保持文件的语法与结构合法。",
+  "4. 输出必须是单个 JSON 数组,且不包含任何 Markdown 代码块标记或其它包裹符号。数组每个元素形如 {\"path\": \"文件相对路径\", \"content\": \"解决后的完整文件内容\"}。",
+  "5. path 必须与输入中给出的 FILE 路径完全一致;content 必须是该文件的完整内容(不是 diff,不是片段)。",
+].join("\n");
+
+/**
+ * Parse the model's conflict-resolution output into `{ path, content }[]`.
+ *
+ * The model is instructed to emit a bare JSON array. In practice it sometimes
+ * wraps it in a ```json fence or adds stray prose, so we try, in order:
+ *   1. Strip a leading ```lang\n / trailing ``` fence (if present), then
+ *      JSON.parse the whole thing.
+ *   2. Otherwise, extract the first balanced `[...]` substring and parse that.
+ * Returns null if no valid array can be recovered.
+ */
+function parseConflictResolution(
+  raw: string,
+): { path: string; content: string }[] | null {
+  if (!raw || !raw.trim()) return null;
+  const tryParse = (s: string): { path: string; content: string }[] | null => {
+    try {
+      const v = JSON.parse(s);
+      if (Array.isArray(v)) {
+        return v
+          .map((it) =>
+            it && typeof it === "object" && "path" in it && "content" in it
+              ? { path: String(it.path), content: String(it.content) }
+              : null,
+          )
+          .filter((x): x is { path: string; content: string } => x !== null);
+      }
+    } catch {
+      /* fall through */
+    }
+    return null;
+  };
+  // 1. Strip code fences, then parse.
+  const fenced = raw.trim().replace(/^```[a-zA-Z]*\n?/, "").replace(/\n?```$/, "").trim();
+  const r1 = tryParse(fenced);
+  if (r1 && r1.length > 0) return r1;
+  // 2. Extract the first balanced [...] block.
+  const start = raw.indexOf("[");
+  const end = raw.lastIndexOf("]");
+  if (start !== -1 && end !== -1 && end > start) {
+    const r2 = tryParse(raw.slice(start, end + 1));
+    if (r2 && r2.length > 0) return r2;
+  }
+  return null;
+}
 
 /* ───────────────────────── history helpers ───────────────────────── */
 

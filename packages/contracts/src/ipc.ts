@@ -168,6 +168,15 @@ export const UI_COMMIT_GEN_MODEL_SETTING_KEY = "ui.commitGenModel";
 export const UI_COMMIT_GEN_PROMPT_SETTING_KEY = "ui.commitGenPrompt";
 
 /**
+ * Setting key under which the custom-model id used for AI git-conflict
+ * resolution is persisted. Same shape as UI_COMMIT_GEN_MODEL_SETTING_KEY
+ * (`"configId:roleKey"`); null/empty = use the built-in model. Shared
+ * between main (the resolve handler resolves the config) and renderer
+ * (the settings panel reads/writes).
+ */
+export const UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY = "ui.conflictResolveModel";
+
+/**
  * Setting key for per-repo collapsed state in the Git panel. Value is a
  * JSON-encoded `Record<string, boolean>` mapping repo paths to collapsed
  * state. Persisted so the collapsed/expanded state survives restarts.
@@ -691,6 +700,11 @@ export interface GitOpResult {
   ok: boolean;
   /** Error message when ok is false. */
   error?: string;
+  /** Set by `git:pull` when the pull produced a merge conflict. The repo is
+   *  now in a conflicted (unmerged) state; `conflictedFiles` lists the paths
+   *  that need resolution before the merge can be committed. */
+  conflict?: boolean;
+  conflictedFiles?: string[];
 }
 
 /** Discover all git repos under a project root (recursive, max depth 3). */
@@ -763,6 +777,23 @@ export const GitGenerateCommitSchema = z.object({
   prompt: z.string(),
 });
 export type GitGenerateCommitInput = z.infer<typeof GitGenerateCommitSchema>;
+
+/** Input for git.resolveConflicts: resolve all unmerged files in a repo via
+ *  an AI one-shot call. `repoPath` scopes the operation; `customModelId` +
+ *  `customModelRole` select the specific model (a config + its role binding,
+ *  same shape as git.generateCommitMessage); null = use the built-in model.
+ *  The handler reads each conflicted file's conflict markers, asks the model
+ *  for a resolved version, writes it back, and runs `git add`. It does NOT
+ *  commit — the user completes the merge commit after reviewing. */
+export const GitResolveConflictsSchema = z.object({
+  repoPath: z.string(),
+  /** Custom-model config id (from CustomModelStore). null = use built-in. */
+  customModelId: z.string().nullable(),
+  /** Which role binding within the config to use (e.g. "sonnet"). Ignored
+   *  when customModelId is null. */
+  customModelRole: z.string().nullable(),
+});
+export type GitResolveConflictsInput = z.infer<typeof GitResolveConflictsSchema>;
 
 /* ── Git history (log / show commit / show file at revision) ── */
 
@@ -1037,6 +1068,10 @@ export interface RpcMap {
   "git.discard": (input: GitDiscardInput) => Promise<GitOpResult>;
   /** Generate a commit message from the staged diff via an LLM one-shot call. */
   "git.generateCommitMessage": (input: GitGenerateCommitInput) => Promise<{ ok: boolean; message?: string; error?: string }>;
+  /** Resolve all merge conflicts in a repo via an AI one-shot call. Reads each
+   *  conflicted file, asks the model for a resolved version, writes it back and
+   *  runs `git add`. Does NOT commit. Returns the resolved file paths. */
+  "git.resolveConflicts": (input: GitResolveConflictsInput) => Promise<{ ok: boolean; resolvedFiles?: string[]; error?: string }>;
   /** Paginated commit log for a repo (newest first). */
   "git.log": (input: GitLogInput) => Promise<{ commits: GitCommitInfo[]; hasMore: boolean }>;
   /** Meta + changed files for one commit. */
@@ -1117,6 +1152,7 @@ export const IPC = {
   GIT_DIFF: "git:diff",
   GIT_DISCARD: "git:discard",
   GIT_GENERATE_COMMIT: "git:generateCommitMessage",
+  GIT_RESOLVE_CONFLICTS: "git:resolveConflicts",
   GIT_LOG: "git:log",
   GIT_SHOW_COMMIT: "git:showCommit",
   GIT_SHOW_FILE: "git:showFile",

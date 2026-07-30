@@ -34,6 +34,8 @@ export function GitPanel() {
   const commitGenPrompt = useSessionStore((s) => s.commitGenPrompt);
   const setCommitGenModel = useSessionStore((s) => s.setCommitGenModel);
   const setCommitGenPrompt = useSessionStore((s) => s.setCommitGenPrompt);
+  const conflictResolveModel = useSessionStore((s) => s.conflictResolveModel);
+  const setConflictResolveModel = useSessionStore((s) => s.setConflictResolveModel);
   const customModels = useSessionStore((s) => s.customModels);
 
   // ── Git diff open mode ──
@@ -151,6 +153,42 @@ export function GitPanel() {
             "focus:border-accent",
           )}
         />
+      </SettingRow>
+
+      {/* ── Git 冲突解决 ── */}
+      <div className="pb-3 pt-2">
+        <h2 className="text-sm font-semibold text-content">Git 冲突解决</h2>
+        <p className="mt-0.5 text-[11px] text-content-subtle">
+          当 git pull 产生合并冲突时,可一键让 AI 读取冲突标记并解决冲突。AI 会写回文件并暂存,保留 merge 状态供你检查后手动提交。
+        </p>
+      </div>
+
+      {/* Conflict-resolution model selector */}
+      <SettingRow
+        title="解决冲突模型"
+        desc="选择用于解决合并冲突的具体模型。需要先在「模型配置」中添加并绑定角色。未选择则使用内置 Claude 模型。"
+      >
+        {modelOptions.length > 0 ? (
+          <select
+            value={conflictResolveModel ?? ""}
+            onChange={(e) => setConflictResolveModel(e.target.value || null)}
+            className={cn(
+              "min-w-[220px] rounded-md border border-edge-input bg-surface px-2 py-1.5 text-xs text-content outline-none",
+              "focus:border-accent",
+            )}
+          >
+            <option value="">内置模型</option>
+            {modelOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <p className="text-[11px] text-content-subtle">
+            暂无可用模型,将使用内置模型。可在「模型配置」中添加。
+          </p>
+        )}
       </SettingRow>
     </div>
   );
