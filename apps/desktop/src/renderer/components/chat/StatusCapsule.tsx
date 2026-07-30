@@ -5,15 +5,15 @@ import {
   IconListDetails,
   IconChevronDown,
 } from "@renderer/lib/icons.js";
-import type { ContextSnapshot, SubagentSnapshot } from "@contracts/runtime";
-import type { TodoItem, PlanDraft, TurnUsageRecord } from "@renderer/stores/sessionStore.js";
+import type { SubagentSnapshot } from "@contracts/runtime";
+import type { TodoItem, PlanDraft } from "@renderer/stores/sessionStore.js";
 import { ActivityPopover } from "./ActivityPopover.js";
 
 /**
  * Unified status capsule for the sticky top-right of the chat stream.
- * Consolidates what used to be three separate chips (UsageChip +
- * SubagentsChip + TaskRing button) into ONE glassy pill, so the top-right
- * stays calm even when subagents + todos are all active.
+ * Consolidates what used to be separate chips (SubagentsChip + TaskRing
+ * button) into ONE glassy pill, so the top-right stays calm even when
+ * subagents + todos are all active.
  *
  * Layout: a single rounded container with up to two segments separated by a
  * thin divider. Each segment = icon + compact number. Segments are omitted
@@ -21,18 +21,13 @@ import { ActivityPopover } from "./ActivityPopover.js";
  * gracefully degrades, and renders nothing at all when every segment is empty.
  *
  * Click the capsule to open the ActivityPopover (the unified detail panel -
- * plan / subagents / tasks / usage). The context-window breakdown lives only
- * in that popover now, keeping the pill itself lean.
+ * plan / subagents / tasks), keeping the pill itself lean.
  */
 export function StatusCapsule({
-  snapshot,
-  usageHistory,
   subagents,
   todos,
   plan,
 }: {
-  snapshot?: ContextSnapshot;
-  usageHistory?: TurnUsageRecord[];
   subagents: SubagentSnapshot[];
   todos: TodoItem[];
   plan: PlanDraft;
@@ -57,7 +52,7 @@ export function StatusCapsule({
             ? "border-accent/50 bg-accent/15 text-accent"
             : "border-content-subtle/40 bg-surface-hover text-content hover:brightness-95 dark:hover:brightness-110",
         )}
-        title="查看活动详情（任务 / 子代理 / 上下文）"
+        title="查看活动详情（任务 / 子代理 / 计划）"
       >
         {/* Subagents segment - only when any exist. Pulsing dot while running. */}
         {hasSubagents && (
@@ -98,8 +93,6 @@ export function StatusCapsule({
           todos={todos}
           plan={plan}
           subagents={subagents}
-          snapshot={snapshot}
-          usageHistory={usageHistory ?? []}
         />
       )}
     </div>

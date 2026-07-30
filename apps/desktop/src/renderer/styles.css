@@ -90,13 +90,13 @@
  * user picks a different font size in Settings. Computed via calc() so
  * they track the base automatically; no per-theme definition needed. The
  * ratios preserve the existing visual hierarchy at the default 14px:
- *   lg≈16 (×1.143, h1), base=14, sm≈12 (×0.857), xs≈11 (×0.786),
- *   xxs≈10 (×0.714). */
+ *   lg≈16 (×1.143, h1), base=14, sm≈13 (×0.929, table), xs≈12 (×0.857,
+ *   code block), xxs≈11 (×0.786, code header). */
 :root {
   --chat-fs-lg: calc(var(--chat-font-size) * 1.1429);
-  --chat-fs-sm: calc(var(--chat-font-size) * 0.8571);
-  --chat-fs-xs: calc(var(--chat-font-size) * 0.7857);
-  --chat-fs-xxs: calc(var(--chat-font-size) * 0.7143);
+  --chat-fs-sm: calc(var(--chat-font-size) * 0.9286);
+  --chat-fs-xs: calc(var(--chat-font-size) * 0.8571);
+  --chat-fs-xxs: calc(var(--chat-font-size) * 0.7857);
 }
 
 /* ───────────── Derived right-panel font sizes ─────────────

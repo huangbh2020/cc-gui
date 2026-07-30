@@ -157,7 +157,7 @@ const components: Components = {
     const isInline = !isFencedCode(className);
     if (isInline) {
       return (
-        <code className="rounded bg-surface-muted/80 px-1 py-0.5 font-mono text-[0.85em] text-accent">
+        <code className="rounded bg-surface-muted/80 px-1 py-0.5 font-mono [font-size:var(--chat-fs-xs)] text-accent">
           {children}
         </code>
       );

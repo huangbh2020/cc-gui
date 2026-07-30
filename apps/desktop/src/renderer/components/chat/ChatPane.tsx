@@ -13,7 +13,8 @@ import {
   IconLoader2,
   IconPaperclip,
 } from "@renderer/lib/icons.js";
-import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, EMPTY_USAGE, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
+import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
+import { useNow } from "@renderer/hooks/useNow.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import type { PermissionMode } from "@contracts/runtime";
 import type { FileSearchEntry } from "@contracts/ipc";
@@ -97,20 +98,24 @@ function fmtDuration(ms: number): string {
 
 /** Per-turn stat row shown ABOVE the first assistant message of a turn:
  *  "开始 14:32:05 · 用时 12.3s". While the turn is still streaming
- *  (turnMeta.endedAt undefined) the duration ticks live via a 1s interval.
+ *  (turnMeta.endedAt undefined) the duration ticks live; once the turn ends it
+ *  freezes at its final value.
+ *
+ *  IMPORTANT: the live duration is driven by `useNow` (a single app-wide
+ *  1s interval shared via useSyncExternalStore), NOT a component-local
+ *  setInterval. This component renders inside a LegendList virtualized item,
+ *  and during streaming the list recycles/remounts its containers on nearly
+ *  every delta flush. A local setInterval would be torn down by each remount's
+ *  cleanup before its first 1000ms tick ever fires - leaving the duration
+ *  stuck at "<1s" for the whole turn. The global clock survives remounts.
  *  Rendered larger than the body text and separated from the content below by
  *  a hairline border so it reads as a distinct turn header. */
 function TurnStatRow({ meta }: { meta: TurnMeta }) {
   const live = meta.endedAt === undefined;
-  const [, force] = useState(0);
-  // Tick once per second while the turn is running so the duration updates.
-  useEffect(() => {
-    if (!live) return;
-    const id = setInterval(() => force((v) => v + 1), 1000);
-    return () => clearInterval(id);
-  }, [live]);
-
-  const end = meta.endedAt ?? Date.now();
+  // Only subscribe to the global ticker while the turn is still running -
+  // frozen turns compute a static duration and pay nothing.
+  const now = useNow();
+  const end = meta.endedAt ?? now;
   const duration = Math.max(0, end - meta.startedAt);
 
   return (
@@ -345,15 +350,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // Subagent roster for this session.
   const subagents: SubagentSnapshot[] = useSessionStore((s) =>
     s.subagentsBySession[sessionId] ?? EMPTY_SUBAGENTS,
-  );
-  // Context-window snapshot (token usage). Sourced from the per-session
-  // bucket, populated by token-usage.updated events and hydrated from the
-  // session row on select/open-tab. Undefined until the first usage report.
-  const contextSnapshot = useSessionStore((s) => s.contextSnapshotBySession[sessionId]);
-  // Per-turn finalized usage history (appended at turn.done). Drives the
-  // activity capsule's "上下文消耗" section + session totals.
-  const usageHistory = useSessionStore(
-    (s) => s.usageHistoryBySession[sessionId] ?? EMPTY_USAGE,
   );
   // Project root absolute path for this session (used by the @ / add-context
   // file pickers). Resolved through the session's projectId → projects[].
@@ -836,8 +832,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
       {!empty && (todos.length > 0 || subagents.length > 0) && (
         <div className="pointer-events-none absolute right-8 top-2 z-30 flex justify-end">
           <StatusCapsule
-            snapshot={contextSnapshot}
-            usageHistory={usageHistory}
             subagents={subagents}
             todos={todos}
             plan={plan}
