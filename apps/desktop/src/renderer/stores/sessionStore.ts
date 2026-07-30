@@ -31,7 +31,7 @@ import {
   UI_COMMIT_GEN_MODEL_SETTING_KEY,
   UI_COMMIT_GEN_PROMPT_SETTING_KEY,
   UI_GIT_COLLAPSED_REPOS_SETTING_KEY,
-  UI_CUSTOM_COMMANDS_SETTING_KEY,
+  UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY,
   UI_PANE_WIDTHS_SETTING_KEY,
   type DisplayMode,
   type RightPanelTab,
@@ -371,10 +371,11 @@ export interface SessionState {
    *  the last-used inspector. Only "files" is implemented in P4; the other
    *  three round-trip for forward-compat. */
   rightPanelTab: RightPanelTab;
-  /** User-saved terminal quick-commands. Persisted as a JSON array in the
-   *  settings table; read/written by the terminal toolbar's commands menu.
-   *  Global (not per-project) — these express reusable shortcuts. */
-  customCommands: CustomCommand[];
+  /** Per-project terminal quick-commands. Outer key = projectId, value = that
+   *  project's saved commands. Persisted as a JSON object (keyed by projectId)
+   *  in the settings table; read/written by the terminal toolbar's commands
+   *  menu and the settings → terminal panel. */
+  customCommandsByProject: Record<string, CustomCommand[]>;
   /** Per-project ordered list of absolute file paths open in the Monaco
    *  editor area. Drives the OpenTabsBar. Persisted as a JSON object keyed
    *  by projectId. */
@@ -565,10 +566,17 @@ export interface SessionState {
   /* ── IDE right-panel actions ── */
   /** Switch the active right-panel tab. Persists to settings. */
   setRightPanelTab: (tab: RightPanelTab) => void;
-  /** Replace the full list of saved terminal quick-commands. Persists to
-   *  settings (JSON-encoded). The terminal commands menu owns add/edit/delete
-   *  logic and calls this with the updated array. */
-  setCustomCommands: (cmds: CustomCommand[]) => void;
+  /** Replace a single project's saved terminal quick-commands. Persists the
+   *  whole per-project map (JSON-encoded) to settings. Both the terminal
+   *  commands menu (quick-add) and the settings -> terminal panel call this.
+   *  No-op if `projectId` is null (no active project). */
+  setCustomCommandsByProject: (projectId: string, commands: CustomCommand[]) => void;
+  /** Append a new command to a project's list. Generates a stable id. */
+  addCustomCommand: (projectId: string, cmd: Omit<CustomCommand, "id">) => void;
+  /** Replace an existing command (matched by id) within a project's list. */
+  updateCustomCommand: (projectId: string, cmd: CustomCommand) => void;
+  /** Remove a command (matched by id) from a project's list. */
+  removeCustomCommand: (projectId: string, id: string) => void;
   /** Open a file in the Monaco editor (dedup + append to ideOpenFiles, set
    *  active). `opts.diff` opens it in diff mode (used by the 审查 button when
    *  a before-snapshot exists). Also bumps ideFocusNonce so App opens the
@@ -1562,7 +1570,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // init() hydrates from the settings table. rightPanelTab / ideEditorMode
   // are global user prefs.
   rightPanelTab: "files",
-  customCommands: [],
+  customCommandsByProject: {},
   ideOpenFilesByProject: {},
   ideActiveFileByProject: {},
   ideFileViewModeByProject: {},
@@ -1674,7 +1682,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // values leave the defaults. Paths that don't belong to any persisted
     // project are dropped on load (stale tabs from a removed project).
     try {
-      const [tabRes, openRes, activeRes, dirsRes, modeRes, diffModeRes, commitModelRes, commitPromptRes, commandsRes] = await Promise.all([
+      const [tabRes, openRes, activeRes, dirsRes, modeRes, diffModeRes, commitModelRes, commitPromptRes, commandsByProjectRes] = await Promise.all([
         api.setting.get({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_OPEN_FILES_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_ACTIVE_FILE_SETTING_KEY }),
@@ -1683,7 +1691,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         api.setting.get({ key: UI_GIT_DIFF_OPEN_MODE_SETTING_KEY }),
         api.setting.get({ key: UI_COMMIT_GEN_MODEL_SETTING_KEY }),
         api.setting.get({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY }),
-        api.setting.get({ key: UI_CUSTOM_COMMANDS_SETTING_KEY }),
+        api.setting.get({ key: UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY }),
       ]);
       // Terminal moved to the bottom bar, so "terminal" is no longer a valid
       // right-panel tab - a stale persisted value falls through to the default
@@ -1706,46 +1714,49 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (commitPromptRes.value) {
         set({ commitGenPrompt: commitPromptRes.value });
       }
-      // Terminal quick-commands: JSON-encoded CustomCommand[]. Defensively
-      // parse + shape-check each item; malformed values leave the default [].
-      if (commandsRes.value) {
-        try {
-          const parsed = JSON.parse(commandsRes.value);
-          if (Array.isArray(parsed)) {
-            const valid = parsed.filter(
-              (c): c is CustomCommand =>
-                !!c &&
-                typeof c === "object" &&
-                typeof c.id === "string" &&
-                typeof c.name === "string" &&
-                typeof c.command === "string",
-            );
-            set({ customCommands: valid });
-          }
-        } catch {
-          /* malformed JSON — keep default [] */
-        }
-      }
+      // Per-project terminal quick-commands: JSON-encoded
+      // Record<string, CustomCommand[]> keyed by projectId. Parsed below
+      // (after `parseBucket` is defined) so each project's array can be
+      // shape-checked.
       // IDE editor state is persisted as per-project JSON objects (keyed by
       // projectId). Parse them now; path validation happens after projects
       // load (below). Legacy flat-array values (pre-per-project) are ignored
-      // — a benign one-time loss of "last open files".
+      // - a benign one-time loss of "last open files".
       const parseBucket = <T>(raw: string | null): Record<string, T> => {
         if (!raw) return {};
         try {
           const obj = JSON.parse(raw);
           if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj as Record<string, T>;
         } catch {
-          /* malformed JSON — leave empty */
+          /* malformed JSON - leave empty */
         }
         return {};
       };
       const parsedOpen = parseBucket<string[]>(openRes.value);
       const parsedActive = parseBucket<string | null>(activeRes.value);
       const parsedDirs = parseBucket<string[]>(dirsRes.value);
-      // Defer applying until we know the project roots — stash on a closure
+      // Defer applying until we know the project roots - stash on a closure
       // var the project-load block reads below.
       ideHydrationPending = { open: parsedOpen, active: parsedActive, dirs: parsedDirs };
+      // Per-project commands: parse the outer map, then defensively
+      // shape-check each inner CustomCommand[] (drop malformed items).
+      {
+        const rawMap = parseBucket<unknown>(commandsByProjectRes.value);
+        const validated: Record<string, CustomCommand[]> = {};
+        for (const [pid, rawList] of Object.entries(rawMap)) {
+          if (!Array.isArray(rawList)) continue;
+          const valid = rawList.filter(
+            (c): c is CustomCommand =>
+              !!c &&
+              typeof c === "object" &&
+              typeof c.id === "string" &&
+              typeof c.name === "string" &&
+              typeof c.command === "string",
+          );
+          validated[pid] = valid;
+        }
+        set({ customCommandsByProject: validated });
+      }
     } catch (err) {
       console.error("setting.get(ide) failed:", err);
     }
@@ -3194,11 +3205,35 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  setCustomCommands: (cmds) => {
-    set({ customCommands: cmds });
+  setCustomCommandsByProject: (projectId, commands) => {
+    set((s) => ({
+      customCommandsByProject: { ...s.customCommandsByProject, [projectId]: commands },
+    }));
     void api.setting
-      .set({ key: UI_CUSTOM_COMMANDS_SETTING_KEY, value: JSON.stringify(cmds) })
-      .catch((err) => console.error("setting.set(customCommands) failed:", err));
+      .set({ key: UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, value: JSON.stringify(get().customCommandsByProject) })
+      .catch((err) => console.error("setting.set(customCommandsByProject) failed:", err));
+  },
+
+  addCustomCommand: (projectId, cmd) => {
+    const prev = get().customCommandsByProject[projectId] ?? [];
+    const next: CustomCommand = { ...cmd, id: `cmd-${Date.now().toString(36)}` };
+    get().setCustomCommandsByProject(projectId, [...prev, next]);
+  },
+
+  updateCustomCommand: (projectId, cmd) => {
+    const prev = get().customCommandsByProject[projectId] ?? [];
+    get().setCustomCommandsByProject(
+      projectId,
+      prev.map((c) => (c.id === cmd.id ? cmd : c)),
+    );
+  },
+
+  removeCustomCommand: (projectId, id) => {
+    const prev = get().customCommandsByProject[projectId] ?? [];
+    get().setCustomCommandsByProject(
+      projectId,
+      prev.filter((c) => c.id !== id),
+    );
   },
 
   openFileInIde: (filePath, opts) => {

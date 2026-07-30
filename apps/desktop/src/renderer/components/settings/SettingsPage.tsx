@@ -6,6 +6,7 @@ import { ClaudePathPanel } from "./ClaudePathPanel.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
 import { GitPanel } from "./GitPanel.js";
+import { TerminalPanel } from "./TerminalPanel.js";
 import { AboutPanel } from "./AboutPanel.js";
 
 /**
@@ -21,6 +22,7 @@ import { AboutPanel } from "./AboutPanel.js";
  *  - 模型配置        (CustomModelsPanel - two-column: provider list + config form)
  *  - 外观           (AppearancePanel - flat one-row-per-feature list)
  *  - Git            (GitPanel)
+ *  - 终端           (TerminalPanel - shell override + per-project commands)
  *  - 关于           (AboutPanel - version / license / repo links)
  *
  * (“通用” section temporarily hidden - not yet implemented.)
@@ -29,7 +31,7 @@ import { AboutPanel } from "./AboutPanel.js";
  * kept alive — `ClaudePathPanel` is designed to reload its value on mount, so
  * fresh-mount per nav switch is the intended pattern.
  */
-type SectionId = "general" | "claude-path" | "custom-models" | "appearance" | "git" | "about";
+type SectionId = "general" | "claude-path" | "custom-models" | "appearance" | "git" | "terminal" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -42,6 +44,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "custom-models", label: "模型配置" },
   { id: "appearance", label: "外观" },
   { id: "git", label: "Git" },
+  { id: "terminal", label: "终端" },
   { id: "about", label: "关于" },
 ];
 
@@ -102,6 +105,7 @@ export function SettingsPage() {
           {active === "custom-models" && <CustomModelsPanel />}
           {active === "appearance" && <AppearancePanel />}
           {active === "git" && <GitPanel />}
+          {active === "terminal" && <TerminalPanel />}
           {active === "about" && <AboutPanel />}
         </div>
       }

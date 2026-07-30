@@ -177,10 +177,22 @@ export const UI_GIT_COLLAPSED_REPOS_SETTING_KEY = "ui.gitCollapsedRepos";
 /**
  * Setting key under which the user's saved terminal quick-commands are
  * persisted. Value is a JSON-encoded `CustomCommand[]` (name + command + id).
- * The terminal toolbar's commands menu reads/writes it so saved commands
- * survive restarts and stay in sync across terminal instances.
+ *
+ * @deprecated Replaced by {@link UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY}.
+ * Commands are now scoped per-project. This key is no longer read or written
+ * by the app; any persisted value is ignored. Kept only to avoid breaking
+ * imports - to be removed in a future cleanup.
  */
 export const UI_CUSTOM_COMMANDS_SETTING_KEY = "ui.customCommands";
+
+/**
+ * Setting key under which per-project terminal quick-commands are persisted.
+ * Value is a JSON-encoded `Record<string, CustomCommand[]>` keyed by
+ * `projectId`. Mirrors the per-project IDE-state persistence pattern
+ * (ui.ideOpenFiles etc.): one setting row holds all projects' command lists,
+ * and the renderer re-hydrates the whole map at boot.
+ */
+export const UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY = "ui.customCommandsByProject";
 
 /** One user-saved terminal quick-command. `id` is a stable client-side id
  *  (used as the React key and for edit/delete targeting); `name` is the menu
@@ -565,6 +577,46 @@ export const FileWriteSchema = z.object({
 });
 export type FileWriteInput = z.infer<typeof FileWriteSchema>;
 
+/**
+ * One line-level match from `file.grep`. `lineNumber` is 1-based. `lineText`
+ * is the raw matched line (untrimmed, so column offsets are meaningful).
+ * `matches` are 0-based [start,end) column ranges for each occurrence of the
+ * query on that line, for frontend highlighting.
+ */
+export interface FileGrepEntry {
+  /** Absolute filesystem path. */
+  path: string;
+  /** Path relative to the project root (forward-slash separated). */
+  relativePath: string;
+  /** 1-based line number within the file. */
+  lineNumber: number;
+  /** Raw text of the matched line. */
+  lineText: string;
+  /** Column ranges of each query occurrence on this line (0-based [start,end)). */
+  matches: Array<{ start: number; end: number }>;
+}
+
+/**
+ * Grep file contents under a project root. Main walks the same ignored-dir-
+ * filtered tree as `file.search`, skips binary files (null-byte sniff on the
+ * first ~8KB + a binary-extension skip-list), and scans each text file's
+ * lines for the query. Case-insensitive by default. Returns line-level
+ * matches, capped at `limit` total and `maxResultsPerFile` per file.
+ */
+export const FileGrepSchema = z.object({
+  /** Absolute path of the project root. Must match a persisted Project.path. */
+  projectPath: z.string(),
+  /** Substring to search for inside file contents. */
+  query: z.string(),
+  /** Max total matches to return. Defaults to 200 on the main side. */
+  limit: z.number().int().positive().max(500).optional(),
+  /** Max matches per single file. Defaults to 10 on the main side. */
+  maxResultsPerFile: z.number().int().positive().max(50).optional(),
+  /** Case-sensitive match. Defaults to false. */
+  caseSensitive: z.boolean().optional(),
+});
+export type FileGrepInput = z.infer<typeof FileGrepSchema>;
+
 /* ── Git operations (status / stage / commit / push / pull / diff) ──
  *  All git operations are scoped to a `repoPath` that must resolve inside a
  *  known project root. A single project folder may host MULTIPLE git repos
@@ -945,6 +997,8 @@ export interface RpcMap {
   "file.search": (input: FileSearchInput) => Promise<{ files: FileSearchEntry[] }>;
   /** Write content to a file (creates parents), scoped to a project root. */
   "file.writeFile": (input: FileWriteInput) => Promise<{ ok: boolean }>;
+  /** Grep file contents under a project root (line-level matches). */
+  "file.grep": (input: FileGrepInput) => Promise<{ matches: FileGrepEntry[] }>;
   // Git operations (P4 Git panel)
   /** Discover all git repos under a project root (recursive, max depth 3). */
   "git.discoverRepos": (input: GitDiscoverReposInput) => Promise<{ repos: GitRepo[] }>;
@@ -1030,6 +1084,7 @@ export const IPC = {
   FILE_LIST_DIR: "file:listDir",
   FILE_SEARCH: "file:search",
   FILE_WRITE: "file:writeFile",
+  FILE_GREP: "file:grep",
   // Git operations (P4 Git panel)
   GIT_DISCOVER_REPOS: "git:discoverRepos",
   GIT_STATUS: "git:status",

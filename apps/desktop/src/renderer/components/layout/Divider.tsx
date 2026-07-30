@@ -5,12 +5,15 @@
  * and CenterPane (chat|editor). Hand-rolled with mousedown -> document
  * mousemove/mouseup listeners, matching the codebase's no-library style.
  *
- * Visuals: the hit area IS the 1px visual line - no surrounding "column", so
- * the divider reads as a thin hairline (like a border) while still being
- * draggable. The line is subtle (`bg-edge`) at rest and lights up
- * (`bg-accent/50`) on hover or while dragging. During a drag, a global
- * `select-none` + fixed cursor is applied to <body> so text selection and
- * cursor flicker don't interfere.
+ * Visuals: the visible line is a 1px hairline (`bg-edge`) that lights up
+ * (`bg-accent/50`) on hover or while dragging - it reads like a border, not a
+ * thick bar. The *draggable* hit area, however, is wider: an invisible
+ * absolutely-positioned layer extends symmetrically (±5px) beyond the 1px
+ * layout slot, so the divider is easy to grab without making the line thicker.
+ * The 1px line uses `pointer-events-none` so pointer events pass straight
+ * through to the hit area beneath. During a drag, a global `select-none` +
+ * fixed cursor is applied to <body> so text selection and cursor flicker
+ * don't interfere.
  *
  * The caller owns the sizing math: `onResize(deltaPx)` is called on every
  * mousemove with the signed pixel delta *since the last event* (an incremental
@@ -39,8 +42,8 @@ export interface DividerProps {
   onResize: (deltaPx: number) => void;
   /** Optional double-click handler (e.g. reset to default width). */
   onDoubleClick?: () => void;
-  /** Kept for API compatibility but a no-op now that the hit area is 1px (the
-   *  line fills the whole element, so there is nowhere to align within). */
+  /** Kept for API compatibility but a no-op (the visible 1px line is centered
+   *  in the symmetric hit area, so there is nowhere to align within). */
   lineAlign?: "start" | "center" | "end";
   className?: string;
 }
@@ -90,22 +93,46 @@ export function Divider({
     [isVertical, onResize],
   );
 
-  // The hit area is the line itself: 1px wide/tall, filled with `bg-edge`.
-  // No separate absolutely-positioned child, no 5px "column" - the divider
-  // looks like a border while still being draggable.
+  // Two-layer structure:
+  //  - Outer slot: still occupies a 1px layout gutter (w-px / h-px) so it
+  //    doesn't shift pane sizes. It is `relative` so the inner layers can be
+  //    absolutely positioned relative to it.
+  //  - Hit area: an invisible layer expanding symmetrically (±5px) beyond the
+  //    1px slot, providing a wide grab target. It carries the mouse handlers
+  //    and the cursor. `z-0` keeps it beneath the line but still clickable
+  //    (the line is pointer-events-none).
+  //  - Line: the 1px visible hairline, centered over the slot and stretching
+  //    across the full length. pointer-events-none so it never steals the
+  //    grab from the hit area; it only lights up via group-hover/active.
   return (
     <div
       role="separator"
       aria-orientation={isVertical ? "vertical" : "horizontal"}
-      onMouseDown={handleMouseDown}
-      onDoubleClick={onDoubleClick}
       className={cn(
-        "group/divider z-10 shrink-0 bg-edge transition-colors group-hover/divider:bg-accent/50",
-        isVertical
-          ? "w-px cursor-col-resize"
-          : "h-px cursor-row-resize",
+        "group/divider relative z-10 shrink-0",
+        isVertical ? "w-px" : "h-px",
         className,
       )}
-    />
+    >
+      {/* Draggable hit area - wider than the visible line. */}
+      <div
+        onMouseDown={handleMouseDown}
+        onDoubleClick={onDoubleClick}
+        className={cn(
+          "absolute z-0",
+          isVertical
+            ? "inset-y-0 -left-[5px] -right-[5px] cursor-col-resize"
+            : "inset-x-0 -top-[5px] -bottom-[5px] cursor-row-resize",
+        )}
+      />
+      {/* Visible 1px hairline - pointer-events-none so the hit area stays the
+          grab target. Lights up on hover/active via group-hover/active. */}
+      <div
+        className={cn(
+          "pointer-events-none absolute inset-0 bg-edge transition-colors group-hover/divider:bg-accent/50 group-active/divider:bg-accent/70",
+          isVertical ? "w-px left-0" : "h-px top-0",
+        )}
+      />
+    </div>
   );
 }

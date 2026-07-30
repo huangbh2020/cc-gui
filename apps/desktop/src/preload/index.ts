@@ -98,6 +98,9 @@ const api = {
     /** Recursive file search under a project root (composer @ / add-context). */
     search: ((input) =>
       ipcRenderer.invoke(IPC.FILE_SEARCH, input)) as RpcMap["file.search"],
+    /** Grep file contents under a project root (line-level matches). */
+    grep: ((input) =>
+      ipcRenderer.invoke(IPC.FILE_GREP, input)) as RpcMap["file.grep"],
     /** Write utf-8 content to a file (creates parent dirs). Returns ok. */
     writeFile: ((input) =>
       ipcRenderer.invoke(IPC.FILE_WRITE, input)) as RpcMap["file.writeFile"],

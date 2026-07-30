@@ -833,7 +833,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           pill itself is clickable, the rest of the overlay passes pointer
           events through to the scroll surface beneath. The popover drops
           down from the pill inside this non-clipping wrapper. */}
-      {!empty && (todos.length > 0 || contextSnapshot || subagents.length > 0) && (
+      {!empty && (todos.length > 0 || subagents.length > 0) && (
         <div className="pointer-events-none absolute right-8 top-2 z-30 flex justify-end">
           <StatusCapsule
             snapshot={contextSnapshot}

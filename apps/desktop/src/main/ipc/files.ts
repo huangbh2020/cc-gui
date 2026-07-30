@@ -26,8 +26,9 @@ import {
   FileListDirSchema,
   FileSearchSchema,
   FileWriteSchema,
+  FileGrepSchema,
 } from "@contracts/ipc";
-import type { FileSearchEntry, FileTreeEntry } from "@contracts/ipc";
+import type { FileSearchEntry, FileTreeEntry, FileGrepEntry } from "@contracts/ipc";
 import { ProjectRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 
@@ -74,6 +75,38 @@ const IGNORED_ENTRIES = new Set([
   "out",
   "target",
 ]);
+
+/** File extensions that are always binary - skipped by `file:grep` without
+ *  even opening the file. Cheaper than the null-byte sniff for obvious cases.
+ *  Lowercase, no leading dot. */
+const BINARY_EXTENSIONS = new Set([
+  "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "tiff", "svgz",
+  "zip", "gz", "tar", "rar", "7z", "bz2", "xz",
+  "woff", "woff2", "ttf", "otf", "eot",
+  "pdf", "exe", "dll", "so", "dylib", "class", "jar", "wasm",
+  "mp3", "mp4", "webm", "avi", "mov", "ogg", "flac", "wav",
+  "sqlite", "db",
+]);
+
+/** Heuristic binary detection: treat a file as binary if its first chunk
+ *  contains a NUL byte (the classic git/ripgrep heuristic). We only sniff the
+ *  first `SNIFF_BYTES` since reading a whole large file just to reject it is
+ *  wasteful. Used by `file:grep` after the extension skip-list. */
+const SNIFF_BYTES = 8192;
+function isBinaryBuffer(buf: Buffer): boolean {
+  const len = Math.min(buf.length, SNIFF_BYTES);
+  for (let i = 0; i < len; i++) {
+    if (buf[i] === 0) return true;
+  }
+  return false;
+}
+
+/** Extract the lowercase extension (no dot) from a filename, or "" if none. */
+function extOf(name: string): string {
+  const i = name.lastIndexOf(".");
+  if (i <= 0 || i === name.length - 1) return "";
+  return name.slice(i + 1).toLowerCase();
+}
 
 export function registerFileHandlers(ipcMain: IpcMain): void {
   /* ── file:readFile — single file read, scoped to any project root ── */
@@ -229,6 +262,120 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
     }
 
     return { files };
+  });
+
+  /* ── file:grep - recursive content search (line-level matches) ──
+   * Walks the same ignored-dir-filtered tree as `file:search`, reads each text
+   * file, and returns line-level matches. Binary files are skipped via an
+   * extension skip-list + a NUL-byte sniff so we never decode non-text bytes.
+   * Same path-root containment and hard caps as the name search. */
+  ipcMain.handle(IPC.FILE_GREP, async (_evt, raw) => {
+    const input = FileGrepSchema.parse(raw);
+    const known = ProjectRepo.list().some((p) => samePath(p.path, input.projectPath));
+    if (!known) {
+      log.warn(`file.grep refused - unknown projectPath: ${input.projectPath}`);
+      return { matches: [] as FileGrepEntry[] };
+    }
+    const root = resolve(input.projectPath);
+    const limit = input.limit ?? 200;
+    const maxPerFile = input.maxResultsPerFile ?? 10;
+    const query = input.query;
+    const needle = input.caseSensitive ? query : query.toLowerCase();
+
+    const matches: FileGrepEntry[] = [];
+    let visited = 0;
+
+    /** BFS walk mirroring `file:search` so shallow files are scanned first. */
+    type QueueItem = { abs: string; depth: number };
+    const queue: QueueItem[] = [{ abs: root, depth: 0 }];
+    const MAX_DEPTH = 12;
+    const MAX_VISIT = 8000;
+
+    while (queue.length > 0 && matches.length < limit && visited < MAX_VISIT) {
+      const { abs, depth } = queue.shift()!;
+      let dirents;
+      try {
+        dirents = await readdir(abs, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      dirents.sort((a, b) => {
+        const aDir = a.isDirectory();
+        const bDir = b.isDirectory();
+        if (aDir !== bDir) return aDir ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      });
+      for (const d of dirents) {
+        if (matches.length >= limit || visited >= MAX_VISIT) break;
+        if (IGNORED_ENTRIES.has(d.name)) continue;
+        let isDir: boolean;
+        try {
+          isDir = d.isDirectory();
+        } catch {
+          continue;
+        }
+        const fullPath = join(abs, d.name);
+        if (!pathWithin(root, fullPath)) continue;
+        visited += 1;
+        if (isDir) {
+          if (depth + 1 <= MAX_DEPTH) queue.push({ abs: fullPath, depth: depth + 1 });
+          continue;
+        }
+        // Skip obvious binaries by extension without opening them.
+        if (BINARY_EXTENSIONS.has(extOf(d.name))) continue;
+
+        let buf: Buffer;
+        try {
+          buf = await readFile(fullPath);
+        } catch {
+          // ENOENT / EACCES / unreadable - skip this file, keep scanning.
+          log.warn(`file.grep read failed for ${fullPath}: skipping`);
+          continue;
+        }
+        // NUL-byte sniff: skip binary content that slipped past the ext list.
+        if (isBinaryBuffer(buf)) continue;
+
+        let rel: string;
+        try {
+          rel = relative(root, fullPath).split(/[/\\]/).join("/");
+        } catch {
+          rel = d.name;
+        }
+
+        const text = buf.toString("utf-8");
+        // Split on line boundaries; we scan the whole file but break early
+        // once the per-file match cap is hit (bounds very large files).
+        const lines = text.split(/\r?\n/);
+        let fileHits = 0;
+        for (let li = 0; li < lines.length; li++) {
+          if (matches.length >= limit || fileHits >= maxPerFile) break;
+          const line = lines[li];
+          const hay = input.caseSensitive ? line : line.toLowerCase();
+          let from = 0;
+          const ranges: Array<{ start: number; end: number }> = [];
+          // Find all occurrences on this line. Ranges index into the original
+          // `line` (case preserved) so the frontend highlight aligns.
+          for (;;) {
+            const idx = hay.indexOf(needle, from);
+            if (idx === -1) break;
+            ranges.push({ start: idx, end: idx + query.length });
+            from = idx + needle.length;
+          }
+          if (ranges.length > 0) {
+            matches.push({
+              path: fullPath,
+              relativePath: rel,
+              lineNumber: li + 1,
+              lineText: line,
+              matches: ranges,
+            });
+            fileHits += 1;
+          }
+        }
+      }
+    }
+
+    return { matches };
   });
 
   /* ── file:writeFile — utf-8 write, creates parent dirs, scoped to a root ── */

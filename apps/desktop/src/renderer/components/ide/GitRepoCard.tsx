@@ -339,41 +339,56 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
   return (
     <div className="rounded-lg border border-edge bg-surface">
       {/* ── Header ── */}
-      <div className="flex items-center gap-2 border-b border-edge px-2.5 py-1.5">
-        <IconGitBranch size={13} className="shrink-0 text-content-subtle" />
-        <span className="truncate [font-size:var(--right-panel-font-size)] font-medium text-content" title={repo.path}>
-          {repo.name}
-        </span>
-        {status?.branch && (
-          <span className="shrink-0 rounded bg-surface-muted px-1.5 py-0.5 font-mono [font-size:var(--rp-fs-xxs)] text-content-muted">
-            {status.branch}
+      <div className="flex flex-col gap-1 border-b border-edge px-2.5 py-1.5">
+        {/* Row 1: repo name (gets the full row width so long names aren't
+            squeezed off by the branch badge + remote actions) + collapse
+            toggle. Splitting name and branch onto separate rows keeps long
+            repo names readable. */}
+        <div className="flex items-center gap-2">
+          <IconGitBranch size={13} className="shrink-0 text-content-subtle" />
+          <span
+            className="min-w-0 flex-1 truncate [font-size:var(--right-panel-font-size)] font-medium text-content"
+            title={repo.path}
+          >
+            {repo.name}
           </span>
-        )}
-        {status && status.ahead > 0 && (
-          <span className="flex shrink-0 items-center gap-0.5 [font-size:var(--rp-fs-xxs)] text-accent" title="领先上游">
-            <IconArrowUp size={10} />
-            {status.ahead}
-          </span>
-        )}
-        {status && status.behind > 0 && (
-          <span className="flex shrink-0 items-center gap-0.5 [font-size:var(--rp-fs-xxs)] text-info" title="落后上游">
-            <IconArrowDown size={10} />
-            {status.behind}
-          </span>
-        )}
-        <div className="ml-auto flex items-center gap-0.5">
-          <ActionButton onClick={handlePull} disabled={busy !== null || loading} busy={busy === "pull"} title="拉取 (Pull)">
-            <IconArrowDown size={12} />
-          </ActionButton>
-          <ActionButton onClick={handlePush} disabled={busy !== null || loading} busy={busy === "push"} title="推送 (Push)">
-            <IconArrowUp size={12} />
-          </ActionButton>
-          <ActionButton onClick={refresh} disabled={busy !== null} title="刷新状态">
-            <IconRefresh size={12} />
-          </ActionButton>
-          <ActionButton onClick={() => toggleCollapsedGitRepo(repo.path)} title={collapsed ? "展开" : "收起"}>
+          <ActionButton
+            onClick={() => toggleCollapsedGitRepo(repo.path)}
+            title={collapsed ? "展开" : "收起"}
+          >
             {collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
           </ActionButton>
+        </div>
+        {/* Row 2: branch + ahead/behind + remote actions. */}
+        <div className="flex items-center gap-1.5">
+          {status?.branch && (
+            <span className="shrink-0 rounded bg-surface-muted px-1.5 py-0.5 font-mono [font-size:var(--rp-fs-xxs)] text-content-muted">
+              {status.branch}
+            </span>
+          )}
+          {status && status.ahead > 0 && (
+            <span className="flex shrink-0 items-center gap-0.5 [font-size:var(--rp-fs-xxs)] text-accent" title="领先上游">
+              <IconArrowUp size={10} />
+              {status.ahead}
+            </span>
+          )}
+          {status && status.behind > 0 && (
+            <span className="flex shrink-0 items-center gap-0.5 [font-size:var(--rp-fs-xxs)] text-info" title="落后上游">
+              <IconArrowDown size={10} />
+              {status.behind}
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-0.5">
+            <ActionButton onClick={handlePull} disabled={busy !== null || loading} busy={busy === "pull"} title="拉取 (Pull)">
+              <IconArrowDown size={12} />
+            </ActionButton>
+            <ActionButton onClick={handlePush} disabled={busy !== null || loading} busy={busy === "push"} title="推送 (Push)">
+              <IconArrowUp size={12} />
+            </ActionButton>
+            <ActionButton onClick={refresh} disabled={busy !== null} title="刷新状态">
+              <IconRefresh size={12} />
+            </ActionButton>
+          </div>
         </div>
       </div>
 

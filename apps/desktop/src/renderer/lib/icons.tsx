@@ -75,6 +75,7 @@ export {
   IconFileText,
   IconFilePlus,
   IconFileSearch,
+  IconTextScan2,
   IconNotebook,
   IconClipboard,
   IconPaperclip,

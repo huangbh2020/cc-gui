@@ -367,7 +367,7 @@ function SessionRow({
       className={cn(
         "group flex cursor-pointer items-center gap-1 rounded-md px-1 py-1 [font-size:var(--right-panel-font-size)]",
         active
-          ? "bg-surface-hover text-content shadow-sm ring-1 ring-accent/35"
+          ? "bg-surface-hover text-content shadow-sm ring-1 ring-inset ring-accent/35"
           : "text-content-muted hover:bg-surface-muted/50",
       )}
       title={session.title}
