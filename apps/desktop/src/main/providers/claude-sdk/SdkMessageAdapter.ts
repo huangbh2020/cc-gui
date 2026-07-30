@@ -844,15 +844,20 @@ export class SdkMessageAdapter {
         }
       }
 
-      // Path C (doc §2): turn-end merged snapshot. `usedTokens` (window
-      // occupancy) is the bigger of this turn's data and the last known
-      // mid-turn snapshot; `totalProcessedTokens` comes from accumulated
-      // result.usage. `lastKnownTokenUsage` from path A seeds the merge;
-      // when no path-A snapshot exists (e.g. usage came back only at turn
-      // end), we fall back to this turn's raw values.
+      // Path C (doc §2): turn-end merged snapshot. The SDK's `result.usage`
+      // is a CUMULATIVE sum across the whole run (billing semantics), NOT the
+      // current window occupancy — so `usedTokens`/`pct`/`warning` must come
+      // from the last path-A snapshot (the most recent per-assistant-response
+      // window read). The accumulated result contributes only throughput /
+      // cost / cache / output / window-ceiling metadata.
+      //
+      // When no path-A snapshot exists (usage surfaced only at turn end), we
+      // fall back to emitting the accumulated values directly as a
+      // better-than-nothing readout.
       const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
       const model = (m as { model?: string }).model;
-      const fallback: RawClaudeUsage | undefined = this.state.lastKnownTokenUsage
+      const lastKnown = this.state.lastKnownTokenUsage;
+      const fallback: RawClaudeUsage | undefined = lastKnown
         ? undefined
         : {
             inputTokens: rawInput > 0 ? rawInput : muInput,
@@ -870,9 +875,12 @@ export class SdkMessageAdapter {
           };
       if (fallback) {
         this.emitTokenUsage(fallback, model, reportedWindow);
-      } else if (this.state.lastKnownTokenUsage) {
-        // Re-normalize the accumulated result usage, then merge with path A
-        // so usedTokens reflects the latest window read (doc §2 path C).
+      } else if (lastKnown) {
+        // Normalize the accumulated result.usage for its throughput / cost /
+        // cache / window-ceiling fields, then merge so `usedTokens` reflects
+        // the latest path-A window read (doc §2 path C). The merge ignores
+        // accumulated.usedTokens on purpose — see
+        // mergeClaudeTokenUsageSnapshot.
         const accumulated = normalizeClaudeTokenUsage(
           {
             inputTokens: rawInput > 0 ? rawInput : muInput,
@@ -888,7 +896,7 @@ export class SdkMessageAdapter {
         );
         if (accumulated) {
           const merged = mergeClaudeTokenUsageSnapshot(
-            this.state.lastKnownTokenUsage,
+            lastKnown,
             accumulated,
             accumulated.maxTokens,
           );

@@ -203,18 +203,28 @@ export function normalizeClaudeTokenUsage(
 /* ── path C merge (doc §2 path C) ── */
 
 /** Merge a turn-end accumulated snapshot (from `result.usage`) with the last
- *  known mid-turn snapshot (from path A). Per doc §2 path C, the SDK's
- *  `result.usage` is an accumulated sum — it must NOT be treated as the
- *  current window occupancy. So accumulated contributes
- *  `totalProcessedTokens`, and `usedTokens` comes from whichever is larger
- *  between accumulated and lastKnown (the most recent window read we have). */
+ *  known mid-turn snapshot (from path A).
+ *
+ *  CRITICAL: the SDK's `result.usage` is a **cumulative sum across the whole
+ *  run** (suitable for billing), NOT the current context-window occupancy
+ *  (see https://code.claude.com/docs/en/agent-sdk/cost-tracking and
+ *  claude-agent-sdk-typescript#66). Treating it as occupancy makes the ring
+ *  jump up at turn-end and monotonically approach 100%.
+ *
+ *  So the accumulated snapshot contributes only `totalProcessedTokens`,
+ *  `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `costUsd`,
+ *  `model`, and `maxTokens` (window resolution). `usedTokens` / `pct` /
+ *  `warning` come ENTIRELY from `lastKnown` (the most recent path-A window
+ *  read) — the accumulated occupancy is ignored on purpose. When no path-A
+ *  snapshot exists, the caller should fall back to the accumulated values
+ *  directly (better-than-nothing) rather than calling this merge. */
 export function mergeClaudeTokenUsageSnapshot(
-  lastKnown: ContextSnapshot | undefined,
+  lastKnown: ContextSnapshot,
   accumulated: ContextSnapshot,
   maxTokens: number,
 ): ContextSnapshot {
-  if (!lastKnown) return accumulated;
-  const usedTokens = Math.min(Math.max(accumulated.usedTokens, lastKnown.usedTokens), maxTokens);
+  // usedTokens = the path-A window read, clamped to the resolved ceiling.
+  const usedTokens = Math.min(lastKnown.usedTokens, maxTokens);
   const pct = Math.min(100, Math.round((usedTokens / maxTokens) * 100));
   const warning: ContextWarning =
     pct >= 90 ? "critical" : pct >= 70 ? "near-window" : "ok";
