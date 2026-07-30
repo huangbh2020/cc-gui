@@ -47,6 +47,8 @@ const api = {
       ipcRenderer.invoke(IPC.SESSION_DELETE, input)) as RpcMap["session.delete"],
     archive: ((input) =>
       ipcRenderer.invoke(IPC.SESSION_ARCHIVE, input)) as RpcMap["session.archive"],
+    rename: ((input) =>
+      ipcRenderer.invoke(IPC.SESSION_RENAME, input)) as RpcMap["session.rename"],
   },
   setting: {
     get: ((input) =>
@@ -84,6 +86,14 @@ const api = {
    *  About panel. Parameterless RPC. */
   app: {
     info: (() => ipcRenderer.invoke(IPC.APP_INFO)) as RpcMap["app.info"],
+  },
+
+  /** Open a project root in the OS file manager. Main refuses any path that
+   *  isn't an exact match for a known project root, so only directories the
+   *  user has added as projects can be opened. */
+  shell: {
+    openPath: ((input) =>
+      ipcRenderer.invoke(IPC.SHELL_OPEN_PATH, input)) as RpcMap["shell.openPath"],
   },
 
   /** Filesystem operations for the IDE right panel + diff rendering. Every

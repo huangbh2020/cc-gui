@@ -7,6 +7,7 @@ import {
   DeleteSessionSchema,
   ArchiveSessionSchema,
   ProjectSessionsSchema,
+  RenameSessionSchema,
 } from "@contracts/ipc";
 import type { Project } from "@contracts/session";
 import { uid } from "@main/utils.js";
@@ -78,6 +79,16 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const session = SessionRepo.get(input.id);
     if (!session) throw new Error(`session not found after archive: ${input.id}`);
     log.info(`session ${input.archived ? "archived" : "restored"}: ${input.id}`);
+    return { session };
+  });
+
+  // Rename a session (persist a user-edited title).
+  ipcMain.handle(IPC.SESSION_RENAME, (_evt, raw) => {
+    const input = RenameSessionSchema.parse(raw);
+    SessionRepo.updateTitle(input.id, input.title);
+    const session = SessionRepo.get(input.id);
+    if (!session) throw new Error(`session not found after rename: ${input.id}`);
+    log.info(`session renamed: ${input.id} -> "${input.title}"`);
     return { session };
   });
 }

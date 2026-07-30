@@ -350,6 +350,21 @@ export const ArchiveProjectSchema = z.object({ id: z.string(), archived: z.boole
 export const DeleteSessionSchema = z.object({ id: z.string() });
 export const ArchiveSessionSchema = z.object({ id: z.string(), archived: z.boolean() });
 
+/* Rename a session (user-edited title). Title is clamped to a sane length;
+ * empty/whitespace-only is rejected by the min(1) on the trimmed value (the
+ * store trims before sending). */
+export const RenameSessionSchema = z.object({
+  id: z.string(),
+  title: z.string().min(1).max(200),
+});
+export type RenameSessionInput = z.infer<typeof RenameSessionSchema>;
+
+/* Open a path in the OS file manager. The main handler refuses any path that
+ * isn't an exact match for a known project root, so the renderer can't ask it
+ * to open arbitrary locations. */
+export const OpenPathSchema = z.object({ path: z.string() });
+export type OpenPathInput = z.infer<typeof OpenPathSchema>;
+
 /** List a project's sessions with optional pagination + archived filter.
  *  The left-bar tree loads the first `limit` (default 5) non-archived threads
  *  and appends the next page on "load more"; the archived bin requests
@@ -972,6 +987,8 @@ export interface RpcMap {
   "session.delete": (input: { id: string }) => Promise<void>;
   /** Set a session's archived flag (soft-delete; restorable). */
   "session.archive": (input: { id: string; archived: boolean }) => Promise<{ session: Session }>;
+  /** Rename a session (persist a user-edited title). Returns the updated row. */
+  "session.rename": (input: RenameSessionInput) => Promise<{ session: Session }>;
   // Providers
   "provider.list": () => Promise<{
     providers: Array<{ id: string; displayName: string; capabilities: ProviderCapabilities }>;
@@ -1041,6 +1058,9 @@ export interface RpcMap {
   "terminal.list": (input: TerminalListInput) => Promise<{ terminals: TerminalInfo[] }>;
   /** App version + runtime info for the About panel. */
   "app.info": () => Promise<AppInfoResult>;
+  /** Open a path in the OS file manager. Main refuses any path that isn't a
+   *  known project root, so this can't be used to open arbitrary locations. */
+  "shell.openPath": (input: OpenPathInput) => Promise<void>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -1061,6 +1081,7 @@ export const IPC = {
   PROJECT_ARCHIVE: "project:archive",
   SESSION_DELETE: "session:delete",
   SESSION_ARCHIVE: "session:archive",
+  SESSION_RENAME: "session:rename",
   SESSION_MESSAGES: "session:messages",
   SESSION_SAVE_MESSAGES: "session:saveMessages",
   SESSION_UPDATE_SETTINGS: "session:updateSettings",
@@ -1107,6 +1128,8 @@ export const IPC = {
   TERMINAL_LIST: "terminal:list",
   // App / runtime info (About panel)
   APP_INFO: "app:info",
+  // Open a project root in the OS file manager (main refuses non-project paths)
+  SHELL_OPEN_PATH: "shell:openPath",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",

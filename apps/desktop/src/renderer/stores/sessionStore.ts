@@ -478,6 +478,11 @@ export interface SessionState {
   archiveProject: (id: string, archived: boolean) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   archiveSession: (id: string, archived: boolean) => Promise<void>;
+  /** Rename a session (persist a user-edited title). Updates the row in
+   *  `sessionsByProject` if it's in the loaded page slice, so the left bar
+   *  + tab strip reflect the new title immediately. The store does NOT trim
+   *  the title - the caller should pass a non-empty trimmed string. */
+  renameSession: (id: string, title: string) => Promise<void>;
   sendPrompt: (
     prompt: string,
     attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }[],
@@ -858,6 +863,15 @@ function syncConfigFromSession(
   // Refresh the alias whenever the owning project changes.
   if (prevPid !== sess.projectId) {
     patch.sessions = get().sessionsByProject[sess.projectId] ?? EMPTY_SESSIONS;
+  }
+  // Auto-expand the session's owning project whenever a session is activated.
+  // selectSession (tab click) and openTab (left-bar click) both route through
+  // here; without this, switching to a thread in a collapsed project leaves the
+  // left bar showing the project row but not the thread under it, so the user
+  // can't see which thread became active. Other projects' expand state is
+  // preserved.
+  if (!get().expandedProjects[sess.projectId]) {
+    patch.expandedProjects = { ...get().expandedProjects, [sess.projectId]: true };
   }
   set(patch);
 }
@@ -2415,6 +2429,36 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         permissionMode: sess?.permissionMode ?? s.permissionMode,
         customModelId: sess?.customModelId ?? s.customModelId,
       };
+    });
+  },
+
+  renameSession: async (id, title) => {
+    const { session } = await api.session.rename({ id, title });
+    set((s) => {
+      const projectId = session.projectId;
+      // Update the row in whichever cache holds it (active page or archived
+      // bin). Title is the only field that changes, but we replace the whole
+      // row with the server-fresh copy to keep things consistent.
+      const patchRow = (list: Session[] | undefined) =>
+        list && list.some((x) => x.id === id)
+          ? list.map((x) => (x.id === id ? session : x))
+          : list;
+      const sessionsByProject = { ...s.sessionsByProject };
+      if (sessionsByProject[projectId]) {
+        const next = patchRow(sessionsByProject[projectId]);
+        if (next) sessionsByProject[projectId] = next;
+      }
+      const archivedSessionsByProject = { ...s.archivedSessionsByProject };
+      if (archivedSessionsByProject[projectId]) {
+        const next = patchRow(archivedSessionsByProject[projectId]);
+        if (next) archivedSessionsByProject[projectId] = next;
+      }
+      // The `sessions` alias mirrors the active project's list; refresh it in
+      // case the renamed session lives in the active project (title chip etc.).
+      const sessions = s.activeProjectId === projectId
+        ? (sessionsByProject[projectId] ?? s.sessions)
+        : s.sessions;
+      return { sessionsByProject, archivedSessionsByProject, sessions };
     });
   },
 

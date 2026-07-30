@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconFolder,
@@ -11,7 +12,11 @@ import {
   IconSettings,
   IconCheck,
   IconX,
+  IconPencil,
+  IconCopy,
 } from "@renderer/lib/icons.js";
+import { Button, Dialog, Input } from "@renderer/components/ui/index.js";
+import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Project, Session } from "@contracts/session";
 
@@ -70,6 +75,81 @@ export function LeftBar() {
   const archiveSession = useSessionStore((s) => s.archiveSession);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   const runningBySession = useSessionStore((s) => s.runningBySession);
+  const renameSession = useSessionStore((s) => s.renameSession);
+
+  // Resolve a session's owning project (for the "open project folder" menu
+  // action). Falls back to undefined if the session's project isn't loaded.
+  const findProject = useCallback(
+    (projectId: string) => projects.find((p) => p.id === projectId),
+    [projects],
+  );
+
+  // ── Scroll-to-active-thread (clicking a tab should locate the thread in
+  // the left bar, even across collapsed projects and un-paginated pages).
+  // Each SessionRow registers its <li> node here; an effect watches
+  // activeSessionId and, when the row isn't in the DOM yet, loads more pages
+  // until it mounts, then scrolls it into view. Mirrors SessionTabs' tabNodes
+  // pattern + FileTree's "mount-may-be-delayed" handling.
+  const rowNodes = useRef<Map<string, HTMLLIElement>>(new Map());
+  const registerNode = useCallback((id: string, el: HTMLLIElement | null) => {
+    if (el) rowNodes.current.set(id, el);
+    else rowNodes.current.delete(id);
+  }, []);
+
+  useEffect(() => {
+    const id = activeSessionId;
+    if (!id) return;
+    let cancelled = false;
+
+    const tryScroll = () => {
+      const el = rowNodes.current.get(id);
+      if (el) {
+        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return true;
+      }
+      return false;
+    };
+
+    if (tryScroll()) return;
+
+    // The active row isn't mounted yet. Two reasons: its project is collapsed
+    // (syncConfigFromSession already expanded it, but React hasn't painted),
+    // or it's beyond the loaded page slice. Find its project, then keep
+    // loading pages until the row appears or there's nothing more to load.
+    (async () => {
+      // Re-check after a paint in case the expand just rendered the row.
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      if (cancelled || tryScroll()) return;
+
+      let projectId: string | undefined;
+      for (const pid of Object.keys(useSessionStore.getState().sessionsByProject)) {
+        if (useSessionStore.getState().sessionsByProject[pid]?.some((s) => s.id === id)) {
+          projectId = pid;
+          break;
+        }
+      }
+      if (!projectId) return; // archived / unknown - nothing to scroll to.
+
+      // Load successive pages until the target row mounts or pages run out.
+      while (!cancelled) {
+        const s = useSessionStore.getState();
+        if (!s.sessionsHasMoreByProject[projectId]) break;
+        await s.loadMoreSessions(projectId);
+        if (cancelled || tryScroll()) break;
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [activeSessionId]);
+
+  // ── Right-click context menu for session rows. Controlled Menu + a virtual
+  // anchor positioned at the cursor, so the popup opens exactly where the user
+  // right-clicked (base-ui's ContextMenu.Trigger anchors to the element edge,
+  // not the cursor, which doesn't match the expected behavior).
+  const [ctxMenu, setCtxMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
+
+  // ── Rename dialog state.
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
 
   // Split into active vs archived. Active projects show in the tree;
   // archived projects (whole-project archive) show as their own rows in
@@ -134,6 +214,8 @@ export function LeftBar() {
                 }}
                 onArchiveSession={(sid) => void archiveSession(sid, true)}
                 onDeleteSession={(s) => void deleteSession(s.id)}
+                registerNode={registerNode}
+                onContextSession={(session, x, y) => setCtxMenu({ session, x, y })}
               />
             ))}
           </ul>
@@ -220,6 +302,30 @@ export function LeftBar() {
           设置
         </button>
       </div>
+
+      {/* Right-click context menu for session rows. Rendered once at the bar
+          level and positioned at the cursor via a virtual anchor. */}
+      <SessionContextMenu
+        ctxMenu={ctxMenu}
+        onClose={() => setCtxMenu(null)}
+        onRename={(s) => { setCtxMenu(null); setRenaming({ id: s.id, title: s.title }); }}
+        onCopyTitle={(s) => { void navigator.clipboard.writeText(s.title); setCtxMenu(null); }}
+        onOpenFolder={(s) => {
+          setCtxMenu(null);
+          const proj = findProject(s.projectId);
+          if (proj) void api.shell.openPath({ path: proj.path });
+        }}
+      />
+
+      {/* Rename dialog (shared by the context menu). */}
+      <RenameDialog
+        renaming={renaming}
+        onClose={() => setRenaming(null)}
+        onSubmit={async (id, title) => {
+          await renameSession(id, title);
+          setRenaming(null);
+        }}
+      />
     </div>
   );
 }
@@ -242,6 +348,10 @@ interface ProjectNodeProps {
   onDelete: () => void;
   onArchiveSession: (sessionId: string) => void;
   onDeleteSession: (session: Session) => void;
+  /** Register a session row's DOM node for scroll-into-view. */
+  registerNode: (id: string, el: HTMLLIElement | null) => void;
+  /** Open the right-click context menu for a session at the given coords. */
+  onContextSession: (session: Session, x: number, y: number) => void;
 }
 
 function ProjectNode(props: ProjectNodeProps) {
@@ -250,6 +360,7 @@ function ProjectNode(props: ProjectNodeProps) {
     runningBySession,
     onToggleExpand, onNewSession, onLoadMore, onSelectSession,
     onDelete, onArchiveSession, onDeleteSession,
+    registerNode, onContextSession,
   } = props;
   const loaded = sessions.length;
 
@@ -320,6 +431,8 @@ function ProjectNode(props: ProjectNodeProps) {
                 onSelect={() => onSelectSession(s.id)}
                 onArchive={() => onArchiveSession(s.id)}
                 onDelete={() => onDeleteSession(s)}
+                registerNode={registerNode}
+                onContext={(x, y) => onContextSession(s, x, y)}
               />
             ))
           )}
@@ -345,7 +458,7 @@ function ProjectNode(props: ProjectNodeProps) {
 /* ── Session row (leaf) ── */
 
 function SessionRow({
-  session, active, isRunning, onSelect, onArchive, onDelete,
+  session, active, isRunning, onSelect, onArchive, onDelete, registerNode, onContext,
 }: {
   session: Session;
   active: boolean;
@@ -353,6 +466,8 @@ function SessionRow({
   onSelect: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  registerNode: (id: string, el: HTMLLIElement | null) => void;
+  onContext: (x: number, y: number) => void;
 }) {
   const [pendingConfirm, setPendingConfirm] = useState<null | "archive" | "delete">(null);
 
@@ -363,7 +478,15 @@ function SessionRow({
 
   return (
     <li
+      ref={(el) => registerNode(session.id, el)}
       onClick={handleRowClick}
+      onContextMenu={(e) => {
+        // Suppress the menu while an inline confirm is mid-flight, otherwise
+        // right-clicking the confirm buttons would lose the pending state.
+        if (pendingConfirm) return;
+        e.preventDefault();
+        onContext(e.clientX, e.clientY);
+      }}
       className={cn(
         "group flex cursor-pointer items-center gap-1 rounded-md px-1 py-1 [font-size:var(--right-panel-font-size)]",
         active
@@ -520,5 +643,142 @@ function ArchivedRow({
         删
       </button>
     </li>
+  );
+}
+
+/* ── Session right-click context menu ── */
+
+interface SessionContextMenuProps {
+  ctxMenu: { session: Session; x: number; y: number } | null;
+  onClose: () => void;
+  onRename: (session: Session) => void;
+  onCopyTitle: (session: Session) => void;
+  onOpenFolder: (session: Session) => void;
+}
+
+function SessionContextMenu({
+  ctxMenu, onClose, onRename, onCopyTitle, onOpenFolder,
+}: SessionContextMenuProps) {
+  // Virtual anchor pinned to the cursor coords so the popup opens where the
+  // user right-clicked (base-ui's Menu.Positioner accepts a VirtualElement).
+  const anchor = useMemo(() => {
+    const x = ctxMenu?.x ?? 0;
+    const y = ctxMenu?.y ?? 0;
+    return {
+      getBoundingClientRect: () => ({
+        x, y, top: y, left: x, bottom: y, right: x, width: 0, height: 0, toJSON: () => ({}),
+      }),
+    };
+  }, [ctxMenu?.x, ctxMenu?.y]);
+
+  const session = ctxMenu?.session;
+
+  return (
+    <Menu.Root open={!!ctxMenu} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <Menu.Portal>
+        <Menu.Positioner anchor={anchor} side="bottom" align="start">
+          <Menu.Popup
+            className={cn(
+              "z-50 min-w-[180px] origin-top-left rounded-md border border-edge bg-surface py-1 shadow-2xl",
+              "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+              "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+              "transition-[transform,opacity] duration-100",
+            )}
+          >
+            <Menu.Item
+              onClick={() => session && onRename(session)}
+              className={cn(
+                "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs outline-none select-none",
+                "text-content-muted data-[highlighted]:bg-surface-muted",
+              )}
+            >
+              <IconPencil size={14} className="shrink-0" />
+              重命名
+            </Menu.Item>
+            <Menu.Item
+              onClick={() => session && onCopyTitle(session)}
+              className={cn(
+                "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs outline-none select-none",
+                "text-content-muted data-[highlighted]:bg-surface-muted",
+              )}
+            >
+              <IconCopy size={14} className="shrink-0" />
+              复制会话标题
+            </Menu.Item>
+            <Menu.Item
+              onClick={() => session && onOpenFolder(session)}
+              className={cn(
+                "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs outline-none select-none",
+                "text-content-muted data-[highlighted]:bg-surface-muted",
+              )}
+            >
+              <IconFolder size={14} className="shrink-0" />
+              在文件管理器中打开
+            </Menu.Item>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
+  );
+}
+
+/* ── Rename dialog ── */
+
+interface RenameDialogProps {
+  renaming: { id: string; title: string } | null;
+  onClose: () => void;
+  onSubmit: (id: string, title: string) => Promise<void>;
+}
+
+function RenameDialog({ renaming, onClose, onSubmit }: RenameDialogProps) {
+  const [value, setValue] = useState("");
+
+  // Seed the input whenever a new rename target is set.
+  useEffect(() => {
+    if (renaming) setValue(renaming.title);
+  }, [renaming]);
+
+  const trimmed = value.trim();
+  const submit = () => {
+    if (!renaming || !trimmed) return;
+    void onSubmit(renaming.id, trimmed);
+  };
+
+  return (
+    <Dialog.Root open={!!renaming} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Backdrop />
+        <Dialog.Popup className="w-[420px] max-w-[90vw] p-4">
+          <Dialog.Title>重命名线程</Dialog.Title>
+          <Dialog.Description className="mt-1">
+            为线程设置一个新标题。
+          </Dialog.Description>
+
+          <div className="mt-4">
+            <Input
+              value={value}
+              autoFocus
+              placeholder="线程标题"
+              onChange={(e) => setValue((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); submit(); }
+                if (e.key === "Escape") { e.preventDefault(); onClose(); }
+              }}
+              onFocus={(e) => (e.target as HTMLInputElement).select()}
+            />
+          </div>
+
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              取消
+            </Button>
+            <Button variant="primary" size="sm" onClick={submit} disabled={!trimmed}>
+              保存
+            </Button>
+          </div>
+          <Dialog.Close />
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

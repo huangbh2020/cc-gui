@@ -8,6 +8,7 @@ import { registerFileHandlers } from "./files.js";
 import { registerGitHandlers } from "./git.js";
 import { registerTerminalHandlers } from "./terminal.js";
 import { registerAppHandlers } from "./app.js";
+import { registerShellHandlers } from "./shell.js";
 
 /** Register all renderer->main IPC handlers. */
 export function registerIpcHandlers(): void {
@@ -19,6 +20,7 @@ export function registerIpcHandlers(): void {
   registerGitHandlers(ipcMain);
   registerTerminalHandlers(ipcMain);
   registerAppHandlers(ipcMain);
+  registerShellHandlers(ipcMain);
 }
 
 // Re-export channel constants so handlers stay aligned with the contract.
