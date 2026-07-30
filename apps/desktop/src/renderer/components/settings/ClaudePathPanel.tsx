@@ -88,13 +88,13 @@ export function ClaudePathPanel() {
   return (
     <div className="space-y-3">
       <div>
-        <h3 className="text-sm font-semibold text-content">Claude CLI 路径</h3>
-        <p className="mt-1 text-[11px] leading-relaxed text-content-subtle">
+        <h3 className="font-semibold text-content">Claude CLI 路径</h3>
+        <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
           指向 claude 可执行文件(如 <code className="text-content-muted">claude.cmd</code>、
           <code className="text-content-muted">claude.exe</code> 或
           <code className="text-content-muted">cli-wrapper.cjs</code>)。留空则自动检测。
         </p>
-        <p className="mt-1 text-[11px] leading-relaxed text-content-subtle">
+        <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
           注:Agent SDK 已自带二进制,此项主要用于高级用户/兼容旧路径。
         </p>
       </div>
@@ -108,12 +108,12 @@ export function ClaudePathPanel() {
             setTest({ status: "idle" });
           }}
           placeholder="C:\Users\you\.local\bin\claude.exe"
-          className="min-w-0 flex-1 rounded border border-edge bg-surface px-2.5 py-1.5 font-mono text-xs text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+          className="min-w-0 flex-1 rounded border border-edge bg-surface px-2.5 py-1.5 font-mono text-[0.8571em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
           spellCheck={false}
         />
         <button
           onClick={() => void browse()}
-          className="shrink-0 rounded bg-surface-muted px-3 py-1.5 text-xs text-content-muted hover:bg-surface-hover"
+          className="shrink-0 rounded bg-surface-muted px-3 py-1.5 text-[0.8571em] text-content-muted hover:bg-surface-hover"
         >
           浏览…
         </button>
@@ -123,31 +123,31 @@ export function ClaudePathPanel() {
         <button
           onClick={() => void runTest()}
           disabled={test.status === "testing"}
-          className="rounded bg-surface-muted px-3 py-1.5 text-xs text-content-muted hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded bg-surface-muted px-3 py-1.5 text-[0.8571em] text-content-muted hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           {test.status === "testing" ? "测试中…" : "测试"}
         </button>
 
         {test.status === "ok" && (
-          <span className={`text-xs ${testStale ? "text-content-subtle" : "text-accent"}`}>
+          <span className={`text-[0.8571em] ${testStale ? "text-content-subtle" : "text-accent"}`}>
             {testStale ? "(已编辑,请重新测试) " : "✓ "}
             {test.version}
           </span>
         )}
-        {test.status === "fail" && <span className="text-xs text-danger">✗ {test.error}</span>}
+        {test.status === "fail" && <span className="text-[0.8571em] text-danger">✗ {test.error}</span>}
       </div>
 
       <div className="flex justify-end gap-2 border-t border-edge pt-3">
         <button
           onClick={() => setSettingsOpen(false)}
-          className="rounded px-3 py-1.5 text-xs text-content-muted hover:bg-surface-muted hover:text-content"
+          className="rounded px-3 py-1.5 text-[0.8571em] text-content-muted hover:bg-surface-muted hover:text-content"
         >
           取消
         </button>
         <button
           onClick={() => void save()}
           disabled={saving}
-          className="rounded bg-accent px-4 py-1.5 text-xs font-medium text-surface hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded bg-accent px-4 py-1.5 text-[0.8571em] font-medium text-surface hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
         >
           {saving ? "保存中…" : "保存"}
         </button>

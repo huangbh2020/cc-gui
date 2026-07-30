@@ -386,7 +386,7 @@ function MarkdownPreviewPane({ filePath }: { filePath: string }) {
  *  By keeping the models alive past the widget's disposal, we break that race.
  *  We then dispose the models ourselves in the correct order (widget first,
  *  then models) via the onMount ref. */
-function DiffPane({
+export function DiffPane({
   filePath,
   before,
   after,
@@ -522,7 +522,7 @@ function useGitDiffPair(
 /** Tracks the effective Monaco theme by watching the `.dark` class on <html>.
  *  Monaco can't react to CSS, so we explicitly switch its theme when the app
  *  theme flips. Returns "vs-dark" or "light". */
-function useMonacoTheme(): string {
+export function useMonacoTheme(): string {
   const [dark, setDark] = useState(() =>
     typeof document !== "undefined" ? document.documentElement.classList.contains("dark") : true,
   );
@@ -546,7 +546,7 @@ function isMarkdown(filePath: string): boolean {
 
 /** Map a file extension to a Monaco language id. Covers the common cases;
  *  unknown extensions fall back to plaintext (Monaco's default). */
-function languageForExt(ext: string): string {
+export function languageForExt(ext: string): string {
   switch (ext) {
     case ".ts":
     case ".mts":

@@ -12,7 +12,7 @@ type Mode = "workspace" | "settings";
 
 interface Props {
   mode: Mode;
-  /** Left sidebar visibility (workspace mode only — drives the left-strip
+  /** Left sidebar visibility (workspace mode only - drives the left-strip
    *  width so the toggle button doesn't jump when the panel opens/closes). */
   leftOpen: boolean;
   /** Right sidebar visibility (workspace mode only). */
@@ -32,17 +32,23 @@ interface Props {
  *  -webkit-app-region: no-drag so clicks pass through.
  *
  *  The bar is split vertically to match the panes below it: a sidebar strip
- *  (bg-surface-muted, no bottom border) over the left panel, and a main strip
- *  (bg-surface, border-b) over the center. This makes the left panel read as
- *  one continuous block running to the top of the window, while the main area
- *  keeps the distinct "toolbar above editor" separation.
+ *  (bg-surface-muted) over the left panel, and a main strip (bg-surface) over
+ *  the center. This makes the left panel read as one continuous block running
+ *  to the top of the window (no divider between the titlebar sidebar strip and
+ *  the sidebar below - they blend), while the center keeps the distinct
+ *  "toolbar above editor" separation. The horizontal titlebar/center divider
+ *  is drawn as a border-t on the center <main> in ThreePaneLayout (not here),
+ *  so it spans only the center area and isn't clipped by the native
+ *  titleBarOverlay on Windows/Linux.
  *
  *  Two modes:
  *   - workspace: left strip carries the left-panel toggle (always rendered so
  *     the button stays put whether the panel is open or closed); main strip
  *     carries the active-thread title chip + right-panel toggle.
- *   - settings:  left strip is fixed at the sidebar width (280px) and carries
- *     a "返回工作区" back button on the left; main strip shows "设置".
+ *   - settings:  left strip is fixed at the sidebar width (reads the same
+ *     leftWidth from the store as the workspace sidebar, so the back button
+ *     lines up with the settings menu below); carries a "返回工作区" back
+ *     button; main strip shows "设置".
  *
  *  Platform reservation: on macOS the traffic lights sit on the LEFT, so the
  *  sidebar strip reserves left padding; on Windows/Linux the titleBarOverlay
@@ -116,7 +122,7 @@ export function Titlebar({
 
       <div
         className={cn(
-          "flex flex-1 items-center border-b border-edge bg-surface px-1.5",
+          "flex flex-1 items-center bg-surface px-1.5",
           !isMac && "pr-[138px]",
         )}
       >

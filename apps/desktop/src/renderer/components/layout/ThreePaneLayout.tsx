@@ -77,6 +77,8 @@ export function ThreePaneLayout({
           orientation="vertical"
           onResize={onResizeLeft}
           onDoubleClick={onResetLeft}
+          // The divider is a 1px line flush at x=leftWidth, naturally aligned
+          // with the titlebar's border-r above (also at x=leftWidth).
         />
       )}
 
@@ -85,7 +87,7 @@ export function ThreePaneLayout({
          top-left radius. Visible because the sidebar (bg-surface-muted) shows
          through the notch against the pane's bg-surface.
          Stacks the center content above an optional bottom terminal bar. */}
-      <main className="flex min-w-0 flex-1 flex-col rounded-bl-lg bg-surface">
+      <main className="flex min-w-0 flex-1 flex-col rounded-bl-lg border-t border-edge bg-surface">
         <div className="min-h-0 flex-1 overflow-hidden">{center}</div>
         {/* Bottom terminal bar — keep-alive: always rendered, height collapses
             to 0 when closed so PTYs/scrollback survive. overflow-hidden clips
@@ -120,15 +122,17 @@ export function ThreePaneLayout({
           onDoubleClick={onResetRight}
         />
       )}
-      {/* Right sidebar — plain rectangle (no corner rounding).
-         overflow-hidden (not overflow-y-auto): Files/Git scroll internally,
-         and xterm FitAddon breaks under a scrolling ancestor. */}
+      {/* Right sidebar — plain rectangle (no corner rounding). Uses
+         bg-surface (same as center pane) so it reads as a continuation of the
+         chat area; the border-l below is the divider. overflow-hidden (not
+         overflow-y-auto): Files/Git scroll internally, and xterm FitAddon
+         breaks under a scrolling ancestor. */}
       {rightOpen && (
         <aside
-          className="flex h-full shrink-0 flex-col bg-surface-muted"
+          className="flex h-full shrink-0 flex-col bg-surface"
           style={{ width: rightWidth }}
         >
-          <div className="min-h-0 flex-1 overflow-hidden border-l border-edge">{right}</div>
+          <div className="min-h-0 flex-1 overflow-hidden border-l border-edge/60">{right}</div>
         </aside>
       )}
     </>

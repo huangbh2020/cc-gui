@@ -195,6 +195,22 @@ export interface CustomCommand {
 export const IdeEditorModeSchema = z.enum(["tabs", "replace"]);
 export type IdeEditorMode = z.infer<typeof IdeEditorModeSchema>;
 
+/**
+ * Setting key under which the user's preferred way of opening a file diff from
+ * the Git panel is persisted.
+ *  - "center" (default): the diff opens in the center-area Monaco editor (the
+ *               existing behavior - replaces/accumulates as editor tabs).
+ *  - "dialog": the diff opens in a floating modal dialog that supports multiple
+ *               diff tabs at once. Closing the dialog keeps the tabs; a button
+ *               in the Git panel toolbar re-opens it.
+ * Persisted as one of the two literals; restored at boot.
+ */
+export const UI_GIT_DIFF_OPEN_MODE_SETTING_KEY = "ui.gitDiffOpenMode";
+
+/** zod schema + TS union for the git-diff open-mode preference. */
+export const GitDiffOpenModeSchema = z.enum(["center", "dialog"]);
+export type GitDiffOpenMode = z.infer<typeof GitDiffOpenModeSchema>;
+
 /** Per-file view mode for the center file editor.
  *  - "edit": editable Monaco instance
  *  - "diff": read-only Monaco DiffEditor (vs a before-snapshot)
@@ -445,6 +461,28 @@ export const SetThemeSchema = z.object({ theme: ThemeNameSchema });
 export type SetThemeInput = z.infer<typeof SetThemeSchema>;
 export type GetThemeResult = { theme: ThemeName; effective: EffectiveTheme };
 
+/* ── App / runtime info (About panel) ── */
+
+/** Runtime info surfaced to the About panel. `appVersion` comes from
+ *  Electron's `app.getVersion()` (reads the root package.json in dev, the
+ *  built app's version in production); the rest come from `process.versions`
+ *  and `process.platform` on the main side. No input - it's a parameterless
+ *  RPC. */
+export interface AppInfoResult {
+  /** App version string (e.g. "0.0.0" in dev, the release version in prod). */
+  appVersion: string;
+  /** Electron version. */
+  electron: string;
+  /** Bundled Node.js version. */
+  node: string;
+  /** Bundled Chromium version. */
+  chromium: string;
+  /** OS platform: "win32" | "darwin" | "linux". */
+  platform: string;
+  /** CPU architecture (e.g. "x64", "arm64"). */
+  arch: string;
+}
+
 /* ── File operations (read / list dir / write) ── */
 
 /** Read a single file's current content as utf-8 text. The main handler
@@ -484,6 +522,37 @@ export const FileListDirSchema = z.object({
   dirPath: z.string(),
 });
 export type FileListDirInput = z.infer<typeof FileListDirSchema>;
+
+/**
+ * One file hit from `file.search`. Paths are absolute and already validated
+ * to sit inside the project root. `relativePath` uses forward slashes for
+ * stable display across platforms.
+ */
+export interface FileSearchEntry {
+  name: string;
+  /** Absolute filesystem path. */
+  path: string;
+  /** Path relative to the project root (forward-slash separated). */
+  relativePath: string;
+}
+
+/**
+ * Recursive file search under a project root for composer @-mention and
+ * "add context" pickers. Main walks the tree (skipping the same ignored
+ * dirs as listDir), optionally filters by case-insensitive substring on
+ * name/relativePath, and returns at most `limit` files. Directories are
+ * never returned — only files. Empty query returns a truncated breadth-
+ * first sample so the picker has something to show immediately.
+ */
+export const FileSearchSchema = z.object({
+  /** Absolute path of the project root. Must match a persisted Project.path. */
+  projectPath: z.string(),
+  /** Optional case-insensitive filter over file name / relative path. */
+  query: z.string().optional(),
+  /** Max files to return. Defaults to 80 on the main side. */
+  limit: z.number().int().positive().max(2000).optional(),
+});
+export type FileSearchInput = z.infer<typeof FileSearchSchema>;
 
 /** Write utf-8 content to a file, creating it (and parent dirs) if absent.
  *  Path must resolve inside a known project root (path-traversal guard,
@@ -872,6 +941,8 @@ export interface RpcMap {
   "file.readFile": (input: FileReadInput) => Promise<{ content: string }>;
   /** List one level of a directory (non-recursive), scoped to a project root. */
   "file.listDir": (input: FileListDirInput) => Promise<{ entries: FileTreeEntry[] }>;
+  /** Recursive file search under a project root (composer @ / add-context). */
+  "file.search": (input: FileSearchInput) => Promise<{ files: FileSearchEntry[] }>;
   /** Write content to a file (creates parents), scoped to a project root. */
   "file.writeFile": (input: FileWriteInput) => Promise<{ ok: boolean }>;
   // Git operations (P4 Git panel)
@@ -914,6 +985,8 @@ export interface RpcMap {
   "terminal.kill": (input: TerminalKillInput) => Promise<TerminalOpResult>;
   /** List live terminals, optionally filtered by project. */
   "terminal.list": (input: TerminalListInput) => Promise<{ terminals: TerminalInfo[] }>;
+  /** App version + runtime info for the About panel. */
+  "app.info": () => Promise<AppInfoResult>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -955,6 +1028,7 @@ export const IPC = {
   FILE_READ: "file:readFile",
   // File tree listing + writing (P4 IDE right panel)
   FILE_LIST_DIR: "file:listDir",
+  FILE_SEARCH: "file:search",
   FILE_WRITE: "file:writeFile",
   // Git operations (P4 Git panel)
   GIT_DISCOVER_REPOS: "git:discoverRepos",
@@ -976,6 +1050,8 @@ export const IPC = {
   TERMINAL_RESIZE: "terminal:resize",
   TERMINAL_KILL: "terminal:kill",
   TERMINAL_LIST: "terminal:list",
+  // App / runtime info (About panel)
+  APP_INFO: "app:info",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",

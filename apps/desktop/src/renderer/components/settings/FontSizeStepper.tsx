@@ -40,7 +40,7 @@ export function FontSizeStepper({
       >
         <IconMinus size={13} />
       </StepperButton>
-      <span className="w-12 text-center text-[11px] tabular-nums text-content">
+      <span className="w-12 text-center text-[0.7857em] tabular-nums text-content">
         {value}px
       </span>
       <StepperButton

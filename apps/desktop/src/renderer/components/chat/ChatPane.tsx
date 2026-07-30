@@ -11,18 +11,25 @@ import {
   IconCopy,
   IconCheck,
   IconLoader2,
+  IconPaperclip,
 } from "@renderer/lib/icons.js";
 import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
-import { api } from "@renderer/lib/api.js";
+import type { PermissionMode } from "@contracts/runtime";
+import type { FileSearchEntry } from "@contracts/ipc";
 import {
   type ContentTag,
+  appendUniqueFileTags,
   composePromptWithTags,
   makeContentTag,
   makeFileTag,
   shouldPromoteToTag,
   FILE_DRAG_MIME,
 } from "@renderer/lib/contentTag.js";
+import {
+  executeSlashCommand,
+  type SlashCommandContext,
+} from "@renderer/lib/slashCommands.js";
 import { MessageBlocks, ProceduralGroup, type ProceduralBlock, type BeforeContentMap } from "./MessageBlocks.js";
 import { ComposerToolbar } from "./ComposerToolbar.js";
 import { QuestionPrompt } from "./QuestionPrompt.js";
@@ -30,6 +37,8 @@ import { ApprovalPrompt } from "./ApprovalPrompt.js";
 import { PlanApprovalPrompt } from "./PlanApprovalPrompt.js";
 import { ContentTagChip } from "./ContentTagChip.js";
 import { TagPopover } from "./TagPopover.js";
+import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
+import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { StatusCapsule } from "./StatusCapsule.js";
 import { MessageTimeline, type UserItemIndexMap } from "./MessageTimeline.js";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
@@ -51,11 +60,25 @@ import { LegendList, type LegendListRef } from "@legendapp/list/react";
  *  padding,停在顶部时可见,向下滚动后随内容滚走。 */
 const MESSAGE_LIST_TOP_PADDING = 10;
 
+/** Distance from the bottom (px) under which the list is considered "at the
+ *  bottom" - the jump-to-bottom button is hidden, and new content auto-follows.
+ *  Kept small so the button appears as soon as the user scrolls up at all. */
+const NEAR_BOTTOM_THRESHOLD = 80;
+
 /** Format a wall-clock ms timestamp as HH:MM:SS (local time). */
 function fmtClock(ms: number): string {
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/** Format a wall-clock ms timestamp as a full local date-time string
+ *  "YYYY-MM-DD HH:MM:SS". Used for the user-bubble hover tooltip so the user
+ *  can see exactly when a prompt was sent. */
+function fmtFullDateTime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 /** Format a duration (ms) as a compact human string:
@@ -74,7 +97,9 @@ function fmtDuration(ms: number): string {
 
 /** Per-turn stat row shown ABOVE the first assistant message of a turn:
  *  "开始 14:32:05 · 用时 12.3s". While the turn is still streaming
- *  (turnMeta.endedAt undefined) the duration ticks live via a 1s interval. */
+ *  (turnMeta.endedAt undefined) the duration ticks live via a 1s interval.
+ *  Rendered larger than the body text and separated from the content below by
+ *  a hairline border so it reads as a distinct turn header. */
 function TurnStatRow({ meta }: { meta: TurnMeta }) {
   const live = meta.endedAt === undefined;
   const [, force] = useState(0);
@@ -89,14 +114,14 @@ function TurnStatRow({ meta }: { meta: TurnMeta }) {
   const duration = Math.max(0, end - meta.startedAt);
 
   return (
-    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-content-subtle">
+    <div className="mb-2 flex items-center gap-1.5 border-b border-edge pb-2 text-[13px] text-content-subtle">
       <span>开始</span>
       <span className="tabular-nums text-content-muted">{fmtClock(meta.startedAt)}</span>
       <span className="text-content-subtle">·</span>
       <span>用时</span>
       <span className="tabular-nums text-content-muted">{fmtDuration(duration)}</span>
       {live && (
-        <IconLoader2 size={11} className="ml-0.5 animate-spin text-accent" />
+        <IconLoader2 size={13} className="ml-0.5 animate-spin text-accent" />
       )}
     </div>
   );
@@ -301,6 +326,20 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // bucket, populated by token-usage.updated events and hydrated from the
   // session row on select/open-tab. Undefined until the first usage report.
   const contextSnapshot = useSessionStore((s) => s.contextSnapshotBySession[sessionId]);
+  // Project root absolute path for this session (used by the @ / add-context
+  // file pickers). Resolved through the session's projectId → projects[].
+  const projectPath = useSessionStore((s) => {
+    let pid: string | undefined;
+    for (const list of Object.values(s.sessionsByProject)) {
+      const found = list?.find((x) => x.id === sessionId);
+      if (found) {
+        pid = found.projectId;
+        break;
+      }
+    }
+    if (!pid) return null;
+    return s.projects.find((p) => p.id === pid)?.path ?? null;
+  });
   // Pending AskUserQuestion (per-session bucket — another tab's question
   // does not clobber this one).
   const pendingQuestion = useSessionStore((s) => s.pendingQuestionBySession[sessionId] ?? null);
@@ -355,9 +394,22 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
    *  respect the user's scroll position (maintainScrollAtEnd handles the
    *  follow-along case) instead of yanking them back down. */
   const initialScrollDoneRef = useRef(false);
-  /** When set, an @ mention is pending a file picker; the number is the caret
-   * index where the triggering "@" sits, so we can splice the path in there. */
-  const pendingAtRef = useRef<number | null>(null);
+  // ── Composer inline pickers (@ mention / / slash) ──
+  // "picker" drives a single floating list above the textarea. Only one of
+  // mention/slash is active at a time. `triggerStart` is the index of the
+  // leading @ or / so we can delete the whole token on pick / cancel.
+  type PickerKind = "mention" | "slash" | null;
+  const [pickerKind, setPickerKind] = useState<PickerKind>(null);
+  const [pickerQuery, setPickerQuery] = useState("");
+  const triggerStartRef = useRef<number | null>(null);
+  // Anchor rect for the floating picker (the textarea's box, refreshed on open).
+  const [pickerAnchor, setPickerAnchor] = useState<DOMRect | null>(null);
+  // "attach" mode: opened by the bottom-left + button (not by typing @). Same
+  // UI as mention but multi-select and not tied to a textarea token.
+  const [attachPickerOpen, setAttachPickerOpen] = useState(false);
+  const [attachPickerQuery, setAttachPickerQuery] = useState("");
+  const [attachAnchor, setAttachAnchor] = useState<DOMRect | null>(null);
+  const setPermissionMode = useSessionStore((s) => s.setPermissionMode);
   // Content tags: long/multi-line pastes promoted to chips above the
   // textarea so they don't bury the input area. Ephemeral per-turn UI
   // state (cleared on send). See lib/contentTag.ts for the promote rules.
@@ -405,31 +457,139 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     el.style.height = `${el.scrollHeight}px`;
   }, [value]);
 
-  /** Insert an @file reference at the stored caret, replacing the trigger "@". */
-  const completeAtMention = async () => {
-    const at = pendingAtRef.current;
-    if (at === null) return;
-    pendingAtRef.current = null;
-    const { path } = await api.pickFile();
-    if (!path) return; // user canceled
-    // Splice `@path` in at the "@" position. Backslash paths work but forward
-    // slashes read better and claude accepts them; normalize for display.
-    const insert = "@" + path.replace(/\\/g, "/");
-    setValue((v) => v.slice(0, at) + insert + v.slice(at + 1));
-  };
+  /** Detect an @ or / trigger token at the caret and drive the inline picker.
+   *  - `@` (mention): must be at line start or preceded by whitespace.
+   *  - `/` (slash): same boundary rule. Query = chars after the trigger up to
+   *    the caret, stopping at whitespace.
+   *  Closing the picker happens when the token is broken (space / delete /
+   *  caret leaves). */
+  const recomputePicker = useCallback(
+    (v: string, caret: number) => {
+      if (inputBlocked) {
+        if (pickerKind !== null) setPickerKind(null);
+        return;
+      }
+      // Walk back from the caret to find a trigger char at a valid position.
+      let i = caret;
+      while (i > 0) {
+        const ch = v[i - 1];
+        if (ch === "@" || ch === "/") {
+          const atLineStart = i - 1 === 0 || /\s/.test(v[i - 2]);
+          if (!atLineStart) {
+            if (pickerKind !== null) setPickerKind(null);
+            return;
+          }
+          const token = v.slice(i, caret);
+          // A space inside the token means the user moved past it — close.
+          if (/\s/.test(token)) {
+            if (pickerKind !== null) setPickerKind(null);
+            return;
+          }
+          const kind: "mention" | "slash" = ch === "@" ? "mention" : "slash";
+          if (pickerKind !== kind) {
+            triggerStartRef.current = i - 1;
+            const rect = textareaRef.current?.getBoundingClientRect();
+            if (rect) setPickerAnchor(rect);
+            setPickerKind(kind);
+          }
+          setPickerQuery(token);
+          return;
+        }
+        if (/\s/.test(ch)) break;
+        i -= 1;
+      }
+      if (pickerKind !== null) setPickerKind(null);
+    },
+    [inputBlocked, pickerKind],
+  );
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const v = e.target.value;
     const caret = e.target.selectionStart ?? v.length;
     setValue(v);
-    // Detect a freshly-typed "@" (the char just before the caret) and trigger
-    // the file picker once. Avoid retriggering while a pick is already pending.
-    const justTypedAt = v.length > value.length && v[caret - 1] === "@" && value[caret - 1] !== "@";
-    if (justTypedAt && pendingAtRef.current === null) {
-      pendingAtRef.current = caret - 1;
-      void completeAtMention();
-    }
+    recomputePicker(v, caret);
   };
+
+  /** Remove the trigger token (`@query` or `/query`) from the textarea. */
+  const clearTriggerToken = useCallback(() => {
+    const start = triggerStartRef.current;
+    const el = textareaRef.current;
+    if (start === null || !el) {
+      setPickerKind(null);
+      return;
+    }
+    const caret = el.selectionStart ?? value.length;
+    const next = value.slice(0, start) + value.slice(caret);
+    setValue(next);
+    setPickerKind(null);
+    triggerStartRef.current = null;
+    // Restore focus + caret to the trigger position.
+    requestAnimationFrame(() => {
+      const t = textareaRef.current;
+      if (!t) return;
+      t.focus();
+      t.setSelectionRange(start, start);
+    });
+  }, [value]);
+
+  /** Add files (from mention or attach picker) as file tags. */
+  const addFileTags = useCallback(
+    (files: FileSearchEntry[]) => {
+      if (files.length > 0) {
+        setTags((prev) => appendUniqueFileTags(prev, files.map((f) => f.path)));
+      }
+    },
+    [],
+  );
+
+  /** Mention picker confirm: drop the @token, add a file tag, refocus. */
+  const handleMentionPick = useCallback(
+    (files: FileSearchEntry[]) => {
+      addFileTags(files);
+      clearTriggerToken();
+    },
+    [addFileTags, clearTriggerToken],
+  );
+
+  /** Slash picker confirm: run the command via the shared context. */
+  const handleSlashPick = useCallback(
+    (cmd: Parameters<typeof executeSlashCommand>[0]) => {
+      const ctx: SlashCommandContext = {
+        clearToken: clearTriggerToken,
+        clearDraft: () => {
+          setValue("");
+          setTags([]);
+        },
+        sendPrompt: (p) => {
+          void sendPrompt(p);
+        },
+        setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
+        openModelPicker: () => {
+          /* no-op: model dropdown isn't externally focusable yet */
+        },
+      };
+      executeSlashCommand(cmd, ctx);
+    },
+    [clearTriggerToken, sendPrompt, setPermissionMode],
+  );
+
+  /** Open the attach picker from the bottom-left + button. */
+  const openAttachPicker = useCallback(() => {
+    if (inputBlocked) return;
+    const rect = textareaRef.current?.getBoundingClientRect();
+    if (rect) setAttachAnchor(rect);
+    setAttachPickerQuery("");
+    setAttachPickerOpen(true);
+  }, [inputBlocked]);
+
+  const handleAttachPick = useCallback(
+    (files: FileSearchEntry[]) => {
+      addFileTags(files);
+      setAttachPickerOpen(false);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    },
+    [addFileTags],
+  );
 
   /** Intercept pastes that are long or multi-line and promote them to a
    *  content-tag chip instead of dumping the text into the textarea. Short
@@ -442,16 +602,15 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     setTags((prev) => [...prev, makeContentTag(text)]);
   };
 
-  // Track whether the user is near the bottom, so we only auto-scroll on new
-  // messages when they're already following along (don't yank them down while
-  // they're reading older history). Also drives the "jump to bottom" button.
-  const updateJumpState = useCallback(() => {
+  // Recompute the "jump to bottom" button visibility from the live scroll
+  // state. Returns true if the list is near the bottom (button hidden), false
+  // otherwise. Used both by the onScroll handler and the data-change effect so
+  // the button stays correct when content grows without a scroll event (e.g.
+  // streaming deltas append while the user is parked mid-history).
+  const recomputeNearBottom = useCallback((): boolean => {
     const state = virtualListRef.current?.getState();
-    if (!state) return;
-    const scrollLength = state.scrollLength;
-    const scrollPos = state.scroll;
-    const nearBottom = scrollLength - scrollPos < 150;
-    setShowJumpBottom(!nearBottom);
+    if (!state) return true; // no list yet -> treat as "at bottom" (no button)
+    return state.scrollLength - state.scroll < NEAR_BOTTOM_THRESHOLD;
   }, []);
 
   // Scroll callback from LegendList: update scroll position for MessageTimeline
@@ -460,9 +619,30 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     const state = virtualListRef.current?.getState();
     if (!state) return;
     setVirtualScrollTop(state.scroll);
-    const nearBottom = state.scrollLength - state.scroll < 150;
-    setShowJumpBottom(!nearBottom);
+    setShowJumpBottom(state.scrollLength - state.scroll >= NEAR_BOTTOM_THRESHOLD);
   }, []);
+
+  // Whether the session has any messages yet. Computed early (before the
+  // scroll effects below) because they reference it.
+  const empty = messages.length === 0;
+
+  // Keep the jump-to-bottom button in sync when content changes (new messages
+  // arrive / streaming grows the list) even if no scroll event fires. After the
+  // initial jump-to-bottom lands we re-check: if the user is at the bottom the
+  // button stays hidden; if they've scrolled up and new content pushed the
+  // bottom further away, the button appears. Runs after paint so LegendList has
+  // applied the new item sizes.
+  useEffect(() => {
+    if (empty) {
+      setShowJumpBottom(false);
+      return;
+    }
+    let raf = 0;
+    raf = requestAnimationFrame(() => {
+      setShowJumpBottom(!recomputeNearBottom());
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [renderItems, empty, recomputeNearBottom]);
 
   const jumpToBottom = () => {
     void virtualListRef.current?.scrollToEnd({ animated: true });
@@ -508,8 +688,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
       handleSend();
     }
   };
-
-  const empty = messages.length === 0;
 
   // On opening a session, jump to the bottom so the latest exchange is in view
   // (the keyed remount above starts the list scrolled to the top). This fires
@@ -753,7 +931,11 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               onPaste={handlePaste}
               onKeyDown={handleKeyDown}
               rows={2}
-              placeholder={inputBlocked ? "Claude is working…" : "Send a message…  (@ to attach a file)"}
+              placeholder={
+                inputBlocked
+                  ? "Claude is working…"
+                  : "发送消息…  (@ 引用文件 · / 命令)"
+              }
               disabled={inputBlocked}
               className={cn(
                 "max-h-72 min-h-[52px] resize-none bg-transparent px-3 pt-2.5 text-sm leading-relaxed text-content outline-none",
@@ -762,7 +944,22 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               )}
             />
             <div className="flex items-center justify-between gap-2 px-2 pb-1.5 pt-1">
-              <ComposerToolbar />
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={openAttachPicker}
+                  disabled={inputBlocked}
+                  title="添加上下文文件"
+                  aria-label="添加上下文文件"
+                  className={cn(
+                    "inline-flex h-6 w-6 items-center justify-center rounded-md text-content-muted transition-colors",
+                    "hover:bg-surface-muted hover:text-content disabled:opacity-40 disabled:hover:bg-transparent",
+                  )}
+                >
+                  <IconPaperclip size={15} />
+                </button>
+                <ComposerToolbar />
+              </div>
               {sessionBusy ? (
                 <button
                   onClick={() => void interrupt()}
@@ -808,6 +1005,44 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 />
               ) : null;
             })()}
+          {/* Inline @-mention picker (project file fuzzy search). Anchored
+              above the textarea; selecting adds a file tag and removes the
+              `@query` token from the input. */}
+          <FileMentionPicker
+            open={pickerKind === "mention"}
+            projectPath={projectPath}
+            query={pickerQuery}
+            anchorRect={pickerAnchor}
+            mode="mention"
+            excludePaths={tags
+              .filter((t) => t.kind === "file" && t.filePath)
+              .map((t) => t.filePath as string)}
+            onPick={handleMentionPick}
+            onClose={() => setPickerKind(null)}
+          />
+          {/* Inline /-slash command picker. Anchored above the textarea;
+              selecting runs the command (local action or sent prompt). */}
+          <SlashCommandPicker
+            open={pickerKind === "slash"}
+            query={pickerQuery}
+            anchorRect={pickerAnchor}
+            onPick={handleSlashPick}
+            onClose={() => setPickerKind(null)}
+          />
+          {/* "Add context" picker opened from the bottom-left + button.
+              Multi-select; same project file source as @-mention. */}
+          <FileMentionPicker
+            open={attachPickerOpen}
+            projectPath={projectPath}
+            query={attachPickerQuery}
+            anchorRect={attachAnchor}
+            mode="attach"
+            excludePaths={tags
+              .filter((t) => t.kind === "file" && t.filePath)
+              .map((t) => t.filePath as string)}
+            onPick={handleAttachPick}
+            onClose={() => setAttachPickerOpen(false)}
+          />
         </div>
       </div>
 
@@ -877,10 +1112,14 @@ const MessageRow = memo(function MessageRow({ msg, isStreamingTail, isLastComple
   return (
     <div className={cn("group", isUser ? "flex justify-end" : "")}>
       <div className={isUser ? "max-w-[85%]" : "w-full"}>
-        {/* Per-turn stat row — only on the first assistant message of a
+        {/* Per-turn stat row - only on the first assistant message of a
             turn (the one carrying turnMeta). Sits above the content. */}
         {!isUser && msg.turnMeta && <TurnStatRow meta={msg.turnMeta} />}
         <div
+          // User messages get a native tooltip showing the full send date-time
+          // on hover (assistant messages have no createdAt tooltip - the
+          // per-turn stat row already shows timing).
+          title={isUser ? fmtFullDateTime(msg.createdAt) : undefined}
           className={
             isUser
               ? "rounded-lg bg-userBubble/10 px-3 py-2 text-content [font-size:var(--chat-font-size)]"
@@ -896,9 +1135,11 @@ const MessageRow = memo(function MessageRow({ msg, isStreamingTail, isLastComple
             </div>
           )}
         </div>
-        {/* Copy action BELOW the content bubble — outside its border.
-            Icon-only, left-aligned, revealed on row hover. */}
-        {showCopy && <CopyRow text={copyText} />}
+        {/* Copy action BELOW the content bubble - outside its border.
+            Icon-only, revealed on row hover. User messages right-align the
+            copy button (under the right-aligned bubble); assistant messages
+            left-align it. */}
+        {showCopy && <CopyRow text={copyText} align={isUser ? "end" : "start"} />}
       </div>
     </div>
   );
@@ -928,7 +1169,7 @@ function blocksToText(blocks: Block[]): string {
   return out.join("\n\n").trim();
 }
 
-function CopyRow({ text }: { text: string }) {
+function CopyRow({ text, align = "start" }: { text: string; align?: "start" | "end" }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     try {
@@ -941,7 +1182,12 @@ function CopyRow({ text }: { text: string }) {
     }
   };
   return (
-    <div className="mt-1 flex justify-start opacity-0 transition-opacity group-hover:opacity-100">
+    <div
+      className={cn(
+        "mt-1 flex opacity-0 transition-opacity group-hover:opacity-100",
+        align === "end" ? "justify-end" : "justify-start",
+      )}
+    >
       <button
         type="button"
         onClick={onCopy}

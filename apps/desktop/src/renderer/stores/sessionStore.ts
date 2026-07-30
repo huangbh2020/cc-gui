@@ -27,6 +27,7 @@ import {
   UI_IDE_ACTIVE_FILE_SETTING_KEY,
   UI_IDE_EXPANDED_DIRS_SETTING_KEY,
   UI_IDE_EDITOR_MODE_SETTING_KEY,
+  UI_GIT_DIFF_OPEN_MODE_SETTING_KEY,
   UI_COMMIT_GEN_MODEL_SETTING_KEY,
   UI_COMMIT_GEN_PROMPT_SETTING_KEY,
   UI_GIT_COLLAPSED_REPOS_SETTING_KEY,
@@ -35,6 +36,7 @@ import {
   type DisplayMode,
   type RightPanelTab,
   type IdeEditorMode,
+  type GitDiffOpenMode,
   type FileViewMode,
   type CustomCommand,
 } from "@contracts/ipc";
@@ -136,6 +138,32 @@ export interface PlanDraft {
   phase: PlanUpdateEvent["phase"];
 }
 
+/** One open diff tab inside the Git diff dialog (the "dialog" open-mode).
+ *  `id` is a stable client-side id used as the React key + dedup key; we reuse
+ *  the absolute file path so re-clicking the same file refreshes its tab
+ *  instead of opening a duplicate. */
+export interface GitDiffDialogTab {
+  /** Stable id. Working-tree: `${absPath}::staged|work`; history: absPath
+   *  (or commit-scoped id from the history view). Used as the dedup key. */
+  id: string;
+  /** Absolute path of the file being diffed. */
+  filePath: string;
+  /** Original-side content (the "before" blob). */
+  before: string;
+  /** Modified-side content. When omitted, DiffPane reads the working-tree
+   *  file from disk (working-tree diffs). History / staged diffs supply both. */
+  after?: string;
+  /** Short label for the tab (file basename). */
+  title: string;
+  /** Repo the file belongs to (for context / grouping). */
+  repoPath: string;
+  /** Where the diff came from - working tree vs a history commit. */
+  source: "working" | "history";
+  /** For working-tree diffs: whether this is the staged (index) side.
+   *  Staged and unstaged views of the same file are distinct tabs. */
+  staged?: boolean;
+}
+
 export interface SessionState {
   /* ── projects & sessions (tree cache) ──
    * sessions are cached per-project so the left-bar tree can render every
@@ -182,8 +210,10 @@ export interface SessionState {
    *  table. Applied to <html> as the --chat-font-size CSS var by
    *  lib/appearance.ts so it cascades into the message rows + markdown. */
   chatFontSize: number;
-  /** Right-panel (files / git / terminal) base font size in px (10–22).
-   *  Persisted in the `settings` table. Applied to <html> as the
+  /** Global side-panel + settings font size in px (10–22). Despite the
+   *  legacy field name, this drives the whole app chrome: the left project
+   *  bar, the right files/git/terminal panels, AND the settings page all
+   *  inherit it. Persisted in the `settings` table. Applied to <html> as the
    *  --right-panel-font-size CSS var (plus --rp-fs-* derived variants) by
    *  lib/appearance.ts, and also fed to the xterm terminal fontSize. */
   rightPanelFontSize: number;
@@ -330,6 +360,24 @@ export interface SessionState {
    *   - "replace": opening a file replaces whatever was open (≤1 file at a
    *     time). Persisted in the settings table. Global (not per-project). */
   ideEditorMode: IdeEditorMode;
+  /** Where a git-diff click opens the diff viewer:
+   *   - "center"  (default): center-area Monaco editor (existing behavior).
+   *   - "dialog": a floating modal dialog with multiple diff tabs.
+   *  Persisted in the settings table. Global (not per-project). */
+  gitDiffOpenMode: GitDiffOpenMode;
+  /** Diff tabs currently open in the Git diff dialog (the "dialog" open-mode).
+   *  Ephemeral (NOT persisted) - restarting clears them. Dedup by file path. */
+  gitDiffDialogTabs: GitDiffDialogTab[];
+  /** Active tab id in the Git diff dialog, or null when none. Ephemeral. */
+  gitDiffDialogActiveId: string | null;
+  /** Whether the Git diff dialog is currently shown. Closing it keeps the
+   *  tabs; the Git panel toolbar button re-opens it. Ephemeral. */
+  gitDiffDialogOpen: boolean;
+  /** How the Git diff dialog presents its open diff files:
+   *   - "tabs"   (default): show a top tab strip + the left file list.
+   *   - "single": hide the tab strip; navigate via the left file list only.
+   *  Ephemeral (NOT persisted) - restarting resets to "tabs". */
+  gitDiffDialogViewMode: "tabs" | "single";
   /** Per-project absolute directory paths expanded in the file tree.
    *  Persisted as a JSON object keyed by projectId so each project's tree
    *  re-opens to where the user left it. */
@@ -504,6 +552,23 @@ export interface SessionState {
   /** Switch the editor open-mode (tabs vs replace). Persists. When switching
    *  to "replace", if more than one file is open, keeps only the active one. */
   setIdeEditorMode: (mode: IdeEditorMode) => void;
+  /** Set the git-diff open-mode (center vs dialog). Persists to settings. */
+  setGitDiffOpenMode: (mode: GitDiffOpenMode) => void;
+  /** Open (or refresh) a diff tab in the Git diff dialog. Dedups by file path
+   *  (re-clicking the same file refreshes its before/after and activates it),
+   *  then opens the dialog. Ephemeral (not persisted). */
+  openGitDiffDialogTab: (tab: GitDiffDialogTab) => void;
+  /** Remove a diff tab from the Git diff dialog. If the active tab is closed,
+   *  activation shifts to an adjacent tab; if none remain the dialog closes. */
+  closeGitDiffDialogTab: (id: string) => void;
+  /** Set the active diff tab in the Git diff dialog. */
+  setGitDiffDialogActive: (id: string | null) => void;
+  /** Show/hide the Git diff dialog. Closing keeps the tabs so they can be
+   *  re-opened from the Git panel toolbar button. */
+  setGitDiffDialogOpen: (open: boolean) => void;
+  /** Set the Git diff dialog's view mode: "tabs" (tab strip + file list) or
+   *  "single" (file list only, no tab strip). Ephemeral (not persisted). */
+  setGitDiffDialogViewMode: (mode: "tabs" | "single") => void;
   /** Toggle a directory's expanded state in the file tree. Persists. */
   toggleDirExpanded: (dirPath: string) => void;
   /** Explicitly set a directory's expanded state. Persists. */
@@ -1444,6 +1509,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   ideActiveFileByProject: {},
   ideFileViewModeByProject: {},
   ideEditorMode: "tabs",
+  gitDiffOpenMode: "center",
+  gitDiffDialogTabs: [],
+  gitDiffDialogActiveId: null,
+  gitDiffDialogOpen: false,
+  gitDiffDialogViewMode: "tabs",
   ideExpandedDirsByProject: {},
   gitDiffByProject: {},
   ideDiffBeforeByProject: {},
@@ -1546,18 +1616,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // values leave the defaults. Paths that don't belong to any persisted
     // project are dropped on load (stale tabs from a removed project).
     try {
-      const [tabRes, openRes, activeRes, dirsRes, modeRes, commitModelRes, commitPromptRes, commandsRes] = await Promise.all([
+      const [tabRes, openRes, activeRes, dirsRes, modeRes, diffModeRes, commitModelRes, commitPromptRes, commandsRes] = await Promise.all([
         api.setting.get({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_OPEN_FILES_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_ACTIVE_FILE_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_EXPANDED_DIRS_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_EDITOR_MODE_SETTING_KEY }),
+        api.setting.get({ key: UI_GIT_DIFF_OPEN_MODE_SETTING_KEY }),
         api.setting.get({ key: UI_COMMIT_GEN_MODEL_SETTING_KEY }),
         api.setting.get({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY }),
         api.setting.get({ key: UI_CUSTOM_COMMANDS_SETTING_KEY }),
       ]);
       // Terminal moved to the bottom bar, so "terminal" is no longer a valid
-      // right-panel tab — a stale persisted value falls through to the default
+      // right-panel tab - a stale persisted value falls through to the default
       // ("files"). The schema in contracts/ipc.ts mirrors this. "browser" was
       // a P5 placeholder tab since removed, so a stale persisted value also
       // falls through to the default.
@@ -1566,6 +1637,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       if (modeRes.value === "tabs" || modeRes.value === "replace") {
         set({ ideEditorMode: modeRes.value });
+      }
+      // Git-diff open-mode preference (center vs dialog). Stale/invalid values
+      // fall through to the default ("center").
+      if (diffModeRes.value === "center" || diffModeRes.value === "dialog") {
+        set({ gitDiffOpenMode: diffModeRes.value });
       }
       // Commit-message generation settings.
       set({ commitGenModel: commitModelRes.value || null });
@@ -3149,6 +3225,60 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void api.setting
       .set({ key: UI_IDE_EDITOR_MODE_SETTING_KEY, value: mode })
       .catch((err) => console.error("setting.set(ideEditorMode) failed:", err));
+  },
+
+  setGitDiffOpenMode: (mode) => {
+    set({ gitDiffOpenMode: mode });
+    void api.setting
+      .set({ key: UI_GIT_DIFF_OPEN_MODE_SETTING_KEY, value: mode })
+      .catch((err) => console.error("setting.set(gitDiffOpenMode) failed:", err));
+  },
+
+  openGitDiffDialogTab: (tab) => {
+    set((s) => {
+      // Dedup by file path: re-clicking the same file refreshes its snapshot
+      // and moves it to the end (most-recent) rather than opening a duplicate.
+      const existing = s.gitDiffDialogTabs.find((t) => t.id === tab.id);
+      const tabs = existing
+        ? s.gitDiffDialogTabs.map((t) => (t.id === tab.id ? { ...t, ...tab } : t))
+        : [...s.gitDiffDialogTabs, tab];
+      return {
+        gitDiffDialogTabs: tabs,
+        gitDiffDialogActiveId: tab.id,
+        // Opening a tab always surfaces the dialog.
+        gitDiffDialogOpen: true,
+      };
+    });
+  },
+
+  closeGitDiffDialogTab: (id) => {
+    set((s) => {
+      const idx = s.gitDiffDialogTabs.findIndex((t) => t.id === id);
+      if (idx === -1) return {};
+      const tabs = s.gitDiffDialogTabs.filter((t) => t.id !== id);
+      // If the closed tab was active, shift to an adjacent one (prefer the
+      // previous; otherwise the next; otherwise none).
+      let activeId = s.gitDiffDialogActiveId;
+      let open = s.gitDiffDialogOpen;
+      if (activeId === id) {
+        activeId = tabs[idx - 1]?.id ?? tabs[idx]?.id ?? null;
+        // No tabs left -> close the dialog too.
+        open = tabs.length > 0;
+      }
+      return { gitDiffDialogTabs: tabs, gitDiffDialogActiveId: activeId, gitDiffDialogOpen: open };
+    });
+  },
+
+  setGitDiffDialogActive: (id) => {
+    set({ gitDiffDialogActiveId: id });
+  },
+
+  setGitDiffDialogOpen: (open) => {
+    set({ gitDiffDialogOpen: open });
+  },
+
+  setGitDiffDialogViewMode: (mode) => {
+    set({ gitDiffDialogViewMode: mode });
   },
 
   toggleDirExpanded: (dirPath) => {

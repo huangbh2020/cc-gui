@@ -152,3 +152,20 @@ export function composePromptWithTags(
   const tagBlock = parts.join("\n\n");
   return textTrimmed ? `${textTrimmed}\n\n${tagBlock}` : tagBlock;
 }
+
+/** Append file tags, skipping paths already present (by absolute filePath). */
+export function appendUniqueFileTags(
+  prev: ReadonlyArray<ContentTag>,
+  filePaths: ReadonlyArray<string>,
+): ContentTag[] {
+  const seen = new Set(
+    prev.filter((t) => t.kind === "file" && t.filePath).map((t) => t.filePath as string),
+  );
+  const next = [...prev];
+  for (const p of filePaths) {
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    next.push(makeFileTag(p));
+  }
+  return next;
+}

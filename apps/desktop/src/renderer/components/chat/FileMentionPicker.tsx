@@ -1,0 +1,313 @@
+/**
+ * Project-file picker for composer @-mentions and the "add context" button.
+ *
+ * Anchored above the composer (fixed position from an anchor rect). Loads
+ * candidates via `api.file.search` with a debounced query. Keyboard:
+ * ↑↓ move, Enter/Tab confirm, Esc close.
+ */
+import { useCallback, useEffect, useRef, useState } from "react";
+import { cn } from "@renderer/lib/cn.js";
+import { api } from "@renderer/lib/api.js";
+import { IconFile, IconLoader2, IconPaperclip, IconSearch } from "@renderer/lib/icons.js";
+import type { FileSearchEntry } from "@contracts/ipc";
+
+export type FileMentionPickerMode = "mention" | "attach";
+
+export interface FileMentionPickerProps {
+  open: boolean;
+  /** Project root absolute path; null shows an empty-state tip. */
+  projectPath: string | null;
+  /** Filter query (without the leading @). Used in "mention" mode; ignored in
+   *  "attach" mode, which owns its own search input. */
+  query?: string;
+  /** Anchor rect (composer box or textarea) for positioning. */
+  anchorRect: DOMRect | null;
+  mode: FileMentionPickerMode;
+  /** Paths already attached — shown muted / skipped on pick when attach. */
+  excludePaths?: ReadonlyArray<string>;
+  onPick: (files: FileSearchEntry[]) => void;
+  onClose: () => void;
+}
+
+const DEBOUNCE_MS = 120;
+const LIMIT = 60;
+
+export function FileMentionPicker({
+  open,
+  projectPath,
+  query,
+  anchorRect,
+  mode,
+  excludePaths = [],
+  onPick,
+  onClose,
+}: FileMentionPickerProps) {
+  const [files, setFiles] = useState<FileSearchEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  // attach mode owns a local search input (no textarea to drive it).
+  const [localQuery, setLocalQuery] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const reqIdRef = useRef(0);
+  const exclude = new Set(excludePaths);
+
+  const effectiveQuery = mode === "attach" ? localQuery : query ?? "";
+
+  // Reset transient state when reopened.
+  useEffect(() => {
+    if (open) {
+      setSelected(new Set());
+      setLocalQuery("");
+      setActiveIdx(0);
+      if (mode === "attach") {
+        // Focus the inline search input shortly after mount.
+        requestAnimationFrame(() => inputRef.current?.focus());
+      }
+    }
+  }, [open, mode]);
+
+  // Debounced search driven by the effective query.
+  useEffect(() => {
+    if (!open) return;
+    if (!projectPath) {
+      setFiles([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const myId = ++reqIdRef.current;
+    const t = window.setTimeout(() => {
+      void api.file
+        .search({
+          projectPath,
+          query: effectiveQuery.trim() || undefined,
+          limit: LIMIT,
+        })
+        .then((res) => {
+          if (reqIdRef.current !== myId) return;
+          setFiles(res.files ?? []);
+          setActiveIdx(0);
+          setLoading(false);
+        })
+        .catch(() => {
+          if (reqIdRef.current !== myId) return;
+          setFiles([]);
+          setLoading(false);
+        });
+    }, DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [open, projectPath, effectiveQuery]);
+
+  // Keep active row in view.
+  useEffect(() => {
+    if (!open) return;
+    const root = listRef.current;
+    if (!root) return;
+    const el = root.querySelector<HTMLElement>(`[data-idx="${activeIdx}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [activeIdx, open, files]);
+
+  const confirmMention = useCallback(
+    (file: FileSearchEntry) => {
+      onPick([file]);
+    },
+    [onPick],
+  );
+
+  const toggleAttach = useCallback((file: FileSearchEntry) => {
+    if (exclude.has(file.path)) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(file.path)) next.delete(file.path);
+      else next.add(file.path);
+      return next;
+    });
+  }, [exclude]);
+
+  const confirmAttach = useCallback(() => {
+    const picked = files.filter((f) => selected.has(f.path) && !exclude.has(f.path));
+    if (picked.length === 0 && files[activeIdx] && !exclude.has(files[activeIdx].path)) {
+      onPick([files[activeIdx]]);
+      return;
+    }
+    if (picked.length > 0) onPick(picked);
+  }, [files, selected, exclude, activeIdx, onPick]);
+
+  // Keyboard handling is owned by the parent textarea (so focus stays there),
+  // but we expose an imperative-style handler via a window event is overkill —
+  // parent calls nothing; instead parent wires keydown and we listen via
+  // a custom callback ref pattern. For simplicity the parent passes key events
+  // through `onKeyDownFromParent` by calling the exported helper… Actually we
+  // attach a capturing keydown on window while open so arrows work even if
+  // focus is on the attach button.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveIdx((i) => Math.min(files.length - 1, i + 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveIdx((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        if (files.length === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (mode === "mention") {
+          const f = files[activeIdx];
+          if (f) confirmMention(f);
+        } else {
+          confirmAttach();
+        }
+      }
+    };
+    // Capture so we beat textarea Enter-to-send.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open, files, activeIdx, mode, confirmMention, confirmAttach, onClose]);
+
+  if (!open || !anchorRect) return null;
+
+  const top = Math.max(8, anchorRect.top - 8);
+  const left = anchorRect.left;
+  const width = Math.min(Math.max(anchorRect.width, 280), 480);
+
+  return (
+    <div
+      className={cn(
+        "fixed z-[70] flex max-h-64 flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl",
+      )}
+      style={{
+        left,
+        width,
+        // Grow upward from the anchor top.
+        top,
+        transform: "translateY(-100%)",
+      }}
+      // In mention mode, prevent mousedown from stealing focus from the
+      // textarea (keyboard stays there). In attach mode we WANT focus in our
+      // own search input, so let default through.
+      onMouseDown={mode === "mention" ? (e) => e.preventDefault() : undefined}
+    >
+      {mode === "attach" ? (
+        <div className="flex items-center gap-1.5 border-b border-edge px-2 py-1">
+          <IconSearch size={12} className="shrink-0 text-content-muted" />
+          <input
+            ref={inputRef}
+            value={localQuery}
+            onChange={(e) => setLocalQuery(e.target.value)}
+            placeholder="搜索项目文件…"
+            className="h-6 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle"
+          />
+          {selected.size > 0 && (
+            <button
+              type="button"
+              className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-surface hover:brightness-110"
+              onClick={confirmAttach}
+            >
+              添加 {selected.size}
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-1.5 border-b border-edge px-2.5 py-1.5 text-[11px] text-content-muted">
+          <IconPaperclip size={12} className="shrink-0 opacity-70" />
+          <span className="truncate">
+            引用文件{effectiveQuery ? ` · ${effectiveQuery}` : ""}
+          </span>
+        </div>
+      )}
+
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-1">
+        {!projectPath ? (
+          <div className="px-3 py-6 text-center text-[12px] text-content-subtle">
+            请先打开一个项目
+          </div>
+        ) : loading && files.length === 0 ? (
+          <div className="flex items-center justify-center gap-1.5 px-3 py-6 text-[12px] text-content-subtle">
+            <IconLoader2 size={14} className="animate-spin" />
+            搜索中…
+          </div>
+        ) : files.length === 0 ? (
+          <div className="px-3 py-6 text-center text-[12px] text-content-subtle">
+            无匹配文件
+          </div>
+        ) : (
+          files.map((f, idx) => {
+            const already = exclude.has(f.path);
+            const isActive = idx === activeIdx;
+            const isSel = selected.has(f.path);
+            return (
+              <button
+                key={f.path}
+                type="button"
+                data-idx={idx}
+                disabled={already && mode === "mention"}
+                onMouseEnter={() => setActiveIdx(idx)}
+                onClick={() => {
+                  if (mode === "mention") {
+                    if (!already) confirmMention(f);
+                  } else {
+                    toggleAttach(f);
+                  }
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px]",
+                  isActive ? "bg-accent/12 text-content" : "text-content",
+                  already && "opacity-50",
+                )}
+              >
+                {mode === "attach" && (
+                  <span
+                    className={cn(
+                      "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border text-[9px]",
+                      isSel || already
+                        ? "border-accent bg-accent text-surface"
+                        : "border-edge text-transparent",
+                    )}
+                  >
+                    ✓
+                  </span>
+                )}
+                <IconFile size={14} className="shrink-0 text-content-muted" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">{f.name}</span>
+                  <span className="block truncate text-[10px] text-content-subtle">
+                    {f.relativePath}
+                  </span>
+                </span>
+                {already && (
+                  <span className="shrink-0 text-[10px] text-content-subtle">已添加</span>
+                )}
+              </button>
+            );
+          })
+        )}
+      </div>
+
+      <div className="flex items-center justify-between border-t border-edge px-2.5 py-1 text-[10px] text-content-subtle">
+        <span>
+          <kbd className="rounded border border-edge px-1">↑</kbd>
+          <kbd className="ml-0.5 rounded border border-edge px-1">↓</kbd>
+          {" "}导航{" "}
+          <kbd className="ml-1 rounded border border-edge px-1">↵</kbd>
+          {" "}
+          {mode === "attach" ? "确认" : "选择"}
+        </span>
+        <span>{files.length} 项</span>
+      </div>
+    </div>
+  );
+}

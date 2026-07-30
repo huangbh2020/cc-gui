@@ -708,6 +708,8 @@ function FileRow({
 }) {
   const openFileInIde = useSessionStore((s) => s.openFileInIde);
   const setGitDiffBefore = useSessionStore((s) => s.setGitDiffBefore);
+  const gitDiffOpenMode = useSessionStore((s) => s.gitDiffOpenMode);
+  const openGitDiffDialogTab = useSessionStore((s) => s.openGitDiffDialogTab);
   const [diffTally, setDiffTally] = useState<{ adds: number; dels: number } | null>(null);
 
   const absPath = joinPath(repoPath, file.path);
@@ -739,14 +741,35 @@ function FileRow({
   // (staged vs HEAD for staged files, working tree for unstaged), stashes
   // the "before" content, and opens the file in diff mode.
   const handleClick = async () => {
+    let before: string | undefined;
+    let after: string | undefined;
     try {
       const { patch } = await api.git.diff({ repoPath, filePath: file.path, staged: !!staged });
       if (patch) {
-        const { before } = parsePatchToBeforeAfter(patch);
+        const parsed = parsePatchToBeforeAfter(patch);
+        before = parsed.before;
+        after = parsed.after;
         setGitDiffBefore(absPath, before);
       }
     } catch {
-      // fall through — open in edit mode if diff fetch fails
+      // fall through - open in edit mode if diff fetch fails
+    }
+    if (gitDiffOpenMode === "dialog") {
+      // Dialog open-mode: open (or refresh) a diff tab in the floating dialog.
+      // Staged vs unstaged of the same path are distinct tabs (id suffix).
+      // Staged diffs always supply `after` from the patch (index blob); unstaged
+      // may omit it so DiffPane reads the live working tree from disk.
+      openGitDiffDialogTab({
+        id: `${absPath}::${staged ? "staged" : "work"}`,
+        filePath: absPath,
+        before: before ?? "",
+        after: staged ? (after ?? "") : after,
+        title: basename(file.path),
+        repoPath,
+        source: "working",
+        staged: !!staged,
+      });
+      return;
     }
     openFileInIde(absPath, { diff: true });
   };

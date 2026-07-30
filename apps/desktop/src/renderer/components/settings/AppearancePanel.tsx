@@ -34,8 +34,22 @@ const DEFAULT_FONT_SIZE = 14;
 /** Hex of the default accent color (emerald-600). Used as the picker fallback. */
 const DEFAULT_ACCENT_HEX = "#059669";
 
-/** Hex of the default user-message bg color (violet-600). Picker fallback. */
-const DEFAULT_USER_BUBBLE_HEX = "#7c3aed";
+/** Hex of the default user-message bg color (zinc-500, neutral gray). Used as
+ *  the picker fallback. Matches the --user-bubble default in styles.css. */
+const DEFAULT_USER_BUBBLE_HEX = "#52525b";
+
+/** Curated user-bubble presets. `triplet` is what we persist; `hex` drives the
+ *  swatch. Mirrors ACCENT_PRESETS structure; the first entry is the default
+ *  (neutral gray) so user prompts read as a calm, non-distracting bubble. */
+const USER_BUBBLE_PRESETS: { name: string; triplet: string; hex: string }[] = [
+  { name: "灰色", triplet: "82 82 91", hex: "#52525b" }, // zinc-500 (= default)
+  { name: "翠绿", triplet: "5 150 105", hex: "#059669" }, // emerald-600
+  { name: "天蓝", triplet: "2 132 199", hex: "#0284c7" }, // sky-600
+  { name: "靛蓝", triplet: "67 56 202", hex: "#4338ca" }, // indigo-700
+  { name: "紫罗兰", triplet: "124 58 237", hex: "#7c3aed" }, // violet-600
+  { name: "玫瑰红", triplet: "225 29 72", hex: "#e11d48" }, // rose-600
+  { name: "琥珀", triplet: "217 119 6", hex: "#d97706" }, // amber-600
+];
 
 /** Curated accent presets. `triplet` is what we persist; `hex` drives the swatch.
  *  Ordered across the spectrum; all keep acceptable contrast in light + dark. */
@@ -108,8 +122,8 @@ export function AppearancePanel() {
   return (
     <section className="space-y-3">
       <div>
-        <h2 className="text-sm font-semibold text-content">外观</h2>
-        <p className="mt-1 text-[11px] leading-relaxed text-content-subtle">
+        <h2 className="font-semibold text-content">外观</h2>
+        <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
           调整界面主题、聊天样式与全局强调色,所有改动实时生效。
         </p>
       </div>
@@ -191,10 +205,10 @@ export function AppearancePanel() {
           </Select.Root>
         </SettingRow>
 
-        {/* ── Side-panel font size (left bar + right panel) ── */}
+        {/* ── Global font size (left bar + right panel + settings) ── */}
         <SettingRow
-          title="侧边栏字体大小"
-          desc={`统一设置左侧项目栏与右侧文件树、Git、终端的字体大小(${RIGHT_PANEL_FONT_SIZE_MIN}–${RIGHT_PANEL_FONT_SIZE_MAX} px)。`}
+          title="全局字体大小"
+          desc={`统一设置左侧项目栏、右侧文件树/Git/终端以及设置面板的字体大小(${RIGHT_PANEL_FONT_SIZE_MIN}–${RIGHT_PANEL_FONT_SIZE_MAX} px)。`}
           htmlFor="setting-sidepanel-fontsize"
         >
           <FontSizeStepper
@@ -227,10 +241,42 @@ export function AppearancePanel() {
           desc={
             userMessageColor
               ? `自定义 ${userColorHex.toUpperCase()}`
-              : "主题默认色"
+              : "主题默认色(灰色)"
           }
+          descExtra={
+            <span className="text-[0.7143em] text-content-subtle">
+              影响聊天中用户消息气泡的背景色调。
+            </span>
+          }
+          controlAlign="start"
           htmlFor="setting-usercolor"
         >
+          {/* Preset swatches */}
+          <div className="flex flex-wrap gap-1.5">
+            {USER_BUBBLE_PRESETS.map((p) => {
+              const active = userMessageColor === p.triplet && !pendingUserHex;
+              return (
+                <button
+                  key={p.triplet}
+                  type="button"
+                  onClick={() => {
+                    setPendingUserHex("");
+                    void setUserMessageColor(p.triplet);
+                  }}
+                  title={`${p.name} · ${p.hex.toUpperCase()}`}
+                  aria-label={`选择${p.name}`}
+                  aria-pressed={active}
+                  className={cn(
+                    "h-6 w-6 rounded-full border-2 transition-transform hover:scale-110",
+                    active
+                      ? "border-content ring-2 ring-content/20 ring-offset-1 ring-offset-surface"
+                      : "border-edge",
+                  )}
+                  style={{ backgroundColor: p.hex }}
+                />
+              );
+            })}
+          </div>
           <input
             id="setting-usercolor"
             type="color"
@@ -251,7 +297,7 @@ export function AppearancePanel() {
               void setUserMessageColor(null);
             }}
             disabled={!userMessageColor && !pendingUserHex}
-            title="恢复为主题默认色"
+            title="恢复为主题默认色(灰色)"
             className="gap-1 px-1.5"
           >
             <IconRefresh size={11} />
@@ -268,7 +314,7 @@ export function AppearancePanel() {
               : "主题默认色(翠绿)"
           }
           descExtra={
-            <span className="text-[10px] text-content-subtle">
+            <span className="text-[0.7143em] text-content-subtle">
               影响按钮、链接、选中态、输入框聚焦边框等。
             </span>
           }
@@ -331,7 +377,7 @@ export function AppearancePanel() {
 
       {/* Tiny footer note — the divide-y wrapper above intentionally doesn't
           include this so the last accent row is the final separated row. */}
-      <p className="pt-1 text-[10px] text-content-subtle">
+      <p className="pt-1 text-[0.7143em] text-content-subtle">
         提示:主题切换整窗即时生效;颜色透明度按各场景预设固定,无需手动调节。
       </p>
     </section>

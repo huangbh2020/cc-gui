@@ -118,10 +118,25 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
         filePath: file.path,
         oldPath: file.oldPath,
       });
-      // Both empty usually means binary / missing — still open so the user sees empty panes.
+      // Both empty usually means binary / missing - still open so the user sees empty panes.
       const absPath = joinPath(repoPath, file.path);
-      useSessionStore.getState().setGitDiffPair(absPath, { before, after });
-      useSessionStore.getState().openFileInIde(absPath, { diff: true });
+      const store = useSessionStore.getState();
+      if (store.gitDiffOpenMode === "dialog") {
+        // Dialog open-mode: open (or refresh) a history diff tab in the
+        // floating dialog (both blobs supplied - DiffPane won't touch disk).
+        store.openGitDiffDialogTab({
+          id: absPath,
+          filePath: absPath,
+          before,
+          after,
+          title: basename(file.path),
+          repoPath,
+          source: "history",
+        });
+        return;
+      }
+      store.setGitDiffPair(absPath, { before, after });
+      store.openFileInIde(absPath, { diff: true });
     } catch (err) {
       setFileError((err as Error).message || "打开文件差异失败");
     }

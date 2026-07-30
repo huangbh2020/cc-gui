@@ -81,7 +81,9 @@ export function CommandPalette() {
       <BaseDialog.Portal>
         <BaseDialog.Backdrop
           className={cn(
-            "fixed inset-0 z-50 bg-black/50 backdrop-blur-[1px]",
+            // Start below the 40px (h-10) custom titlebar so the titlebar stays
+            // uncovered and fully interactive (see ui/dialog.tsx Backdrop).
+            "fixed inset-x-0 top-10 bottom-0 z-50 bg-black/50 backdrop-blur-[1px]",
             "data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 transition-opacity",
           )}
         />

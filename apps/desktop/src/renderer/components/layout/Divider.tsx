@@ -1,20 +1,22 @@
 /**
- * Divider — a draggable splitter handle between two layout panes.
+ * Divider - a draggable splitter handle between two layout panes.
  *
  * Used in ThreePaneLayout (left|center, center|right, center|bottom-terminal)
- * and CenterPane (chat|editor). Hand-rolled with mousedown → document
+ * and CenterPane (chat|editor). Hand-rolled with mousedown -> document
  * mousemove/mouseup listeners, matching the codebase's no-library style.
  *
- * Visuals: a 5px-wide hit area with a 1px visual line centered in it. The
- * line is subtle (`bg-edge`) at rest and lights up (`bg-accent/50`) on hover
- * or while dragging. During a drag, a global `select-none` + fixed cursor is
- * applied to <body> so text selection and cursor flicker don't interfere.
+ * Visuals: the hit area IS the 1px visual line - no surrounding "column", so
+ * the divider reads as a thin hairline (like a border) while still being
+ * draggable. The line is subtle (`bg-edge`) at rest and lights up
+ * (`bg-accent/50`) on hover or while dragging. During a drag, a global
+ * `select-none` + fixed cursor is applied to <body> so text selection and
+ * cursor flicker don't interfere.
  *
  * The caller owns the sizing math: `onResize(deltaPx)` is called on every
  * mousemove with the signed pixel delta *since the last event* (an incremental
  * delta, not cumulative). The sign convention is screen-space (positive =
  * right / down); the caller decides whether that delta grows or shrinks the
- * pane it controls — e.g. the left-bar divider grows the bar with a positive
+ * pane it controls - e.g. the left-bar divider grows the bar with a positive
  * delta, while the right-bar divider shrinks it. The caller adds the delta
  * to the current store value inside its setter, so it never needs to track a
  * drag-start baseline.
@@ -32,11 +34,14 @@ export interface DividerProps {
    *  the drag axis. */
   orientation: "vertical" | "horizontal";
   /** Called on every mousemove during a drag with the signed *incremental*
-   *  pixel delta since the last move event (positive = rightward / downward).
+   *  pixel delta since the last move (positive = rightward / downward).
    *  The caller adds it to the current pane size and clamps. */
   onResize: (deltaPx: number) => void;
   /** Optional double-click handler (e.g. reset to default width). */
   onDoubleClick?: () => void;
+  /** Kept for API compatibility but a no-op now that the hit area is 1px (the
+   *  line fills the whole element, so there is nowhere to align within). */
+  lineAlign?: "start" | "center" | "end";
   className?: string;
 }
 
@@ -85,6 +90,9 @@ export function Divider({
     [isVertical, onResize],
   );
 
+  // The hit area is the line itself: 1px wide/tall, filled with `bg-edge`.
+  // No separate absolutely-positioned child, no 5px "column" - the divider
+  // looks like a border while still being draggable.
   return (
     <div
       role="separator"
@@ -92,22 +100,12 @@ export function Divider({
       onMouseDown={handleMouseDown}
       onDoubleClick={onDoubleClick}
       className={cn(
-        "group/divider relative z-10 shrink-0",
-        // 5px hit area for easy grabbing; the 1px visual line is centered
-        // via an absolutely-positioned child so it stays crisp at 1px.
-        isVertical ? "w-[5px] cursor-col-resize" : "h-[5px] cursor-row-resize",
+        "group/divider z-10 shrink-0 bg-edge transition-colors group-hover/divider:bg-accent/50",
+        isVertical
+          ? "w-px cursor-col-resize"
+          : "h-px cursor-row-resize",
         className,
       )}
-    >
-      <div
-        className={cn(
-          "absolute bg-edge transition-colors",
-          isVertical
-            ? "inset-y-0 left-1/2 w-px -translate-x-1/2"
-            : "inset-x-0 top-1/2 h-px -translate-y-1/2",
-          "group-hover/divider:bg-accent/50",
-        )}
-      />
-    </div>
+    />
   );
 }

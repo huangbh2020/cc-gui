@@ -37,3 +37,12 @@ export type {
   SelectGroupLabelProps,
   SelectSeparatorProps,
 } from "./select.js";
+
+export { Tooltip } from "./tooltip.js";
+export type {
+  TooltipRootProps,
+  TooltipProviderProps,
+  TooltipTriggerProps,
+  TooltipPositionerProps,
+  TooltipPopupProps,
+} from "./tooltip.js";

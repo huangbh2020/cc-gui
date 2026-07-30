@@ -52,7 +52,13 @@ function DialogBackdrop({ className, ...props }: DialogBackdropProps) {
   return (
     <BaseDialog.Backdrop
       className={cn(
-        "fixed inset-0 z-50 bg-black/60 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0 transition-opacity",
+        // Start below the 40px (h-10) custom titlebar so the titlebar - its
+        // drag region, toggle buttons, and the native min/max/close overlay
+        // on Windows/Linux - stays uncovered and fully interactive while a
+        // modal is open. Without this the mask tints the titlebar grey and
+        // captures clicks on the drag area, while the native caption buttons
+        // (drawn above the webview) stay clickable - an inconsistent look.
+        "fixed inset-x-0 top-10 bottom-0 z-50 bg-black/60 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0 transition-opacity",
         className,
       )}
       {...props}

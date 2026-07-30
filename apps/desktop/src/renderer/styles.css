@@ -40,13 +40,16 @@
    * lib/appearance.ts (setProperty on <html>) when the user changes them
    * in Settings. These are the theme defaults (= current hardcoded look):
    *   --chat-font-size mirrors the old `text-sm` (14px);
-   *   --user-bubble mirrors the old `bg-info/10` color (info token). */
+   *   --user-bubble is a neutral gray (zinc-500) so user prompts read as a
+   *     calm, non-distracting bubble; presets in Settings offer color picks. */
   --chat-font-size: 14px; /* default = text-sm */
-  --user-bubble: 124 58 237; /* default = info (violet-600), R G B triplet */
+  --user-bubble: 82 82 91; /* default = zinc-500 (neutral gray), R G B triplet */
 
-  /* Right-panel (files / git / terminal) base font size - user-configurable
-   * via Settings -> 通用. Overridden at runtime by lib/appearance.ts. The
-   * derived --rp-fs-* variants (below) track this via calc. */
+  /* Global side-panel + settings base font size - user-configurable via
+   * Settings -> 外观 -> 全局字体大小. Despite the var's legacy name it drives
+   * the whole app chrome (left bar, right files/git/terminal, settings page).
+   * Overridden at runtime by lib/appearance.ts. The derived --rp-fs-* variants
+   * (below) track this via calc. */
   --right-panel-font-size: 14px;
 
   color-scheme: light;
@@ -68,12 +71,14 @@
   --warning: 251 191 36; /* amber-400 */
   --info: 167 139 250; /* violet-400 */
 
-  /* Chat appearance defaults for dark mode (mirror info token). Overridden
-   * at runtime by lib/appearance.ts when the user sets a custom value. */
+  /* Chat appearance defaults for dark mode (neutral gray, one shade
+   * brighter than the light default for readable contrast on zinc-900).
+   * Overridden at runtime by lib/appearance.ts when the user sets a custom
+   * value. */
   --chat-font-size: 14px;
-  --user-bubble: 167 139 250; /* default = info (violet-400) */
+  --user-bubble: 113 113 122; /* default = zinc-500 (\#71717a) */
 
-  /* Right-panel base font size (same default in light + dark). */
+  /* Global side-panel + settings base font size (same default in light + dark). */
   --right-panel-font-size: 14px;
 
   color-scheme: dark;

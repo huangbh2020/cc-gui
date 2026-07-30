@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
-import { fmtTokens, warningColor } from "@renderer/lib/contextWindow.js";
+import {
+  fmtTokens,
+  getContextBreakdown,
+  warningColor,
+} from "@renderer/lib/contextWindow.js";
 import {
   IconHexagon,
   IconRobot,
@@ -9,6 +13,8 @@ import {
 } from "@renderer/lib/icons.js";
 import type { ContextSnapshot, SubagentSnapshot, ContextWarning } from "@contracts/runtime";
 import type { TodoItem, PlanDraft } from "@renderer/stores/sessionStore.js";
+import { Tooltip } from "@renderer/components/ui/index.js";
+import { ContextTooltipBody } from "./ContextRing.js";
 import { ActivityPopover } from "./ActivityPopover.js";
 
 /**
@@ -111,41 +117,35 @@ function Divider() {
 }
 
 /** Context-window segment: hexagon icon tinted by warning level + compact
- *  pct. Reuses the same tooltip text as ContextRing so the detailed
+ *  pct. Reuses the rich tooltip body from ContextRing so the detailed
  *  breakdown (input / cache / output / cost) shows on hover. */
 function ContextSegment({ snapshot }: { snapshot: ContextSnapshot }) {
   const { pct, warning, usedTokens, maxTokens } = snapshot;
   const color = warningColor(warning);
-  const title = buildContextTooltip(snapshot);
+  const breakdown = getContextBreakdown(snapshot);
   return (
-    <span className={cn("flex items-center gap-1 tabular-nums", color)} title={title}>
-      <IconHexagon size={13} className="shrink-0" />
-      <span className="font-medium">{fmtTokens(usedTokens)}</span>
-      <span className="text-content-subtle">/</span>
-      <span className="text-content-muted">{fmtTokens(maxTokens)}</span>
-      <span className="text-content-subtle">·</span>
-      <span>{pct}%</span>
-    </span>
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        delay={200}
+        render={<span />}
+        className={cn("flex cursor-default items-center gap-1 tabular-nums", color)}
+      >
+        <IconHexagon size={13} className="shrink-0" />
+        <span className="font-medium">{fmtTokens(usedTokens)}</span>
+        <span className="text-content-subtle">/</span>
+        <span className="text-content-muted">{fmtTokens(maxTokens)}</span>
+        <span className="text-content-subtle">·</span>
+        <span>{pct}%</span>
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Positioner side="bottom" sideOffset={8}>
+          <Tooltip.Popup className="min-w-[200px] max-w-[260px] p-0">
+            <ContextTooltipBody snapshot={snapshot} breakdown={breakdown} />
+          </Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
   );
-}
-
-/** Build the multi-line hover tooltip showing the token breakdown.
- *  Mirrors ContextRing's tooltip so the two stay in sync. */
-function buildContextTooltip(s: ContextSnapshot): string {
-  const cacheRead = s.cacheReadTokens ?? 0;
-  const cacheCreation = s.cacheCreationTokens ?? 0;
-  const freshInput = Math.max(0, s.usedTokens - cacheRead - cacheCreation);
-  const lines: string[] = [
-    `上下文占用  ${fmtTokens(s.usedTokens)} / ${fmtTokens(s.maxTokens)}  (${s.pct}%)`,
-    `──────────────`,
-    `输入        ${fmtTokens(freshInput)}`,
-  ];
-  if (cacheRead > 0) lines.push(`缓存读取    ${fmtTokens(cacheRead)}`);
-  if (cacheCreation > 0) lines.push(`缓存写入    ${fmtTokens(cacheCreation)}`);
-  lines.push(`输出        ${fmtTokens(s.outputTokens)}`);
-  lines.push(`本轮处理    ${fmtTokens(s.totalProcessedTokens)}`);
-  if (s.costUsd != null) lines.push(`费用        $${s.costUsd.toFixed(4)}`);
-  return lines.join("\n");
 }
 
 // Re-exported so the warning→color mapping is reusable if needed elsewhere.

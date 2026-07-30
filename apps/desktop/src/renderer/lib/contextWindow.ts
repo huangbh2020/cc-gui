@@ -57,3 +57,55 @@ export function warningColor(w: ContextWarning): string {
   if (w === "near-window") return "text-warning";
   return "text-content-muted";
 }
+
+/* ── breakdown for rich tooltips ── */
+
+/** One row in the context-usage hover card. */
+export interface ContextBreakdownRow {
+  key: string;
+  label: string;
+  value: string;
+  /** Optional muted secondary value (e.g. unit). */
+  hint?: string;
+}
+
+/**
+ * Structured token breakdown shared by ContextRing and StatusCapsule.
+ * Keeps both surfaces in sync and avoids duplicating the fresh-input math.
+ */
+export function getContextBreakdown(s: ContextSnapshot): {
+  title: string;
+  subtitle: string;
+  rows: ContextBreakdownRow[];
+} {
+  const cacheRead = s.cacheReadTokens ?? 0;
+  const cacheCreation = s.cacheCreationTokens ?? 0;
+  const freshInput = Math.max(0, s.usedTokens - cacheRead - cacheCreation);
+  const rows: ContextBreakdownRow[] = [
+    { key: "input", label: "输入", value: fmtTokens(freshInput) },
+  ];
+  if (cacheRead > 0) {
+    rows.push({ key: "cache-read", label: "缓存读取", value: fmtTokens(cacheRead) });
+  }
+  if (cacheCreation > 0) {
+    rows.push({ key: "cache-write", label: "缓存写入", value: fmtTokens(cacheCreation) });
+  }
+  rows.push({ key: "output", label: "输出", value: fmtTokens(s.outputTokens) });
+  rows.push({
+    key: "processed",
+    label: "本轮处理",
+    value: fmtTokens(s.totalProcessedTokens),
+  });
+  if (s.costUsd != null) {
+    rows.push({
+      key: "cost",
+      label: "费用",
+      value: `$${s.costUsd.toFixed(4)}`,
+    });
+  }
+  return {
+    title: "上下文占用",
+    subtitle: `${fmtTokens(s.usedTokens)} / ${fmtTokens(s.maxTokens)} · ${s.pct}%`,
+    rows,
+  };
+}

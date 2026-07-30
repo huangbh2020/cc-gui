@@ -312,8 +312,8 @@ export function CustomModelsPanel() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="mb-3">
-        <h2 className="text-sm font-semibold text-content">模型配置</h2>
-        <p className="mt-1 text-[11px] leading-relaxed text-content-subtle">
+        <h2 className="font-semibold text-content">模型配置</h2>
+        <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
           添加 Anthropic 兼容端点(DeepSeek / one-api / new-api / 自建网关)。Token 用系统钥匙串加密存储,明文不落盘。
           每行把一个角色(Haiku/Sonnet/Opus/Fable/Subagent)绑定到网关真实模型。
         </p>
@@ -322,7 +322,7 @@ export function CustomModelsPanel() {
       <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr] gap-4">
         {/* ───────── Left: provider list ───────── */}
         <aside className="flex min-h-0 flex-col rounded-md border border-edge bg-surface/40">
-          <div className="flex items-center justify-between px-2.5 py-2 text-[10px] font-medium uppercase tracking-wide text-content-subtle">
+          <div className="flex items-center justify-between px-2.5 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
             <span>供应商</span>
             <span className="tabular-nums">{customModels.length}</span>
           </div>
@@ -331,7 +331,7 @@ export function CustomModelsPanel() {
             {selectedId === "new" && (
               <div
                 className={cn(
-                  "relative block w-full rounded border border-dashed border-accent/60 bg-accent/5 px-2.5 py-1.5 text-left text-[11px] italic text-accent",
+                  "relative block w-full rounded border border-dashed border-accent/60 bg-accent/5 px-2.5 py-1.5 text-left text-[0.7857em] italic text-accent",
                 )}
               >
                 <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
@@ -357,10 +357,10 @@ export function CustomModelsPanel() {
                   {isActive && (
                     <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
                   )}
-                  <div className="truncate text-[11px] font-medium text-content">
+                  <div className="truncate text-[0.7857em] font-medium text-content">
                     {m.name}
                   </div>
-                  <div className="truncate text-[10px] text-content-subtle">
+                  <div className="truncate text-[0.7143em] text-content-subtle">
                     {boundCount > 0
                       ? `${boundCount} 角色 · ${m.authMode === "api_key" ? "x-api-key" : "Bearer"}`
                       : "未绑定角色"}
@@ -369,7 +369,7 @@ export function CustomModelsPanel() {
               );
             })}
             {customModels.length === 0 && selectedId !== "new" && (
-              <div className="px-2 py-4 text-center text-[10px] leading-relaxed text-content-subtle">
+              <div className="px-2 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
                 还没有供应商配置。
               </div>
             )}
@@ -468,7 +468,7 @@ function EmptyDetail() {
   return (
     <div className="flex h-full flex-col items-center justify-center text-center">
       <div className="mb-2 text-2xl text-content-subtle">⚙️</div>
-      <p className="max-w-[220px] text-[11px] leading-relaxed text-content-subtle">
+      <p className="max-w-[220px] text-[0.7857em] leading-relaxed text-content-subtle">
         从左侧选择一个供应商查看或修改配置,或点击「新增供应商」添加新的 Anthropic 兼容端点。
       </p>
     </div>
@@ -551,7 +551,7 @@ function ProviderForm({
         </Field>
       </div>
       {form.authMode === "api_key" && (
-        <p className="text-[10px] leading-relaxed text-content-subtle">
+        <p className="text-[0.7143em] leading-relaxed text-content-subtle">
           提示:DeepSeek / one-api / new-api 等网关官方文档推荐 <code className="rounded bg-surface-muted px-0.5">Bearer (AUTH_TOKEN)</code>。若选 x-api-key 后网关返回 404「model may not exist」(而非 401),多半是网关用 404 隐藏端点存在 —— 改回 Bearer 重试。
         </p>
       )}
@@ -559,12 +559,12 @@ function ProviderForm({
       {/* Role-binding table — the core of the config. */}
       <div>
         <div className="mb-1 flex items-baseline justify-between">
-          <span className="text-[11px] font-medium text-content-muted">角色绑定</span>
-          <span className="text-[10px] text-content-subtle">
+          <span className="text-[0.7857em] font-medium text-content-muted">角色绑定</span>
+          <span className="text-[0.7143em] text-content-subtle">
             点左侧圆点选择「测试连接」用哪个角色
           </span>
         </div>
-        <p className="mb-1.5 text-[10px] leading-relaxed text-content-subtle">
+        <p className="mb-1.5 text-[0.7143em] leading-relaxed text-content-subtle">
           Claude Code 按 5 个角色路由请求:Haiku/Sonnet/Opus/Fable 是模型别名;Subagent 是内置 Task 工具调用的模型。
           填了「实际请求模型」的角色才会在下拉框出现。勾选 1M 后,选中该角色时会在模型名后追加 <code className="rounded bg-surface-muted px-0.5">[1m]</code> 后缀(DeepSeek 等网关的 1M 上下文声明方式)。
         </p>
@@ -599,7 +599,7 @@ function ProviderForm({
                 >
                   ●
                 </button>
-                <span className="text-[11px] font-medium text-content">
+                <span className="text-[0.7857em] font-medium text-content">
                   {CUSTOM_MODEL_ROLE_LABELS[role]}
                 </span>
                 <input
@@ -638,7 +638,7 @@ function ProviderForm({
       {/* Collapsible advanced section */}
       <button
         onClick={() => setAdvancedOpen((v) => !v)}
-        className="flex items-center gap-1 pt-1 text-[11px] text-content-subtle hover:text-content-muted"
+        className="flex items-center gap-1 pt-1 text-[0.7857em] text-content-subtle hover:text-content-muted"
       >
         <span className={cn("inline-block transition-transform", advancedOpen && "rotate-90")}>▶</span>
         高级选项(超时 / 禁用遥测)
@@ -656,7 +656,7 @@ function ProviderForm({
                 spellCheck={false}
               />
             </Field>
-            <label className="flex items-end gap-1.5 pb-1 text-[11px] text-content-muted">
+            <label className="flex items-end gap-1.5 pb-1 text-[0.7857em] text-content-muted">
               <input
                 type="checkbox"
                 checked={form.disableNonEssentialTraffic}
@@ -669,7 +669,7 @@ function ProviderForm({
         </div>
       )}
 
-      {error && <div className="text-[11px] text-danger">{error}</div>}
+      {error && <div className="text-[0.7857em] text-danger">{error}</div>}
 
       <div className="flex flex-wrap items-center gap-2 pt-1">
         <Button
@@ -681,14 +681,14 @@ function ProviderForm({
         >
           {test.status === "testing" ? "测试中…" : "测试连接"}
         </Button>
-        <span className="truncate text-[10px] text-content-subtle">
+        <span className="truncate text-[0.7143em] text-content-subtle">
           测:{CUSTOM_MODEL_ROLE_LABELS[form.testRole]} · {form.roles[form.testRole]?.requestModel?.trim() || "(空)"}
         </span>
         {test.status === "ok" && (
-          <span className="text-[11px] text-accent">✓ {test.detail}</span>
+          <span className="text-[0.7857em] text-accent">✓ {test.detail}</span>
         )}
         {test.status === "fail" && (
-          <span className="text-[11px] text-danger">✗ {test.error}</span>
+          <span className="text-[0.7857em] text-danger">✗ {test.error}</span>
         )}
 
         <div className="flex-1" />
@@ -734,12 +734,12 @@ function roleHint(role: CustomModelRoleKey): string {
 }
 
 const inputCls =
-  "min-w-0 flex-1 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-[11px] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
+  "min-w-0 flex-1 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-0.5 block text-[11px] font-medium text-content-muted">{label}</span>
+      <span className="mb-0.5 block text-[0.7857em] font-medium text-content-muted">{label}</span>
       {children}
     </label>
   );

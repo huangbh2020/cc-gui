@@ -153,15 +153,19 @@ function SelectItem({ className, children, ...props }: SelectItemProps) {
   return (
     <BaseSelect.Item
       className={cn(
-        "flex items-center gap-2 px-3 py-1.5 text-xs text-content-muted outline-none select-none",
+        "group flex items-center gap-2 px-3 py-1.5 text-xs text-content-muted outline-none select-none",
         "hover:bg-surface-muted hover:text-content data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
         "data-[disabled]:opacity-30 data-[disabled]:cursor-not-allowed",
         className,
       )}
       {...props}
     >
-      <Select.ItemIndicator className="flex-shrink-0">
-        <IconCheck size={14} className="text-accent" />
+      {/* Selection indicator - keepMounted so every item reserves the same
+          left space (otherwise the selected item's text shifts right vs the
+          others). The check icon is shown only on the selected item via the
+          parent `group` + data-selected. */}
+      <Select.ItemIndicator className="flex w-[14px] flex-shrink-0 justify-center" keepMounted>
+        <IconCheck size={14} className="text-accent opacity-0 group-data-[selected]:opacity-100" />
       </Select.ItemIndicator>
       {children}
     </BaseSelect.Item>

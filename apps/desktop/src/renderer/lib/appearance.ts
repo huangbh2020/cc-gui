@@ -32,10 +32,13 @@ export function applyChatFontSize(px: number): void {
   document.documentElement.style.setProperty("--chat-font-size", `${px}px`);
 }
 
-/** Write the right-panel base font size as `--right-panel-font-size` on
- *  <html>. The derived `--rp-fs-sm/xs/xxs` variants (defined in styles.css
- *  via calc) track this automatically. Also mirrored into the xterm
- *  terminal fontSize directly from the store (see TerminalView). */
+/** Write the global side-panel + settings base font size as
+ *  `--right-panel-font-size` on <html>. Despite the var's legacy name, this
+ *  is the app-chrome font size: the left project bar, the right files/git/
+ *  terminal panels, AND the settings page all inherit it. The derived
+ *  `--rp-fs-sm/xs/xxs` variants (defined in styles.css via calc) track this
+ *  automatically. Also mirrored into the xterm terminal fontSize directly
+ *  from the store (see TerminalView). */
 export function applyRightPanelFontSize(px: number): void {
   document.documentElement.style.setProperty("--right-panel-font-size", `${px}px`);
 }
@@ -87,11 +90,12 @@ export function useChatAppearance(): void {
 }
 
 /**
- * Keep the right-panel font-size CSS var in sync with the session store.
- * Mount once at the app root (alongside useChatAppearance). Re-runs whenever
- * the store value changes (user dragged the slider in Settings), re-applying
- * the var idempotently. The derived --rp-fs-* variants (calc'd in
- * styles.css) track this base automatically.
+ * Keep the global side-panel + settings font-size CSS var in sync with the
+ * session store. Mount once at the app root (alongside useChatAppearance).
+ * Re-runs whenever the store value changes (user dragged the stepper in
+ * Settings), re-applying the var idempotently. The derived --rp-fs-* variants
+ * (calc'd in styles.css) track this base automatically; the settings page
+ * inherits the base via an inline fontSize on its container.
  *
  * The xterm terminal consumes the store value directly (not the CSS var)
  * since its fontSize is a JS option, not a style - see TerminalView.

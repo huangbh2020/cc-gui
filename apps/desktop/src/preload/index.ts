@@ -80,6 +80,12 @@ const api = {
       ipcRenderer.invoke(IPC.THEME_SET, input)) as RpcMap["theme.set"],
   },
 
+  /** App + runtime info (version, Electron/Node/Chromium, platform) for the
+   *  About panel. Parameterless RPC. */
+  app: {
+    info: (() => ipcRenderer.invoke(IPC.APP_INFO)) as RpcMap["app.info"],
+  },
+
   /** Filesystem operations for the IDE right panel + diff rendering. Every
    *  path must resolve inside a known project root (main enforces this);
    *  read/list degrade to empty on refusal or failure, write returns ok:false. */
@@ -89,6 +95,9 @@ const api = {
     /** List one level of a directory (non-recursive) for the file tree. */
     listDir: ((input) =>
       ipcRenderer.invoke(IPC.FILE_LIST_DIR, input)) as RpcMap["file.listDir"],
+    /** Recursive file search under a project root (composer @ / add-context). */
+    search: ((input) =>
+      ipcRenderer.invoke(IPC.FILE_SEARCH, input)) as RpcMap["file.search"],
     /** Write utf-8 content to a file (creates parent dirs). Returns ok. */
     writeFile: ((input) =>
       ipcRenderer.invoke(IPC.FILE_WRITE, input)) as RpcMap["file.writeFile"],

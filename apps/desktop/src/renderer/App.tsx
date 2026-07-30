@@ -15,6 +15,7 @@ import { useTheme } from "./lib/theme.js";
 import { useChatAppearance, useRightPanelAppearance } from "./lib/appearance.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
 import { FileEditor } from "./components/ide/FileEditor.js";
+import { GitDiffDialog } from "./components/ide/GitDiffDialog.js";
 
 export function App() {
   // Subscribe to the claude event stream for the app's whole lifetime.
@@ -24,8 +25,9 @@ export function App() {
   // Apply + keep in sync the chat appearance CSS vars (--chat-font-size,
   // --user-bubble) from the user-configurable settings.
   useChatAppearance();
-  // Apply + keep in sync the right-panel font-size CSS var
-  // (--right-panel-font-size) for the files / git / terminal tabs.
+  // Apply + keep in sync the global side-panel + settings font-size CSS var
+  // (--right-panel-font-size) for the left bar, right files/git/terminal
+  // panels, and the settings page.
   useRightPanelAppearance();
 
   const init = useSessionStore((s) => s.init);
@@ -101,7 +103,10 @@ export function App() {
           />
           {/* The settings page reuses the three-pane shell with the right
               panel collapsed, so visually it reads as the same workspace
-              minus the IDE sidebar. */}
+              minus the IDE sidebar. The titlebar/center divider is a border-t
+              on the center <main> in ThreePaneLayout, spanning only the center
+              area (not the sidebar) so the left sidebar blends seamlessly into
+              the titlebar's sidebar strip above. */}
           <div className="relative flex min-h-0 flex-1 bg-surface-muted">
             <SettingsPage />
           </div>
@@ -143,6 +148,10 @@ export function App() {
               onResetBottomTerminal={resetBottomTerminalHeight}
             />
           </div>
+          {/* Git diff dialog (the "dialog" open-mode). Portaled to <body>;
+              renders nothing when closed or empty. Mounted at the workspace
+              level so it overlays the editor while staying app-scoped. */}
+          <GitDiffDialog />
         </>
       )}
     </div>
