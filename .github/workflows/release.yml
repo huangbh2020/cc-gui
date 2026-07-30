@@ -26,7 +26,10 @@ jobs:
         include:
           - os: macos-latest
             platform: mac
-          - os: windows-latest
+          # Pin to windows-2022 (not -latest): windows-latest has migrated to the
+          # 2025 image whose VS install layout breaks node-gyp@9's VisualStudio
+          # finder. 2022 reliably ships VS 2022 + the C++ workload.
+          - os: windows-2022
             platform: win
 
     runs-on: ${{ matrix.os }}
@@ -53,6 +56,15 @@ jobs:
       - name: Install setuptools (macOS distutils shim for node-gyp)
         if: runner.os == 'macOS'
         run: python3 -m pip install --user --break-system-packages setuptools
+
+      # node-gyp@9 (used by node-pty) needs the MSVC toolchain to compile native
+      # addons on Windows. This step exports the vcvars environment so that
+      # node-gyp's VisualStudioFinder locates the compiler.
+      - name: Setup MSVC dev cmd (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
