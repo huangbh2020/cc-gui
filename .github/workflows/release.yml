@@ -47,15 +47,19 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      # macOS runners ship Python 3.12+, which removed the `distutils` module.
       # node-pty 1.1.0 pulls node-gyp@9, which still does
-      # `from distutils.version import StrictVersion` -> ModuleNotFoundError.
-      # Installing setuptools restores the distutils shim so native rebuild works.
-      # --break-system-packages: the runner's Python is Homebrew-managed (PEP 668
-      # blocks system-wide pip installs); this is a throwaway CI env, so it's safe.
-      - name: Install setuptools (macOS distutils shim for node-gyp)
+      # `from distutils.version import StrictVersion`. Both macOS and Windows
+      # runners now ship Python 3.12+, which removed `distutils` entirely ->
+      # ModuleNotFoundError during native rebuild. Installing setuptools
+      # restores the distutils shim on both platforms.
+      #   macOS:  --break-system-packages (Homebrew Python is PEP-668 managed)
+      #   Windows: plain pip (no PEP 668)
+      - name: Install setuptools (distutils shim for node-gyp)
         if: runner.os == 'macOS'
         run: python3 -m pip install --user --break-system-packages setuptools
+      - name: Install setuptools (distutils shim for node-gyp)
+        if: runner.os == 'Windows'
+        run: python -m pip install setuptools
 
       # node-gyp@9 (used by node-pty) needs the MSVC toolchain to compile native
       # addons on Windows. This step exports the vcvars environment so that
