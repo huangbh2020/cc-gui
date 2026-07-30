@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { basename } from "@renderer/lib/path.js";
+import { api } from "@renderer/lib/api.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
@@ -19,10 +21,11 @@ import {
  * historical card is restored from the persisted message snapshot.
  *
  * One expand level: card folded -> "本轮修改了 N 个文件 +总A -总D". Expand to
- * see the file rows. Clicking a row opens that file in the center editor
- * column with a side-by-side diff (before-snapshot vs current on-disk); the
- * card's frozen `before` is passed through the store so HISTORICAL turns -
- * whose snapshot is gone from the live turn-files bucket - still diff.
+ * see the file rows. Clicking a row opens that file's diff for review - WHERE
+ * it opens follows the Git setting "差异打开方式" (center editor column, or the
+ * floating multi-tab diff dialog). The card's frozen `before` is passed
+ * through so HISTORICAL turns - whose snapshot is gone from the live
+ * turn-files bucket - still diff against the current on-disk content.
  *
  * Rewind: only the LATEST turn's card (`isLatestTurn === true`) renders the
  * 撤销本轮 button - it restores files via the in-memory FileSnapshot (cleared
@@ -132,18 +135,62 @@ export function TurnFilesCard({
   );
 }
 
-/** One row in the file list. The whole row is clickable: it opens this file
- *  in the center editor column with a side-by-side diff, passing the card's
- *  frozen `before` so historical turns (whose snapshot is gone from the live
- *  turn-files bucket) still diff correctly. An external-link glyph at the
- *  trailing edge signals the open affordance. */
+/** One row in the file list. The whole row is clickable: it opens this file's
+ *  diff for review. WHERE it opens follows the Git setting "差异打开方式":
+ *   - center (default): the center editor column, side-by-side diff using the
+ *     card's frozen `before` vs the current on-disk content.
+ *   - dialog: a floating multi-tab diff dialog (same one the Git panel uses),
+ *     so several files can be reviewed side by side. `after` is left undefined
+ *     so DiffPane reads the live working-tree file from disk.
+ *
+ *  An external-link glyph at the trailing edge signals the open affordance. */
 function FileRow({ entry }: { entry: TurnFileEntry }) {
   const isCreated = entry.kind === "created";
 
-  const handleOpen = () => {
-    const { setRightPanelTab, openFileInIde } = useSessionStore.getState();
-    setRightPanelTab("files");
-    openFileInIde(entry.filePath, { diff: true, before: entry.before });
+  const handleOpen = async () => {
+    const store = useSessionStore.getState();
+    // Resolve the file's owning repo so the dialog's left sidebar can show
+    // working-tree status. discoverRepos scans the active project; we pick the
+    // repo whose root is a prefix of this file's absolute path. Falls back to
+    // the project root when no repo matches (the sidebar then just reads empty).
+    let repoPath = "";
+    const pid = store.activeProjectId;
+    const projectPath = pid ? store.projects.find((p) => p.id === pid)?.path : undefined;
+    if (projectPath) {
+      try {
+        const { repos } = await api.git.discoverRepos({ projectPath });
+        // Normalize separators for a cross-platform prefix match.
+        const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+        const fp = norm(entry.filePath);
+        const match = repos.find((r) => {
+          const rp = norm(r.path);
+          return fp === rp || fp.startsWith(rp + "/");
+        });
+        repoPath = match?.path ?? projectPath;
+      } catch {
+        repoPath = projectPath;
+      }
+    }
+
+    if (store.gitDiffOpenMode === "dialog") {
+      // Dialog open-mode: open (or refresh) a diff tab in the floating dialog.
+      // `after` is omitted on purpose - DiffPane reads the live working-tree
+      // file from disk, which is exactly the post-turn content we want to diff
+      // against the frozen `before` snapshot.
+      store.openGitDiffDialogTab({
+        id: `${entry.filePath}::turn`,
+        filePath: entry.filePath,
+        before: entry.before,
+        title: basename(entry.filePath),
+        repoPath,
+        source: "working",
+      });
+      return;
+    }
+
+    // Center open-mode: open in the editor column with a side-by-side diff.
+    store.setRightPanelTab("files");
+    store.openFileInIde(entry.filePath, { diff: true, before: entry.before });
   };
 
   return (

@@ -4,6 +4,7 @@ import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { joinPath, basename } from "@renderer/lib/path.js";
+import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
 import type { GitRepo, GitStatusResult, GitFileStatus } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
@@ -26,26 +27,62 @@ import {
   IconMinus,
   IconSparkles,
   IconMaximize,
+  IconList,
+  IconCircleCheck,
+  IconCircleXFilled,
+  IconX,
 } from "@renderer/lib/icons.js";
+
+/** A single git operation log entry - one per pull/push/commit/sync/etc. */
+type GitOpLogEntry = {
+  id: string;
+  op: "pull" | "push" | "commit" | "sync" | "stage" | "unstage" | "discard";
+  /** "success" for ok results, "failure" for !ok results or thrown exceptions. */
+  status: "success" | "failure";
+  /** Full error message (only for failures). Omitted for successes. */
+  message?: string;
+  /** Epoch milliseconds (`Date.now()`). */
+  timestamp: number;
+};
+
+/** Human-readable labels for each operation type, shown in the log list. */
+const OP_LABELS: Record<GitOpLogEntry["op"], string> = {
+  pull: "拉取",
+  push: "推送",
+  commit: "提交",
+  sync: "同步",
+  stage: "暂存",
+  unstage: "取消暂存",
+  discard: "放弃更改",
+};
+
+/** Max number of log entries kept per repo. Older entries are dropped. */
+const MAX_LOG_ENTRIES = 20;
+
+/** Monotonic counter for log entry ids (avoids Date.now() collisions when
+ *  multiple entries are written within the same millisecond, e.g. sync). */
+let logIdSeq = 0;
 
 /**
  * One git repository's card in the Git panel. Layout (top to bottom):
  *
  *   Header: repo name + branch + ahead/behind + Pull/Push/Refresh
- *   已暂存 (staged) group  — [全部取消]
- *   Commit message input   — [提交 ▾] (commit / commit+push / commit+sync)
- *   更改 (unstaged) group   — [全部暂存]
+ *   已暂存 (staged) group  - [全部取消]
+ *   Commit message input   - [提交 ▾] (commit / commit+push / commit+sync)
+ *   更改 (unstaged) group   - [全部暂存]
+ *   操作日志 (operation log) - collapsible, recent N ops with full errors
  *
  * Clicking a file opens it in the CENTER editor's diff view (not inline).
  * Right-clicking a file shows a context menu (view source / discard changes).
  * Each file row shows a +/- diff tally badge (loaded async).
  *
- * All state is local to this card — multiple cards operate independently.
+ * All state is local to this card - multiple cards operate independently.
  */
 export function GitRepoCard({ repo }: { repo: GitRepo }) {
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [logs, setLogs] = useState<GitOpLogEntry[]>([]);
   const [commitMsg, setCommitMsg] = useState("");
   const [busy, setBusy] = useState<"push" | "pull" | "commit" | null>(null);
   const [pendingDiscard, setPendingDiscard] = useState<string[] | null>(null);
@@ -65,6 +102,19 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       setLoading(false);
     }
   }, [repo.path]);
+
+  /** Prepend a log entry (newest first) and cap to MAX_LOG_ENTRIES. */
+  const prependLog = useCallback(
+    (entry: Omit<GitOpLogEntry, "id" | "timestamp">) => {
+      const full: GitOpLogEntry = {
+        ...entry,
+        id: `log-${Date.now()}-${logIdSeq++}`,
+        timestamp: Date.now(),
+      };
+      setLogs((prev) => [full, ...prev].slice(0, MAX_LOG_ENTRIES));
+    },
+    [],
+  );
 
   useEffect(() => {
     void refresh();
@@ -92,8 +142,17 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         repoPath: repo.path,
         filePaths: unstaged.map((f) => f.path),
       });
-      if (!res.ok) setError(res.error ?? "暂存失败");
+      if (!res.ok) {
+        setError(res.error ?? "暂存失败");
+        prependLog({ op: "stage", status: "failure", message: res.error });
+      } else {
+        prependLog({ op: "stage", status: "success" });
+      }
       await refresh();
+    } catch (err) {
+      const msg = (err as Error).message ?? "暂存失败";
+      setError(msg);
+      prependLog({ op: "stage", status: "failure", message: msg });
     } finally {
       setBusy(null);
     }
@@ -107,8 +166,17 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         repoPath: repo.path,
         filePaths: staged.map((f) => f.path),
       });
-      if (!res.ok) setError(res.error ?? "取消暂存失败");
+      if (!res.ok) {
+        setError(res.error ?? "取消暂存失败");
+        prependLog({ op: "unstage", status: "failure", message: res.error });
+      } else {
+        prependLog({ op: "unstage", status: "success" });
+      }
       await refresh();
+    } catch (err) {
+      const msg = (err as Error).message ?? "取消暂存失败";
+      setError(msg);
+      prependLog({ op: "unstage", status: "failure", message: msg });
     } finally {
       setBusy(null);
     }
@@ -118,8 +186,17 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     setBusy("commit");
     try {
       const res = await api.git.stage({ repoPath: repo.path, filePaths: [filePath] });
-      if (!res.ok) setError(res.error ?? "暂存失败");
+      if (!res.ok) {
+        setError(res.error ?? "暂存失败");
+        prependLog({ op: "stage", status: "failure", message: res.error });
+      } else {
+        prependLog({ op: "stage", status: "success" });
+      }
       await refresh();
+    } catch (err) {
+      const msg = (err as Error).message ?? "暂存失败";
+      setError(msg);
+      prependLog({ op: "stage", status: "failure", message: msg });
     } finally {
       setBusy(null);
     }
@@ -129,8 +206,17 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     setBusy("commit");
     try {
       const res = await api.git.unstage({ repoPath: repo.path, filePaths: [filePath] });
-      if (!res.ok) setError(res.error ?? "取消暂存失败");
+      if (!res.ok) {
+        setError(res.error ?? "取消暂存失败");
+        prependLog({ op: "unstage", status: "failure", message: res.error });
+      } else {
+        prependLog({ op: "unstage", status: "success" });
+      }
       await refresh();
+    } catch (err) {
+      const msg = (err as Error).message ?? "取消暂存失败";
+      setError(msg);
+      prependLog({ op: "unstage", status: "failure", message: msg });
     } finally {
       setBusy(null);
     }
@@ -145,22 +231,39 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       const res = await api.git.commit({ repoPath: repo.path, message: msg });
       if (!res.ok) {
         setError(res.error ?? "提交失败");
+        prependLog({ op: "commit", status: "failure", message: res.error });
         return;
       }
+      prependLog({ op: "commit", status: "success" });
       setCommitMsg("");
       if (mode === "push") {
         const pushRes = await api.git.push({ repoPath: repo.path });
-        if (!pushRes.ok) setError(pushRes.error ?? "推送失败");
+        if (!pushRes.ok) {
+          setError(pushRes.error ?? "推送失败");
+          prependLog({ op: "push", status: "failure", message: pushRes.error });
+        } else {
+          prependLog({ op: "push", status: "success" });
+        }
       } else if (mode === "sync") {
         const pullRes = await api.git.pull({ repoPath: repo.path });
         if (!pullRes.ok) {
           setError(pullRes.error ?? "拉取失败");
+          prependLog({ op: "sync", status: "failure", message: pullRes.error });
           return; // don't push if pull failed
         }
         const pushRes = await api.git.push({ repoPath: repo.path });
-        if (!pushRes.ok) setError(pushRes.error ?? "推送失败");
+        if (!pushRes.ok) {
+          setError(pushRes.error ?? "推送失败");
+          prependLog({ op: "push", status: "failure", message: pushRes.error });
+        } else {
+          prependLog({ op: "push", status: "success" });
+        }
       }
       await refresh();
+    } catch (err) {
+      const errMsg = (err as Error).message ?? "提交失败";
+      setError(errMsg);
+      prependLog({ op: "commit", status: "failure", message: errMsg });
     } finally {
       setBusy(null);
     }
@@ -171,8 +274,17 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     setError(null);
     try {
       const res = await api.git.push({ repoPath: repo.path });
-      if (!res.ok) setError(res.error ?? "推送失败");
+      if (!res.ok) {
+        setError(res.error ?? "推送失败");
+        prependLog({ op: "push", status: "failure", message: res.error });
+      } else {
+        prependLog({ op: "push", status: "success" });
+      }
       await refresh();
+    } catch (err) {
+      const msg = (err as Error).message ?? "推送失败";
+      setError(msg);
+      prependLog({ op: "push", status: "failure", message: msg });
     } finally {
       setBusy(null);
     }
@@ -183,8 +295,17 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     setError(null);
     try {
       const res = await api.git.pull({ repoPath: repo.path });
-      if (!res.ok) setError(res.error ?? "拉取失败");
+      if (!res.ok) {
+        setError(res.error ?? "拉取失败");
+        prependLog({ op: "pull", status: "failure", message: res.error });
+      } else {
+        prependLog({ op: "pull", status: "success" });
+      }
       await refresh();
+    } catch (err) {
+      const msg = (err as Error).message ?? "拉取失败";
+      setError(msg);
+      prependLog({ op: "pull", status: "failure", message: msg });
     } finally {
       setBusy(null);
     }
@@ -198,9 +319,18 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         repoPath: repo.path,
         filePaths: pendingDiscard,
       });
-      if (!res.ok) setError(res.error ?? "放弃更改失败");
+      if (!res.ok) {
+        setError(res.error ?? "放弃更改失败");
+        prependLog({ op: "discard", status: "failure", message: res.error });
+      } else {
+        prependLog({ op: "discard", status: "success" });
+      }
       setPendingDiscard(null);
       await refresh();
+    } catch (err) {
+      const msg = (err as Error).message ?? "放弃更改失败";
+      setError(msg);
+      prependLog({ op: "discard", status: "failure", message: msg });
     } finally {
       setBusy(null);
     }
@@ -317,6 +447,11 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
             </>
           )}
         </div>
+      )}
+
+      {/* ── Operation log ── */}
+      {!collapsed && logs.length > 0 && (
+        <OperationLog logs={logs} onClear={() => setLogs([])} />
       )}
 
       {/* ── Discard confirmation dialog ── */}
@@ -616,6 +751,99 @@ function ActionButton({
     >
       {busy ? <IconLoader2 size={12} className="animate-spin" /> : children}
     </button>
+  );
+}
+
+/* ───────────────────────── operation log ───────────────────────── */
+
+/**
+ * Collapsible operation log shown at the bottom of a repo card. Lists the most
+ * recent pull/push/commit/etc. operations (newest first), each as one line with
+ * a status icon, op label, and relative time. Failed entries expand on click to
+ * reveal the full error message - the key surface for diagnosing network/auth
+ * failures that would otherwise be lost.
+ */
+function OperationLog({
+  logs,
+  onClear,
+}: {
+  logs: GitOpLogEntry[];
+  onClear: () => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  return (
+    <div className="border-t border-edge">
+      {/* Header row: collapse toggle + clear-all */}
+      <div className="flex items-center gap-1 px-2.5 py-1">
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          className="flex items-center gap-1 [font-size:var(--rp-fs-xxs)] font-medium uppercase tracking-wide text-content-subtle transition-colors hover:text-content-muted"
+        >
+          {collapsed ? <IconChevronRight size={10} /> : <IconChevronDown size={10} />}
+          <IconList size={11} />
+          操作日志 ({logs.length})
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          title="清空日志"
+          className="ml-auto flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
+        >
+          <IconX size={12} />
+        </button>
+      </div>
+      {/* List */}
+      {!collapsed && (
+        <div className="max-h-[160px] overflow-y-auto px-2.5 pb-1.5">
+          {logs.map((entry) => {
+            const isFailure = entry.status === "failure";
+            const expanded = expandedId === entry.id;
+            const hasMessage = isFailure && !!entry.message;
+            return (
+              <div key={entry.id} className="border-b border-edge/50 last:border-b-0">
+                <button
+                  type="button"
+                  disabled={!hasMessage}
+                  onClick={() => setExpandedId(expanded ? null : entry.id)}
+                  className={cn(
+                    "flex w-full items-center gap-1.5 py-1 text-left [font-size:var(--right-panel-font-size)]",
+                    hasMessage ? "cursor-pointer" : "cursor-default",
+                  )}
+                >
+                  {isFailure ? (
+                    <IconCircleXFilled size={11} className="shrink-0 text-danger" />
+                  ) : (
+                    <IconCircleCheck size={11} className="shrink-0 text-accent" />
+                  )}
+                  <span
+                    className={cn(
+                      "shrink-0",
+                      isFailure ? "text-danger" : "text-content-muted",
+                    )}
+                  >
+                    {OP_LABELS[entry.op]}
+                  </span>
+                  <span
+                    className="ml-auto shrink-0 [font-size:var(--rp-fs-xxs)] text-content-subtle"
+                    title={formatFullTime(entry.timestamp)}
+                  >
+                    {formatRelativeTime(entry.timestamp)}
+                  </span>
+                </button>
+                {expanded && hasMessage && (
+                  <div className="break-words whitespace-pre-wrap pb-1.5 pl-5 [font-size:var(--rp-fs-xxs)] leading-relaxed text-danger">
+                    {entry.message}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { joinPath, basename } from "@renderer/lib/path.js";
+import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
 import type { GitRepo, GitCommitInfo, GitCommitFile, GitCommitFileStatus } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
@@ -424,33 +425,4 @@ function CommitFileStatusIcon({ status }: { status: GitCommitFileStatus }) {
       {letter}
     </span>
   );
-}
-
-/* ───────────────────────── time helpers ───────────────────────── */
-
-function formatRelativeTime(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return iso;
-  const diffSec = Math.round((Date.now() - t) / 1000);
-  if (diffSec < 60) return "刚刚";
-  const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin} 分钟前`;
-  const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr} 小时前`;
-  const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay} 天前`;
-  const diffMonth = Math.round(diffDay / 30);
-  if (diffMonth < 12) return `${diffMonth} 个月前`;
-  const diffYear = Math.round(diffMonth / 12);
-  return `${diffYear} 年前`;
-}
-
-function formatFullTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  try {
-    return d.toLocaleString();
-  } catch {
-    return iso;
-  }
 }

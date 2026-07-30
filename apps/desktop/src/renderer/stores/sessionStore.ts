@@ -112,6 +112,31 @@ export interface TurnMeta {
   endedAt?: number;
 }
 
+/** One finalized turn's usage, appended to `usageHistoryBySession` at
+ *  turn.done. Mirrors the scalar fields of ContextSnapshot so the history
+ *  view can render each turn's tokens/cost without keeping the full
+ *  snapshot (warnings etc. are turn-live-only). */
+export interface TurnUsageRecord {
+  /** Wall-clock ms when the turn finalized (turnMeta.endedAt). */
+  endedAt: number;
+  /** Duration of the turn in ms (endedAt − startedAt). */
+  durationMs: number;
+  /** Tokens processed this turn (input + output + cache). */
+  totalProcessedTokens: number;
+  /** Output tokens this turn. */
+  outputTokens: number;
+  /** Tokens read from cache this turn (0 if none). */
+  cacheReadTokens: number;
+  /** Tokens written to cache this turn (0 if none). */
+  cacheCreationTokens: number;
+  /** Estimated USD cost this turn, if known. */
+  costUsd?: number;
+  /** Window occupancy AFTER this turn (cumulative context size). */
+  usedTokens: number;
+  /** Active model for this turn, if known. */
+  model?: string;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
@@ -300,6 +325,13 @@ export interface SessionState {
    *  select/open (the snapshot is persisted), then kept live as
    *  `token-usage.updated` events stream in. */
   contextSnapshotBySession: Record<string, ContextSnapshot>;
+  /** Per-session, append-only log of finalized turn usage snapshots.
+   *  Appended at `turn.done` from the latest ContextSnapshot, so each entry
+   *  is the post-turn token/cost breakdown for one completed turn. Used by
+   *  the activity capsule's "上下文消耗" section to show a per-turn history
+   *  + a session total. Ephemeral (not persisted): a restart starts empty,
+   *  same as todos/subagents. */
+  usageHistoryBySession: Record<string, TurnUsageRecord[]>;
   /** Per-session pending AskUserQuestion. Keyed by sessionId so a
    *  question popping up in tab B doesn't clobber tab A's. The sessionId
    *  lives on the inner record for cross-checking at render time.
@@ -644,6 +676,8 @@ export const EMPTY_TURN_FILES: TurnFileEntry[] = [];
 const EMPTY_CUSTOM_MODELS: CustomModelPublic[] = [];
 const EMPTY_SESSIONS: Session[] = [];
 export const EMPTY_SUBAGENTS: SubagentSnapshot[] = [];
+/** Stable empty usage-history reference (selector must return a stable array). */
+export const EMPTY_USAGE: TurnUsageRecord[] = [];
 /** Stable cleared-plan reference — used both as the initial state and as
  * the "not in plan mode" placeholder returned by selectors. */
 export const EMPTY_PLAN: PlanDraft = { plan: "", phase: "cleared" };
@@ -1078,10 +1112,22 @@ const LIVE_FILES_ID = "current";
 /** Upsert the live turn-files block on the current turn's trailing assistant
  *  message. Called from the turn.files handler.
  *
- *  If the current turn has no assistant message yet, a new trailing assistant
- *  message is created (same "new turn" heuristic as the plan / tool.use
- *  helpers) AND any previously-latest turn-files card is demoted to read-only
- *  (a new turn is opening → the old latest is no longer the latest).
+ *  Attach target resolution (in priority order):
+ *  1. The trailing assistant message of the currently-OPEN turn (turnMeta with
+ *     no endedAt) - the normal mid-stream case.
+ *  2. The most recent assistant message - the realistic late-arrival case.
+ *     turn.files is emitted from flushFinal (after an async freeze()), which
+ *     runs AFTER the `result` message already emitted turn.done. So by the
+ *     time turn.files reaches the renderer the turn is closed and (1) finds
+ *     nothing; the file list still belongs to this just-closed turn, so we
+ *     attach it to the turn's (now-ended) trailing assistant message WITHOUT
+ *     opening a new turn. Opening a new turn here would spawn a phantom
+ *     "开始 · 用时 <1s" stat row that never finalizes.
+ *  3. A brand-new assistant message (no turnMeta) - defensive fallback when no
+ *     assistant message exists at all.
+ *
+ *  In every case the block becomes the latest rewindable card
+ *  (isLatestTurn=true) and every other turn's card is demoted to read-only.
  *
  *  Returns the new messages array; pure (no store mutation). */
 function upsertLiveTurnFilesBlock(messages: ChatMessage[], files: TurnFileEntry[]): ChatMessage[] {
@@ -1092,26 +1138,37 @@ function upsertLiveTurnFilesBlock(messages: ChatMessage[], files: TurnFileEntry[
     isLatestTurn: true,
   };
   let next = messages;
-  const targetIndex = findOpenTurnTrailingAssistant(next);
+  let targetIndex = findOpenTurnTrailingAssistant(next);
   if (targetIndex === -1) {
-    // No open-turn assistant message exists yet — turn.files normally arrives
-    // at the very end of the stream (flushFinal, just before turn.done), so
-    // an open turn almost always exists. Defensively open one here, mirroring
-    // the plan/tool.use helpers, and demote any prior latest card since a new
-    // turn is opening.
-    const isNewTurn = !next.some(
-      (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
-    );
+    // turn.files normally arrives at the very end of the stream (flushFinal),
+    // but the SDK emits turn.done from the `result` message BEFORE flushFinal
+    // runs its async freeze() + emit. So by the time turn.files reaches the
+    // renderer, turn.done has ALREADY been processed: every assistant message
+    // of this turn carries a turnMeta.endedAt, and findOpenTurnTrailingAssistant
+    // returns -1. The file list still belongs to THIS just-closed turn, so
+    // fall back to the most recent assistant message (the turn's trailing
+    // one, now ended) and attach the block there - WITHOUT opening a new turn.
+    for (let i = next.length - 1; i >= 0; i--) {
+      const m = next[i];
+      if (m && m.role === "assistant") {
+        targetIndex = i;
+        break;
+      }
+    }
+  }
+  if (targetIndex === -1) {
+    // Truly no assistant message at all (shouldn't happen for a turn that
+    // touched files, but stay defensive): create one WITHOUT a turnMeta so we
+    // don't spawn a phantom "开始 · 用时" stat row for an already-ended turn.
     const msg: ChatMessage = {
       id: `files_${Date.now()}`,
       sessionId: "",
       role: "assistant",
       blocks: [block],
       createdAt: Date.now(),
-      ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
     };
     next = [...next, msg];
-    if (isNewTurn) next = demotePreviousLatestTurnFiles(next);
+    next = demotePreviousLatestTurnFiles(next);
     return next;
   }
   const target = next[targetIndex];
@@ -1496,6 +1553,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   planBySession: {},
   subagentsBySession: {},
   contextSnapshotBySession: {},
+  usageHistoryBySession: {},
   pendingQuestionBySession: {},
   pendingApprovals: [],
   pendingPlanApprovalBySession: {},
@@ -2193,6 +2251,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete turnFilesBySession[id];
       const contextSnapshotBySession = { ...s.contextSnapshotBySession };
       delete contextSnapshotBySession[id];
+      const usageHistoryBySession = { ...s.usageHistoryBySession };
+      delete usageHistoryBySession[id];
       const pendingPlanApprovalBySession = { ...s.pendingPlanApprovalBySession };
       delete pendingPlanApprovalBySession[id];
       const pendingApprovals = s.pendingApprovals.filter((p) => p.sessionId !== id);
@@ -2216,6 +2276,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           pendingQuestionBySession,
           turnFilesBySession,
           contextSnapshotBySession,
+          usageHistoryBySession,
           pendingPlanApprovalBySession,
           pendingApprovals,
           openTabs,
@@ -2249,6 +2310,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         pendingQuestionBySession,
         turnFilesBySession,
         contextSnapshotBySession,
+        usageHistoryBySession,
         pendingPlanApprovalBySession,
         pendingApprovals,
         openTabs: finalActive ? openTabs : openTabs,
@@ -2735,6 +2797,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             // case — foreground tasks were force-completed by the adapter).
             const curAgents = s.subagentsBySession[sid] ?? [];
             const hasRunning = curAgents.some((a) => a.status === "running");
+            // Append a finalized usage record for this turn (for the activity
+            // capsule's consumption history). Derive the turn's start from the
+            // first assistant message still carrying this turn's turnMeta.
+            const snap = s.contextSnapshotBySession[sid];
+            const turnStart =
+              next.find((m) => m.turnMeta && m.turnMeta.endedAt === endedAt)?.turnMeta?.startedAt ??
+              endedAt;
+            const prevHistory = s.usageHistoryBySession[sid] ?? [];
+            const history =
+              snap != null
+                ? [
+                    ...prevHistory,
+                    {
+                      endedAt,
+                      durationMs: Math.max(0, endedAt - turnStart),
+                      totalProcessedTokens: snap.totalProcessedTokens,
+                      outputTokens: snap.outputTokens,
+                      cacheReadTokens: snap.cacheReadTokens ?? 0,
+                      cacheCreationTokens: snap.cacheCreationTokens ?? 0,
+                      costUsd: snap.costUsd,
+                      usedTokens: snap.usedTokens,
+                      model: snap.model,
+                    } satisfies TurnUsageRecord,
+                  ]
+                : prevHistory;
             return {
               runningBySession: { ...s.runningBySession, [sid]: false },
               pendingApprovals: s.pendingApprovals.filter((p) => p.sessionId !== sid),
@@ -2753,6 +2840,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               subagentsBySession: hasRunning
                 ? s.subagentsBySession
                 : { ...s.subagentsBySession, [sid]: [] },
+              usageHistoryBySession: { ...s.usageHistoryBySession, [sid]: history },
             };
           });
           break;

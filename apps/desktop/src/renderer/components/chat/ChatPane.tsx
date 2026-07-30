@@ -13,7 +13,7 @@ import {
   IconLoader2,
   IconPaperclip,
 } from "@renderer/lib/icons.js";
-import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
+import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, EMPTY_USAGE, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import type { PermissionMode } from "@contracts/runtime";
 import type { FileSearchEntry } from "@contracts/ipc";
@@ -142,23 +142,26 @@ function isProceduralMessage(m: ChatMessage): boolean {
 /** Render item after grouping: either a standalone message (user prompts,
  *  assistant text replies, error bubbles) or a cluster of consecutive
  *  procedural messages that belong to the same turn. The precomputed
- *  isStreamingTail / isLastCompletedAssistant flags carry the original
- *  per-message tail/last semantics into the grouped dimension — a cluster
- *  is "streaming tail" when its LAST member was the streaming tail in the
- *  raw stream. */
+ *  isStreamingTail / isTurnTail flags carry the original per-message
+ *  semantics into the grouped dimension:
+ *  - isStreamingTail: this item is the live streaming end of the running turn.
+ *  - isTurnTail: this item is the LAST assistant item of a COMPLETED turn
+ *    (the turn ended, and the next item is a user message or the stream end).
+ *    Drives the copy button - we only show copy on a finished turn's final
+ *    assistant message, not on every intermediate assistant message. */
 type RenderItem =
   | {
       kind: "single";
       msg: ChatMessage;
       isStreamingTail: boolean;
-      isLastCompletedAssistant: boolean;
+      isTurnTail: boolean;
     }
   | {
       kind: "proceduralCluster";
       msgs: ChatMessage[];
       turnMeta?: TurnMeta;
       isStreamingTail: boolean;
-      isLastCompletedAssistant: boolean;
+      isTurnTail: boolean;
     };
 
 /** Flatten a cluster's messages into a single procedural-block stream for
@@ -175,9 +178,31 @@ function flattenCluster(msgs: ChatMessage[]): ProceduralBlock[] {
   return out;
 }
 
+/** Whether the assistant message at index `i` is the tail of a COMPLETED turn:
+ *  the turn is not still running (either because a later user message started
+ *  a new turn, or because the stream ended and isRunning is false), AND the
+ *  next message is not another assistant message of the same turn. In
+ *  practice: it's an assistant message followed by a user message, or the
+ *  last assistant message when no turn is running. */
+function isCompletedTurnTail(
+  messages: ChatMessage[],
+  i: number,
+  isRunning: boolean,
+): boolean {
+  const m = messages[i];
+  if (!m || m.role !== "assistant") return false;
+  // If this is the very last message, the turn is completed only when nothing
+  // is running.
+  if (i === messages.length - 1) return !isRunning;
+  // Otherwise the turn is completed when the next message starts a new turn
+  // (a user prompt) - the assistant run that ended here is finalized.
+  const next = messages[i + 1];
+  return next?.role === "user";
+}
+
 /** Group the raw message stream into render items, merging consecutive
  *  purely-procedural assistant messages into a single cluster. Pure
- *  function over the message list — no store mutation. */
+ *  function over the message list - no store mutation. */
 function groupMessagesForRender(
   messages: ChatMessage[],
   isRunning: boolean,
@@ -187,14 +212,14 @@ function groupMessagesForRender(
 
   const flush = () => {
     if (run.length === 0) return;
-    // The cluster's tail/last flags follow its LAST member — that's the
+    // The cluster's tail/last flags follow its LAST member - that's the
     // message that was at the end of the raw stream.
     const lastInRun = run[run.length - 1];
     const tailIndex = messages.indexOf(lastInRun);
     const isStreamingTail =
       isRunning && lastInRun.role === "assistant" && tailIndex === messages.length - 1;
-    const isLastCompletedAssistant =
-      !isRunning && lastInRun.role === "assistant" && tailIndex === messages.length - 1;
+    const isTurnTail =
+      lastInRun.role === "assistant" && isCompletedTurnTail(messages, tailIndex, isRunning);
     // turnMeta: take the first member that carries one (the turn-opener).
     const turnMeta = run.find((m) => m.turnMeta)?.turnMeta;
     items.push({
@@ -202,7 +227,7 @@ function groupMessagesForRender(
       msgs: run,
       turnMeta,
       isStreamingTail,
-      isLastCompletedAssistant,
+      isTurnTail,
     });
     run = [];
   };
@@ -210,14 +235,13 @@ function groupMessagesForRender(
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     const isStreamingTail = isRunning && m.role === "assistant" && i === messages.length - 1;
-    const isLastCompletedAssistant =
-      !isRunning && m.role === "assistant" && i === messages.length - 1;
+    const isTurnTail = m.role === "assistant" && isCompletedTurnTail(messages, i, isRunning);
 
     if (isProceduralMessage(m)) {
       run.push(m);
     } else {
       flush();
-      items.push({ kind: "single", msg: m, isStreamingTail, isLastCompletedAssistant });
+      items.push({ kind: "single", msg: m, isStreamingTail, isTurnTail });
     }
   }
   flush();
@@ -326,6 +350,11 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // bucket, populated by token-usage.updated events and hydrated from the
   // session row on select/open-tab. Undefined until the first usage report.
   const contextSnapshot = useSessionStore((s) => s.contextSnapshotBySession[sessionId]);
+  // Per-turn finalized usage history (appended at turn.done). Drives the
+  // activity capsule's "上下文消耗" section + session totals.
+  const usageHistory = useSessionStore(
+    (s) => s.usageHistoryBySession[sessionId] ?? EMPTY_USAGE,
+  );
   // Project root absolute path for this session (used by the @ / add-context
   // file pickers). Resolved through the session's projectId → projects[].
   const projectPath = useSessionStore((s) => {
@@ -725,7 +754,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               <MessageRow
                 msg={m}
                 isStreamingTail={item.isStreamingTail}
-                isLastCompletedAssistant={item.isLastCompletedAssistant}
+                isTurnTail={item.isTurnTail}
                 beforeMap={beforeMap}
               />
             </div>
@@ -808,6 +837,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
         <div className="pointer-events-none absolute right-8 top-2 z-30 flex justify-end">
           <StatusCapsule
             snapshot={contextSnapshot}
+            usageHistory={usageHistory}
             subagents={subagents}
             todos={todos}
             plan={plan}
@@ -1093,24 +1123,26 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
  *  "开始 HH:MM:SS · 用时 12.3s" stat row ABOVE the content. The streaming
  *  tail (the last assistant message while a turn is running) shows a
  *  spinning loader at the bottom of the content. */
-const MessageRow = memo(function MessageRow({ msg, isStreamingTail, isLastCompletedAssistant, beforeMap }: { msg: ChatMessage; isStreamingTail?: boolean; isLastCompletedAssistant?: boolean; beforeMap?: BeforeContentMap }) {
+const MessageRow = memo(function MessageRow({ msg, isStreamingTail, isTurnTail, beforeMap }: { msg: ChatMessage; isStreamingTail?: boolean; isTurnTail?: boolean; beforeMap?: BeforeContentMap }) {
   const isUser = msg.role === "user";
   const copyText = useMemo(() => blocksToText(msg.blocks), [msg.blocks]);
-  // Only show the copy button on messages with real text content — i.e. the
+  // Only show the copy button on messages with real text content - i.e. the
   // model's substantive answer to the user. A single turn often produces
   // several assistant messages (pure thinking, pure tool_use, then the text
   // reply); copying is only meaningful for the text reply, so we gate on
   // the presence of a non-empty `text` block. Pure-tool / pure-thinking
   // messages have no copy button.
   const hasTextContent = msg.blocks.some((b) => b.kind === "text" && b.text.trim().length > 0);
-  // User messages always show copy on hover (gated by group-hover in CopyRow).
-  // Assistant messages only show copy on the LAST completed turn — copying a
-  // partial or intermediate reply is rarely useful.
+  // User prompts always get a copy button (on hover). Assistant replies get one
+  // ONLY on the turn's final assistant message (isTurnTail) - i.e. after the
+  // turn has ended - so intermediate procedural messages stay clean and only
+  // one copy affordance appears per completed turn. The button itself is
+  // opacity-0 until the row is hovered (group-hover in CopyRow).
   const showCopy = isUser
     ? hasTextContent && !!copyText
-    : hasTextContent && !!copyText && isLastCompletedAssistant;
+    : hasTextContent && !!copyText && isTurnTail;
   return (
-    <div className={cn("group", isUser ? "flex justify-end" : "")}>
+    <div className={cn("group", isUser ? "mt-5 flex justify-end" : "mt-3")}>
       <div className={isUser ? "max-w-[85%]" : "w-full"}>
         {/* Per-turn stat row - only on the first assistant message of a
             turn (the one carrying turnMeta). Sits above the content. */}

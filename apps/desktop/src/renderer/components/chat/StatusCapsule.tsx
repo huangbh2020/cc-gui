@@ -12,7 +12,7 @@ import {
   IconChevronDown,
 } from "@renderer/lib/icons.js";
 import type { ContextSnapshot, SubagentSnapshot, ContextWarning } from "@contracts/runtime";
-import type { TodoItem, PlanDraft } from "@renderer/stores/sessionStore.js";
+import type { TodoItem, PlanDraft, TurnUsageRecord } from "@renderer/stores/sessionStore.js";
 import { Tooltip } from "@renderer/components/ui/index.js";
 import { ContextTooltipBody } from "./ContextRing.js";
 import { ActivityPopover } from "./ActivityPopover.js";
@@ -34,11 +34,13 @@ import { ActivityPopover } from "./ActivityPopover.js";
  */
 export function StatusCapsule({
   snapshot,
+  usageHistory,
   subagents,
   todos,
   plan,
 }: {
   snapshot?: ContextSnapshot;
+  usageHistory?: TurnUsageRecord[];
   subagents: SubagentSnapshot[];
   todos: TodoItem[];
   plan: PlanDraft;
@@ -106,7 +108,15 @@ export function StatusCapsule({
           )}
         />
       </button>
-      {open && <ActivityPopover todos={todos} plan={plan} subagents={subagents} />}
+      {open && (
+        <ActivityPopover
+          todos={todos}
+          plan={plan}
+          subagents={subagents}
+          snapshot={snapshot}
+          usageHistory={usageHistory ?? []}
+        />
+      )}
     </div>
   );
 }
