@@ -48,9 +48,11 @@ jobs:
       # node-pty 1.1.0 pulls node-gyp@9, which still does
       # `from distutils.version import StrictVersion` -> ModuleNotFoundError.
       # Installing setuptools restores the distutils shim so native rebuild works.
+      # --break-system-packages: the runner's Python is Homebrew-managed (PEP 668
+      # blocks system-wide pip installs); this is a throwaway CI env, so it's safe.
       - name: Install setuptools (macOS distutils shim for node-gyp)
         if: runner.os == 'macOS'
-        run: python3 -m pip install setuptools
+        run: python3 -m pip install --user --break-system-packages setuptools
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
