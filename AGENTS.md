@@ -99,7 +99,7 @@ pnpm build
 
 ## 环境
 
-- Node.js ≥ 20(本机 v25.9.0)
+- Node.js ≥ 22.13(pnpm 11 要求,本机 v25.9.0)
 - pnpm ≥ 9(经 `corepack enable` 启用,本机 11.16.0)
 - Claude Code CLI(本机装在 `D:\soft\nodejs\node_global`,非默认路径——`ClaudePathResolver` 已处理)
 - `.npmrc` 配了国内 electron 镜像(直连 GitHub 会超时),任何人重装不会踩

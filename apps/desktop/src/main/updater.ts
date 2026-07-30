@@ -19,7 +19,13 @@
  * the updater is a convenience, not a core path.
  */
 import { app } from "electron";
-import { autoUpdater } from "electron-updater";
+// electron-updater ships as CommonJS; under ESM output ("type": "module") a
+// named import (`import { autoUpdater }`) is not reliably supported by Node's
+// ESM/CJS interop - it throws "Named export 'autoUpdater' not found" at boot.
+// Import the default export (the module.exports object) and destructure, the
+// same pattern used for other CJS deps in this bundle (sql.js, simple-git).
+import electronUpdater from "electron-updater";
+const { autoUpdater } = electronUpdater;
 import { IPC, type CheckForUpdatesResult } from "@contracts/ipc";
 import { sendToRenderer } from "@main/window.js";
 import { log } from "@main/lib/logger.js";

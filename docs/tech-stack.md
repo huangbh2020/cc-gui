@@ -57,7 +57,7 @@
 
 | 工具 | 版本 | 用途 |
 |------|------|------|
-| **Node.js** | ≥ 20(本机 v25.9.0) | 运行时 |
+| **Node.js** | ≥ 22.13(pnpm 11 要求,本机 v25.9.0) | 运行时 |
 | **pnpm** | ≥ 9(本机 11.16.0,经 corepack 启用) | 包管理 + workspace |
 | **Turbo** | ^2.9 | monorepo 任务编排(dev/build/test/typecheck 并行) |
 | **TypeScript** | ^5.7 | 全量 TS,strict 模式 |

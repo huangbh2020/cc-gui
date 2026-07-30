@@ -39,7 +39,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # pnpm 11 requires Node >= 22.13 (it uses the node:sqlite built-in).
+          # Node 20 is deprecated on GitHub Actions runners anyway.
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
