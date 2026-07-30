@@ -1,0 +1,35 @@
+# Quality gate - runs on every push to master and on all PRs.
+# Typechecks the workspace; packaging/release is handled by release.yml.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Cancel in-progress runs for the same ref when a new push arrives.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck

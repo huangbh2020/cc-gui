@@ -170,7 +170,7 @@ pnpm build
 | P3.5 中间面板 Tab 模式 | ✅ | 中间面板显示模式偏好(单/tab),`openTabs` + `SessionTabs` 标签条;关闭 tab 后台 turn 继续运行 |
 | P4 IDE 右栏 | ⬜ | 文件树、git、终端(xterm+node-pty)、Monaco diff |
 | P5 体验打磨 | ⬜ | 浏览器预览、checkpoint 时间线、Cmd+K、审批 UI |
-| P6 发布 | ⬜ | electron-builder、自动更新、CI |
+| P6 发布 | ✅ 基础 | electron-builder(mac/win 安装包)、electron-updater(GitHub Releases 渠道)、CI(typecheck + tag 自动发布)。暂未签名/公证,未含 Vitest |
 
 详见 `docs/tech-stack.md` 第八节。
 

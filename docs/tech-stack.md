@@ -379,4 +379,52 @@ RuntimeManager.emit()
 | P3 工具审批 | canUseTool 回调 → approval.request/approve IPC 桥(后端已通,前端审批 UI 待 P5 打磨) | ✅ 基础完成 |
 | P4 IDE 右栏 | xterm.js + node-pty / simple-git / Monaco | 🟡 文件/Git/终端已实现；Browser 待 P5 |
 | P5 体验打磨 | react-markdown + remark / KaTeX / Cmd+K / 审批 UI 完善 | ⬜ |
-| P6 发布 | electron-builder / electron-updater / Vitest / Playwright | ⬜ |
+| P6 发布 | electron-builder / electron-updater / GitHub Actions | ✅ 基础完成 |
+
+---
+
+## 九、发布与自动更新(P6)
+
+> 实现:`apps/desktop/electron-builder.yml`、`apps/desktop/src/main/updater.ts`、`.github/workflows/{ci,release}.yml`。
+
+### 9.1 打包(electron-builder)
+
+- **配置文件**:`apps/desktop/electron-builder.yml`(不在 package.json 的 build 字段,独立 yml)。
+- **产物目录**:`apps/desktop/release/`(已 gitignore)。
+- **目标平台**:macOS(`dmg` + `zip`,arm64 + x64)、Windows(`nsis`,x64)。Linux 暂未覆盖。
+- **native 模块**:`node-pty`(.node)和 `sql.js`(asm.js blob)通过 `asarUnpack` 解包,确保运行时能从磁盘 `require()`。打包前需 `pnpm rebuild:native`(`electron-builder install-app-deps`)让 .node 匹配目标 Electron ABI。
+- **图标**:`apps/desktop/build/{icon.icns,icon.ico,icon.png}`,由脚本生成(emerald 渐变 + "C" glyph),electron-builder 按平台自动选用。
+- **版本**:读 `apps/desktop/package.json` 的 `version`(起步 `0.1.0`)。
+- **暂未签名**:mac 包无 codesign(identity 留空,eon-builder 自动跳过),用户首次打开需右键 > 打开;Win 包无证书,SmartScreen 会提示。后续接入签名时在 yml 加 `mac.identity` / `win.certificateFile`。
+
+### 9.2 自动更新(electron-updater,GitHub Releases 渠道)
+
+```
+GitHub Releases(latest-mac.yml / latest.yml)
+        ▲ electron-builder 打包时生成,release.yml 上传为 Release Asset
+        │
+autoUpdater.checkForUpdates()  (main/updater.ts, 仅 prod)
+        │
+        ├── update-available  -> IPC.UPDATE_AVAILABLE -> renderer(AboutPanel)
+        │                        用户点"立即下载"
+        ▼
+autoUpdater.downloadUpdate()
+        │
+        └── update-downloaded -> IPC.UPDATE_DOWNLOADED -> renderer
+                                  用户点"重启安装" -> autoUpdater.quitAndInstall()
+```
+
+- **渠道**:GitHub Releases(`publish.provider: github`),electron-updater 从 Release Assets 拉 `latest-mac.yml` / `latest.yml` 发现新版本。
+- **dev 不激活**:`initUpdater()` 用 `is.prod` 守卫--electron-updater 依赖 app.asar 内的 `app-update.yml`,dev 下不存在,所有 RPC 短路返回"已是最新"。
+- **autoDownload = false**:发现新版本后不静默下载,由用户在 About 面板点"立即下载"触发。`autoInstallOnAppQuit = true`:下载完成后下次退出自动安装。
+- **检查频率**:启动 10s 后首次检查,之后每 4h 一次;用户也可手动点"检查更新"。
+- **IPC**:`app.checkForUpdates` / `app.downloadUpdate` / `app.quitAndInstall`(RPC)+ `update:available` / `update:downloaded`(推送,消息体自带 `channel` 字段)。详见 `packages/contracts/src/ipc.ts`。
+- **失败隔离**:updater 所有操作 try/catch,失败只 `log.error`,不影响主功能。
+
+### 9.3 CI/CD(GitHub Actions)
+
+- **`ci.yml`**:push 到 master / 任意 PR 触发,跑 `pnpm typecheck`(质量门禁)。
+- **`release.yml`**:push tag `v*.*.*` 触发,matrix 构建 macOS + Windows 安装包(`pnpm rebuild:native` + `pnpm package`),用 `softprops/action-gh-release` 上传到 GitHub Release。
+  - **`latest*.yml` 必须作为 Asset 上传**--这是 electron-updater 检查更新的依据,漏传则自动更新失效。
+  - 用内置 `GITHUB_TOKEN`,无需额外 secret。
+- **本地打包**:`pnpm package`(等价 `turbo run package` -> `electron-vite build && electron-builder`)。

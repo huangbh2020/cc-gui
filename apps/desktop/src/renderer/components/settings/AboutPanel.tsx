@@ -7,29 +7,47 @@ import {
   IconCheck,
   IconExternalLink,
   IconInfoCircle,
+  IconDownload,
+  IconRefresh,
+  IconAlertTriangle,
+  IconRocket,
   SiGithub,
 } from "@renderer/lib/icons.js";
-import type { AppInfoResult } from "@contracts/ipc";
+import type { AppInfoResult, CheckForUpdatesResult } from "@contracts/ipc";
 
 /**
- * About panel - app identity, runtime info, license, and repo links.
+ * About panel - app identity, runtime info, license, repo links, and update
+ * checking.
  *
  * Pulls version + runtime info from the main process via the parameterless
- * `app.info` RPC (electron's `app.getVersion()` + `process.versions`). Shows a
- * copy-version button and external links to the GitHub repo / releases. Auto
- * update isn't implemented yet (P6), so "检查更新" just opens the releases page.
+ * `app.info` RPC (electron's `app.getVersion()` + `process.versions`). The
+ * "检查更新" button triggers `app.checkForUpdates`; if a newer version exists
+ * on the GitHub Releases channel, an `update:available` push event arrives and
+ * the panel offers a download button. Once downloaded (`update:downloaded`),
+ * a "重启安装" button calls `app.quitAndInstall`.
+ *
+ * The updater only runs in packaged builds; in dev every check short-circuits
+ * to "up-to-date" so the button still works without erroring.
  */
 
 /** App display name (matches the root package.json "name"). */
 const APP_NAME = "my-claude-gui";
 /** One-line description shown under the app name. */
 const APP_DESC = "基于 Claude Agent SDK 构建的桌面端 GUI(Electron 三栏 IDE)";
-/** GitHub repo URL. TODO: update to the real published repo URL. */
-const REPO_URL = "https://github.com/huangbh/my-claude-gui";
-/** Releases page (used by the "检查更新" button). */
-const RELEASES_URL = `${REPO_URL}/releases`;
+/** GitHub repo URL. */
+const REPO_URL = "https://github.com/huangbh2020/cc-gui";
 /** SPDX license identifier. */
 const LICENSE = "MIT";
+
+/** Update flow state shown by the panel. */
+type UpdateState =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "up-to-date"; version: string }
+  | { kind: "available"; version: string }
+  | { kind: "downloading" }
+  | { kind: "downloaded"; version: string }
+  | { kind: "error"; message: string };
 
 /** Human-readable OS label from the platform string. */
 function platformLabel(platform: string): string {
@@ -42,18 +60,35 @@ function platformLabel(platform: string): string {
 export function AboutPanel() {
   const [info, setInfo] = useState<AppInfoResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [updateState, setUpdateState] = useState<UpdateState>({ kind: "idle" });
 
   // Fetch runtime info once on mount. Failures (e.g. main not ready) leave the
-  // version rows showing "—" rather than crashing the panel.
+  // version rows showing "-" rather than crashing the panel.
   useEffect(() => {
     let cancelled = false;
     void api.app.info().then((result) => {
       if (!cancelled) setInfo(result);
     }).catch(() => {
-      // leave info null -> rows render "—"
+      // leave info null -> rows render "-"
     });
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Subscribe to updater push events. update-available fires when the main
+  // process finds a newer version (either from the boot check or a manual
+  // check); update-downloaded fires once the download finishes.
+  useEffect(() => {
+    const offAvailable = api.on.updateAvailable((msg) => {
+      setUpdateState({ kind: "available", version: msg.version });
+    });
+    const offDownloaded = api.on.updateDownloaded((msg) => {
+      setUpdateState({ kind: "downloaded", version: msg.version });
+    });
+    return () => {
+      offAvailable();
+      offDownloaded();
     };
   }, []);
 
@@ -75,13 +110,53 @@ export function AboutPanel() {
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
+  const onCheckForUpdates = async () => {
+    setUpdateState({ kind: "checking" });
+    try {
+      const result: CheckForUpdatesResult = await api.app.checkForUpdates();
+      if (result.status === "up-to-date") {
+        setUpdateState({ kind: "up-to-date", version: result.version });
+      } else if (result.status === "available") {
+        setUpdateState({ kind: "available", version: result.version });
+      } else {
+        setUpdateState({ kind: "error", message: result.error });
+      }
+    } catch (err) {
+      setUpdateState({
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const onDownloadUpdate = async () => {
+    setUpdateState({ kind: "downloading" });
+    try {
+      await api.app.downloadUpdate();
+      // update-downloaded push event will move us to "downloaded".
+    } catch (err) {
+      setUpdateState({
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const onQuitAndInstall = async () => {
+    try {
+      await api.app.quitAndInstall();
+    } catch {
+      // If install fails, the app is still running; leave the state as-is.
+    }
+  };
+
   const rows: { label: string; value: string }[] = [
-    { label: "版本", value: info ? `v${info.appVersion}` : "—" },
+    { label: "版本", value: info ? `v${info.appVersion}` : "-" },
     { label: "许可证", value: LICENSE },
-    { label: "Electron", value: info?.electron ?? "—" },
-    { label: "Node.js", value: info?.node ?? "—" },
-    { label: "Chromium", value: info?.chromium ?? "—" },
-    { label: "系统", value: info ? `${platformLabel(info.platform)} · ${info.arch}` : "—" },
+    { label: "Electron", value: info?.electron ?? "-" },
+    { label: "Node.js", value: info?.node ?? "-" },
+    { label: "Chromium", value: info?.chromium ?? "-" },
+    { label: "系统", value: info ? `${platformLabel(info.platform)} · ${info.arch}` : "-" },
   ];
 
   return (
@@ -120,6 +195,13 @@ export function AboutPanel() {
         ))}
       </div>
 
+      {/* Update status banner */}
+      <UpdateBanner
+        state={updateState}
+        onDownload={onDownloadUpdate}
+        onInstall={onQuitAndInstall}
+      />
+
       {/* Action buttons */}
       <div className="mt-6 flex w-full max-w-md flex-wrap items-center justify-center gap-2">
         <Button
@@ -149,12 +231,17 @@ export function AboutPanel() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => openExternal(RELEASES_URL)}
-          title="在浏览器中打开 Releases 页面"
+          onClick={onCheckForUpdates}
+          disabled={updateState.kind === "checking" || updateState.kind === "downloading"}
+          title="检查是否有新版本"
           className="gap-1.5"
         >
-          <IconExternalLink size={14} />
-          检查更新
+          {updateState.kind === "checking" ? (
+            <IconRefresh size={14} className="animate-spin" />
+          ) : (
+            <IconExternalLink size={14} />
+          )}
+          {updateState.kind === "checking" ? "检查中…" : "检查更新"}
         </Button>
       </div>
 
@@ -167,5 +254,80 @@ export function AboutPanel() {
         </span>
       </p>
     </section>
+  );
+}
+
+/** Compact banner showing the current update-flow state and the next action.
+ *  Only renders when there's something to say (not idle/checking - those are
+ *  reflected by the button itself). */
+function UpdateBanner({
+  state,
+  onDownload,
+  onInstall,
+}: {
+  state: UpdateState;
+  onDownload: () => void;
+  onInstall: () => void;
+}) {
+  if (state.kind === "idle" || state.kind === "checking") return null;
+
+  let icon: React.ReactNode;
+  let message: string;
+  let action: { label: string; onClick: () => void; icon?: React.ReactNode } | null = null;
+  let tone: "accent" | "muted" | "warning" = "muted";
+
+  switch (state.kind) {
+    case "up-to-date":
+      icon = <IconCheck size={16} className="text-accent" />;
+      message = `已是最新版本(v${state.version})`;
+      break;
+    case "available":
+      icon = <IconDownload size={16} className="text-accent" />;
+      message = `发现新版本 v${state.version}`;
+      action = { label: "立即下载", onClick: onDownload, icon: <IconDownload size={14} /> };
+      tone = "accent";
+      break;
+    case "downloading":
+      icon = <IconRefresh size={16} className="animate-spin text-accent" />;
+      message = "正在下载更新…";
+      break;
+    case "downloaded":
+      icon = <IconRocket size={16} className="text-accent" />;
+      message = `v${state.version} 已就绪,重启后安装`;
+      action = { label: "重启安装", onClick: onInstall, icon: <IconRocket size={14} /> };
+      tone = "accent";
+      break;
+    case "error":
+      icon = <IconAlertTriangle size={16} className="text-warning" />;
+      message = `更新检查失败:${state.message}`;
+      tone = "warning";
+      break;
+  }
+
+  return (
+    <div
+      className={cn(
+        "mt-6 flex w-full max-w-md items-center justify-between gap-3 rounded-lg border px-4 py-3",
+        tone === "accent" && "border-accent/30 bg-accent/5",
+        tone === "muted" && "border-edge bg-surface",
+        tone === "warning" && "border-warning/30 bg-warning/5",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span className="shrink-0">{icon}</span>
+        <span className="truncate text-[0.8571em] text-content">{message}</span>
+      </div>
+      {action && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={action.onClick}
+          className="shrink-0 gap-1.5"
+        >
+          {action.icon}
+          {action.label}
+        </Button>
+      )}
+    </div>
   );
 }

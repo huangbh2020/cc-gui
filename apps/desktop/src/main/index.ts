@@ -5,6 +5,7 @@ import { initDb, closeDb } from "@main/store/db.js";
 import { initTheme } from "@main/lib/theme.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
+import { initUpdater } from "@main/updater.js";
 import { is } from "@main/utils.js";
 
 // Single-instance lock — only one GUI instance runs at a time.
@@ -52,6 +53,9 @@ app.whenReady().then(async () => {
 
   registerIpcHandlers();
   createMainWindow();
+
+  // Start the auto-updater (no-op in dev; only active in packaged builds).
+  initUpdater();
 
   app.on("activate", () => {
     // macOS: re-create a window when the dock icon is clicked.

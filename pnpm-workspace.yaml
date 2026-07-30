@@ -10,3 +10,11 @@ allowBuilds:
   electron: true
   esbuild: true
   node-pty: true
+
+# pnpm 11 moved settings from package.json's `pnpm` field into this file.
+# Override app-builder-lib to ^25.1.0: electron-builder@25.1.0's CLI requires
+# `app-builder-lib/out/util/config/load`, which doesn't exist in the 25.0.0
+# that ^25 otherwise resolves to. Without this, `electron-builder` fails with
+# "Cannot find module 'app-builder-lib/out/util/config/load'".
+overrides:
+  app-builder-lib: ^25.1.0

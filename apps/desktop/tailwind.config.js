@@ -6,6 +6,25 @@ export default {
   content: ["./src/renderer/**/*.{ts,tsx,html}"],
   theme: {
     extend: {
+      fontFamily: {
+        // Bundled JetBrains Mono Variable woff2 (imported in main.tsx) heads
+        // the monospace stack so every `font-mono` surface - code blocks,
+        // terminals, file trees, diffs - renders a consistent modern face
+        // across platforms, falling back to the OS monospace only if the
+        // bundled font fails to load. The UI sans stack stays system-native
+        // (defined in styles.css) for a native-feeling chrome.
+        mono: [
+          '"JetBrains Mono Variable"',
+          "ui-monospace",
+          "SFMono-Regular",
+          "Menlo",
+          "Monaco",
+          "Consolas",
+          '"Liberation Mono"',
+          '"Courier New"',
+          "monospace",
+        ],
+      },
       colors: {
         // Semantic tokens backed by CSS variables. Each variable holds a
         // space-separated "R G B" triplet (NOT #hex) so Tailwind's

@@ -1,0 +1,81 @@
+# electron-builder packaging config.
+# Run via `pnpm package` (electron-vite build && electron-builder).
+# Output goes to `apps/desktop/release/` (gitignored).
+
+appId: com.huangbh.claude-gui
+productName: Claude GUI
+copyright: MIT
+# Version is read from package.json (currently 0.1.0).
+
+directories:
+  output: release
+  buildResources: build
+
+# electron-vite emits to out/{main,preload,renderer}. We ship those plus the
+# package.json (electron-builder needs it to resolve the main entry + version).
+# node_modules are pruned by electron-builder automatically; the globs below
+# strip docs that bloat the asar.
+files:
+  - out/**/*
+  - package.json
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,readme,readme.txt}"
+  - "!**/node_modules/**/.bin"
+  - "!**/node_modules/**/test"
+  - "!**/node_modules/**/tests"
+  - "!**/node_modules/**/__tests__"
+  # Exclude turbo cache + any stray build logs - they can resolve outside the
+  # app dir via workspace symlinks and break the asar packager.
+  - "!**/.turbo/**"
+  - "!**/*.tsbuildinfo"
+  # The contracts workspace package is aliased to its src/ at build time and
+  # BUNDLED into the main chunk by electron-vite (see electron.vite.config.ts:
+  # "contracts is a workspace source package - bundle it into main"). So it's
+  # not needed in node_modules at runtime. Excluding it also avoids asar errors:
+  # the workspace symlink resolves outside the app dir, which the packager
+  # rejects ("path must be under appDir").
+  - "!**/node_modules/@my-claude-gui/**"
+
+# node-pty ships a native .node addon; sql.js loads a wasm/asm.js blob at
+# runtime. Unpack them from the asar so they can be require()'d from disk.
+asarUnpack:
+  - "**/*.{node,dll}"
+  - "**/sql.js/**"
+
+# Pin the main entry explicitly (matches package.json "main").
+extraMetadata:
+  main: out/main/index.js
+
+# ── macOS ──
+# dmg = distributable installer; zip = autoUpdater download payload.
+# Not signed yet (first P6 pass) - users right-click > Open on first launch.
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  category: public.app-category.developer-tools
+  hardenedRuntime: false
+  gatekeeperAssess: false
+
+# ── Windows ──
+# NSIS installer with a directory-pick step (non-one-click).
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+
+# ── Auto-update channel ──
+# electron-updater fetches latest-mac.yml / latest.yml from the GitHub Releases
+# "Assets" of this repo. The release workflow uploads these yml files alongside
+# the installers (see .github/workflows/release.yml).
+publish:
+  provider: github
+  owner: huangbh2020
+  repo: cc-gui

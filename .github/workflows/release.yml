@@ -1,0 +1,80 @@
+# Release packaging - triggered by pushing a version tag (v*.*.*).
+# Builds macOS (arm64 + x64) and Windows (x64) installers via electron-builder,
+# then publishes them to a GitHub Release. The latest-mac.yml / latest.yml
+# metadata files are uploaded alongside the installers so electron-updater can
+# check for updates from within the app.
+#
+# The app is NOT code-signed in this first pass (P6). macOS users must
+# right-click > Open on first launch; Windows shows a SmartScreen warning.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# Only one release build per tag at a time.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # node-pty is a native addon - rebuild it for the runner's Electron ABI
+      # before packaging so the .node binary matches.
+      - name: Rebuild native modules
+        run: pnpm --filter @my-claude-gui/desktop rebuild:native
+
+      - name: Build & package
+        run: pnpm --filter @my-claude-gui/desktop package
+        env:
+          # electron-builder reads GH_TOKEN to look up existing releases when
+          # computing the auto-update channel (optional during build, but set
+          # it so publish metadata is generated correctly).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload the artifacts to the GitHub Release that the tag created.
+      # latest*.yml are critical - electron-updater fetches them to discover
+      # new versions, so they MUST be published as release assets.
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          # Match installers + updater metadata. The `release/` dir is the
+          # electron-builder output (apps/desktop/release/).
+          files: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest*.yml
+          # Don't generate a body - the tag message / auto-generated notes
+          # suffice; we only manage the binary assets.
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

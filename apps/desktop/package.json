@@ -1,8 +1,10 @@
 {
   "name": "@my-claude-gui/desktop",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Desktop GUI for Claude Code",
+  "author": "huangbh",
+  "license": "MIT",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
@@ -11,7 +13,7 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "rebuild:native": "electron-builder install-app-deps",
-    "package": "electron-vite build && electron-builder"
+    "package": "electron-vite build && node -e \"require('fs').rmSync('../../packages/contracts/dist',{recursive:true,force:true})\" && node build/dereference-workspace-symlinks.cjs && electron-builder"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.218",
@@ -19,6 +21,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@legendapp/list": "3.0.0-beta.44",
     "@monaco-editor/react": "^4.7.0",
     "@my-claude-gui/contracts": "workspace:*",
@@ -29,6 +32,7 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.8.9",
     "katex": "^0.18.1",
     "monaco-editor": "^0.56.0",
     "node-pty": "^1.1.0",

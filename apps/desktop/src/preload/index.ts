@@ -86,6 +86,15 @@ const api = {
    *  About panel. Parameterless RPC. */
   app: {
     info: (() => ipcRenderer.invoke(IPC.APP_INFO)) as RpcMap["app.info"],
+    /** Check for updates on the GitHub Releases channel. */
+    checkForUpdates: (() =>
+      ipcRenderer.invoke(IPC.APP_CHECK_FOR_UPDATES)) as RpcMap["app.checkForUpdates"],
+    /** Start downloading the pending update (user opted in). */
+    downloadUpdate: (() =>
+      ipcRenderer.invoke(IPC.APP_DOWNLOAD_UPDATE)) as RpcMap["app.downloadUpdate"],
+    /** Quit and install a downloaded update. */
+    quitAndInstall: (() =>
+      ipcRenderer.invoke(IPC.APP_QUIT_AND_INSTALL)) as RpcMap["app.quitAndInstall"],
   },
 
   /** Open a project root in the OS file manager. Main refuses any path that
@@ -223,6 +232,27 @@ const api = {
       ipcRenderer.on(IPC.THEME_CHANGED, listener);
       return () => {
         ipcRenderer.off(IPC.THEME_CHANGED, listener);
+      };
+    },
+    /** Fires when the updater finds a newer version on the release channel.
+     *  autoDownload is off, so the renderer should prompt the user to download. */
+    updateAvailable(handler: (msg: Extract<MainToRendererMessage, { channel: "update:available" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.UPDATE_AVAILABLE) handler(msg);
+      };
+      ipcRenderer.on(IPC.UPDATE_AVAILABLE, listener);
+      return () => {
+        ipcRenderer.off(IPC.UPDATE_AVAILABLE, listener);
+      };
+    },
+    /** Fires when a downloaded update is ready to install. */
+    updateDownloaded(handler: (msg: Extract<MainToRendererMessage, { channel: "update:downloaded" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.UPDATE_DOWNLOADED) handler(msg);
+      };
+      ipcRenderer.on(IPC.UPDATE_DOWNLOADED, listener);
+      return () => {
+        ipcRenderer.off(IPC.UPDATE_DOWNLOADED, listener);
       };
     },
   },

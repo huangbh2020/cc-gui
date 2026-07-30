@@ -3,7 +3,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", "dist-electron/**", "out/**"]
+      "outputs": ["dist/**", "dist-electron/**", "out/**", "release/**"]
     },
     "dev": {
       "cache": false,
@@ -17,6 +17,11 @@
     },
     "lint": {
       "cache": false
+    },
+    "package": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": ["release/**"]
     }
   }
 }

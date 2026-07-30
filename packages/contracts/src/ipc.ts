@@ -523,6 +523,37 @@ export interface AppInfoResult {
   arch: string;
 }
 
+/* ── Auto-update (electron-updater, GitHub Releases channel) ── */
+
+/** Result of a manual/auto update check. */
+export type CheckForUpdatesResult =
+  | { status: "up-to-date"; version: string }
+  | { status: "available"; version: string }
+  | { status: "error"; error: string };
+
+/** Pushed when the updater finds a newer version on the release channel.
+ *  Sent right after `update-available` fires in main; the renderer shows a
+ *  download prompt. autoDownload is off, so the user opts in. */
+export interface UpdateAvailableMessage {
+  channel: "update:available";
+  /** Version string of the pending update (e.g. "0.2.0"). */
+  version: string;
+  /** Release notes (markdown or plain) from the release, if any. */
+  releaseNotes?: string;
+  /** ISO date string of the release, if available. */
+  releaseDate?: string;
+}
+
+/** Pushed when a downloaded update is ready to install. The renderer offers a
+ *  "restart & install" button that calls `app.quitAndInstall`. */
+export interface UpdateDownloadedMessage {
+  channel: "update:downloaded";
+  /** Version string of the downloaded update. */
+  version: string;
+  /** Release notes (markdown or plain) from the release, if any. */
+  releaseNotes?: string;
+}
+
 /* ── File operations (read / list dir / write) ── */
 
 /** Read a single file's current content as utf-8 text. The main handler
@@ -909,7 +940,9 @@ export type MainToRendererMessage =
   | ClaudeEventMessage
   | TerminalDataMessage
   | TerminalExitMessage
-  | ThemeChangedMessage;
+  | ThemeChangedMessage
+  | UpdateAvailableMessage
+  | UpdateDownloadedMessage;
 
 /* ── Integrated terminal (xterm.js + node-pty) ──
  *  PTY processes live in main. Renderer only sees opaque terminalIds and
@@ -1097,6 +1130,17 @@ export interface RpcMap {
   "terminal.list": (input: TerminalListInput) => Promise<{ terminals: TerminalInfo[] }>;
   /** App version + runtime info for the About panel. */
   "app.info": () => Promise<AppInfoResult>;
+  /** Check for updates on the GitHub Releases channel. Returns the current
+   *  version when up-to-date, the new version when available, or an error.
+   *  In dev this short-circuits to "up-to-date" (updater only runs in prod). */
+  "app.checkForUpdates": () => Promise<CheckForUpdatesResult>;
+  /** Start downloading the pending update (autoDownload is off, so the user
+   *  opts in via this call). Resolves once the download begins; the
+   *  `update:downloaded` push event fires when it's ready to install. */
+  "app.downloadUpdate": () => Promise<void>;
+  /** Quit the app and install the downloaded update (called after
+   *  `update:downloaded`). */
+  "app.quitAndInstall": () => Promise<void>;
   /** Open a path in the OS file manager. Main refuses any path that isn't a
    *  known project root, so this can't be used to open arbitrary locations. */
   "shell.openPath": (input: OpenPathInput) => Promise<void>;
@@ -1168,6 +1212,10 @@ export const IPC = {
   TERMINAL_LIST: "terminal:list",
   // App / runtime info (About panel)
   APP_INFO: "app:info",
+  // Auto-update (electron-updater)
+  APP_CHECK_FOR_UPDATES: "app:checkForUpdates",
+  APP_DOWNLOAD_UPDATE: "app:downloadUpdate",
+  APP_QUIT_AND_INSTALL: "app:quitAndInstall",
   // Open a project root in the OS file manager (main refuses non-project paths)
   SHELL_OPEN_PATH: "shell:openPath",
   // send/on (push events)
@@ -1175,6 +1223,8 @@ export const IPC = {
   TERMINAL_DATA: "terminal:data",
   TERMINAL_EXIT: "terminal:exit",
   THEME_CHANGED: "theme:changed",
+  UPDATE_AVAILABLE: "update:available",
+  UPDATE_DOWNLOADED: "update:downloaded",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

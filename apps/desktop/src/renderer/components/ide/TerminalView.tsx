@@ -151,8 +151,11 @@ export function TerminalView({
       cursorBlink: true,
       cursorStyle: "bar",
       fontSize: rightPanelFontSize,
+      // Bundled JetBrains Mono Variable heads the stack (same face as the
+      // rest of the app's `font-mono` surfaces - see tailwind.config.js) so
+      // the terminal matches code blocks/diffs; OS monospace is the fallback.
       fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+        '"JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
       lineHeight: 1.2,
       scrollback: 5000,
       theme: buildTheme(document.documentElement.classList.contains("dark")),

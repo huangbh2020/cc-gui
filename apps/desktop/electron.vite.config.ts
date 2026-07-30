@@ -49,7 +49,11 @@ export default defineConfig({
   renderer: {
     root: "src/renderer",
     build: {
-      lib: { entry: "index.html" },
+      // `name` is required by Vite when a lib entry's inferred output format
+      // is umd/iife. The renderer is loaded via loadFile (not a <script> with
+      // a global), so the name is unused at runtime - it just satisfies the
+      // build resolver.
+      lib: { entry: "index.html", name: "renderer" },
       rollupOptions: {
         input: { index: resolve("src/renderer/index.html") },
       },

@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  app-builder-lib: ^25.1.0
+
 importers:
 
   .:
@@ -32,6 +35,9 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.8)
+      '@fontsource-variable/jetbrains-mono':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@legendapp/list':
         specifier: 3.0.0-beta.44
         version: 3.0.0-beta.44(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -62,6 +68,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      electron-updater:
+        specifier: ^6.8.9
+        version: 6.8.9(supports-color@7.2.0)
       katex:
         specifier: ^0.18.1
         version: 0.18.1
@@ -134,7 +143,7 @@ importers:
         version: 33.0.0(supports-color@7.2.0)
       electron-builder:
         specifier: ^25.1.0
-        version: 25.1.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.0.0)(supports-color@7.2.0)
+        version: 25.1.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
       electron-vite:
         specifier: ^2.3.0
         version: 2.3.0(supports-color@7.2.0)(vite@6.4.3(@types/node@22.20.1)(jiti@1.21.7))
@@ -392,17 +401,17 @@ packages:
     resolution: {integrity: sha512-d0XfNGayKLrYRqddW4f2Zdjaj71LfvZlCnUN8ojyNMr7WD8v6B+fqdCV8Etnwn/vUfFWFwMk/HtLEFZy01h4tQ==}
     engines: {node: '>=12'}
 
-  '@electron/notarize@2.3.2':
-    resolution: {integrity: sha512-zfayxCe19euNwRycCty1C7lF7snk9YwfRpB5M8GLr1a4ICH63znxaPNAubrMvj0yDvVozqfgsdYpXVUnpWBDpg==}
+  '@electron/notarize@2.5.0':
+    resolution: {integrity: sha512-jNT8nwH1f9X5GEITXaQ8IF/KdskvIkOFfB2CvwumsveVidzpSc+mvhhTMdAGSYF3O+Nq49lJ7y+ssODRXu06+A==}
     engines: {node: '>= 10.0.0'}
 
-  '@electron/osx-sign@1.3.0':
-    resolution: {integrity: sha512-TEXhxlYSDRr9JWK5nWdOv5MtuUdaZ412uxIIEQ0hLt80o0HYWtQJBlW5QmrQDMtebzATaOjKG9UfCzLyA90zWQ==}
+  '@electron/osx-sign@1.3.1':
+    resolution: {integrity: sha512-BAfviURMHpmb1Yb50YbCxnOY0wfwaLXH5KJ4+80zS0gUkzDX3ec23naTlEqKsN+PwYn+a1cCzM7BJ4Wcd3sGzw==}
     engines: {node: '>=12.0.0'}
     hasBin: true
 
-  '@electron/rebuild@3.6.0':
-    resolution: {integrity: sha512-zF4x3QupRU3uNGaP5X1wjpmcjfw1H87kyqZ00Tc3HvriV+4gmOGuvQjGNkrJuXdsApssdNyVwLsy+TaeTGGcVw==}
+  '@electron/rebuild@3.6.1':
+    resolution: {integrity: sha512-f6596ZHpEq/YskUd8emYvOUne89ij8mQgjYFA5ru25QwbrRO+t1SImofdDv7kKOuWCmVOuU5tvfkbgGxIl3E/w==}
     engines: {node: '>=12.13.0'}
     hasBin: true
 
@@ -712,6 +721,9 @@ packages:
 
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
+
+  '@fontsource-variable/jetbrains-mono@5.3.0':
+    resolution: {integrity: sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw==}
 
   '@gar/promisify@1.1.3':
     resolution: {integrity: sha512-k2Ty1JcVojjJFwrg/ThKi2ujJ7XNLYaFGNB/bWT9wGR+oSMJHMa5w+CUq6p/pVrKeNNgA7pCqEcjSnHVoqJQFw==}
@@ -1178,6 +1190,10 @@ packages:
     resolution: {integrity: sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==}
     engines: {node: '>= 6.0.0'}
 
+  agent-base@7.1.4:
+    resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
+    engines: {node: '>= 14'}
+
   agentkeepalive@4.6.0:
     resolution: {integrity: sha512-kja8j7PjmncONqaTsB8fQ+wE2mSU2DJ9D4XKoJ5PFWIdRMa6SLSN1ff4mOr4jCbfRSsxR4keIiySJU0N9T5hIQ==}
     engines: {node: '>= 8.0.0'}
@@ -1228,15 +1244,18 @@ packages:
     resolution: {integrity: sha512-KMReFUr0B4t+D+OBkjR3KYqvocp2XaSzO55UcB6mgQMd3KbcE+mWTyvVV7D/zsdEbNnV6acZUutkiHQXvTr1Rw==}
     engines: {node: '>= 8'}
 
+  app-builder-bin@5.0.0-alpha.10:
+    resolution: {integrity: sha512-Ev4jj3D7Bo+O0GPD2NMvJl+PGiBAfS7pUGawntBNpCbxtpncfUixqFj9z9Jme7V7s3LBGqsWZZP54fxBX3JKJw==}
+
   app-builder-bin@5.0.0-alpha.4:
     resolution: {integrity: sha512-4MitKmOtfTdMONrtRoiaqJ6HtlVZXgrNX1PNdEzEHSAoXU85x7s+mo0IhAS9K9qgjyTVuLrM1E/HAMp5qGyoOA==}
 
-  app-builder-lib@25.0.0:
-    resolution: {integrity: sha512-GIx0n/QvbeObY8rQTTp08UPn4pS9xSGZLq6cPRy/CyX/mTNN9pO/uU28MWgqjnYXk0bf/595vzDdAijuDyz5Zw==}
+  app-builder-lib@25.1.8:
+    resolution: {integrity: sha512-pCqe7dfsQFBABC1jeKZXQWhGcCPF3rPCXDdfqVKjIeWBcXzyC1iOWZdfFhGl+S9MyE/k//DFmC6FzuGAUudNDg==}
     engines: {node: '>=14.0.0'}
     peerDependencies:
-      dmg-builder: 25.0.0
-      electron-builder-squirrel-windows: 25.0.0
+      dmg-builder: 25.1.8
+      electron-builder-squirrel-windows: 25.1.8
 
   aproba@2.1.0:
     resolution: {integrity: sha512-tLIEcj5GuR2RSTnxNKdkK0dJ/GrC7P38sUkiDmDuHfsHmbagTFAxDVIBltoklXEVIQ/f14IL8IMJ5pn9Hez1Ew==}
@@ -1359,6 +1378,10 @@ packages:
   buffer@5.7.1:
     resolution: {integrity: sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ==}
 
+  builder-util-runtime@9.2.10:
+    resolution: {integrity: sha512-6p/gfG1RJSQeIbz8TK5aPNkoztgY1q5TgmGFMAXcY8itsGW6Y2ld1ALsZ5UJn8rog7hKF3zHx5iQbNQ8uLcRlw==}
+    engines: {node: '>=12.0.0'}
+
   builder-util-runtime@9.2.5:
     resolution: {integrity: sha512-HjIDfhvqx/8B3TDN4GbABQcgpewTU4LMRTQPkVpKYV3lsuxEJoIfvg09GyWTNmfVNSUAYf+fbTN//JX4TH20pg==}
     engines: {node: '>=12.0.0'}
@@ -1369,6 +1392,9 @@ packages:
 
   builder-util@25.0.0:
     resolution: {integrity: sha512-cI8zIsipo/gciZ5jGEA1qYL5Em1N6cWoNMpeJWZAfOs3H9s5zQWKnAS7rTdlJpsJ88gEmL5/32yeXUF2Uzxw6w==}
+
+  builder-util@25.1.7:
+    resolution: {integrity: sha512-7jPjzBwEGRbwNcep0gGNpLXG9P94VA3CPAZQCzxkFXiV2GMQKlziMbY//rXPI7WKfhsvGgFXjTcXdBEwgXw9ww==}
 
   bytes@3.1.2:
     resolution: {integrity: sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==}
@@ -1679,19 +1705,22 @@ packages:
     engines: {node: '>=0.10.0'}
     hasBin: true
 
-  electron-builder-squirrel-windows@25.0.0:
-    resolution: {integrity: sha512-bfARwAdye1UkFQZ7NedHZBcOek2lvDDeg/pCaXT4Nrki7gdwrvVY/Be/QJm7Smc6IR/mviozbL9ykUHQ/FSsbw==}
+  electron-builder-squirrel-windows@25.1.8:
+    resolution: {integrity: sha512-2ntkJ+9+0GFP6nAISiMabKt6eqBB0kX1QqHNWFWAXgi0VULKGisM46luRFpIBiU3u/TDmhZMM8tzvo2Abn3ayg==}
 
   electron-builder@25.1.0:
     resolution: {integrity: sha512-lv6eyA8oIHoLK3QKaW3UIb2fxaN3260+MHRHIIDyRmHX3UDtKm7WJSDHAiZX/PCKcHbwkk3rB4LVZz+r2XwNLA==}
     engines: {node: '>=14.0.0'}
     hasBin: true
 
-  electron-publish@25.0.0:
-    resolution: {integrity: sha512-8wq3pVLq9bpd/jNKJGIXbeL8B8AovLojtCDkVSuSgrLtxEndqy5JfuadUKPAgbmh1zjholNAHsfHH9FS5yeYAg==}
+  electron-publish@25.1.7:
+    resolution: {integrity: sha512-+jbTkR9m39eDBMP4gfbqglDd6UvBC7RLh5Y0MhFSsc6UkGHj9Vj9TWobxevHYMMqmoujL11ZLjfPpMX+Pt6YEg==}
 
   electron-to-chromium@1.5.395:
     resolution: {integrity: sha512-7zt9Aw+SrmxLWLN0zhaTWZQiCdryLVrYTq5R7iZakLvi2UQPYMMsROYV/2qVCzMeCiSXHwKOU+sZ4zOVVlrtKA==}
+
+  electron-updater@6.8.9:
+    resolution: {integrity: sha512-ZhVxM9iGONUpZGI1FxdMRgJjUFXi7AYGVa5PwKlO1tV1/4zDxQmfKpXOHVztKrd6L9rLcFjERvi1Mf2vxyTkig==}
 
   electron-vite@2.3.0:
     resolution: {integrity: sha512-lsN2FymgJlp4k6MrcsphGqZQ9fKRdJKasoaiwIrAewN1tapYI/KINLdfEL7n10LuF0pPSNf/IqjzZbB5VINctg==}
@@ -2064,6 +2093,10 @@ packages:
     resolution: {integrity: sha512-n2hY8YdoRE1i7r6M0w9DIw5GgZN0G25P8zLCRQ8rjXtTU3vsNFBI/vWK/UIeE6g5MUUz6avwAPXmL6Fy9D/90w==}
     engines: {node: '>= 6'}
 
+  http-proxy-agent@7.0.2:
+    resolution: {integrity: sha512-T1gkAiYYDWYx3V5Bmyu7HcfcvL7mUrTWiM6yOfa3PIphViJ/gFPbvidQ+veqSOHci/PxBcDabeUNCzpOODJZig==}
+    engines: {node: '>= 14'}
+
   http2-wrapper@1.0.3:
     resolution: {integrity: sha512-V+23sDMr12Wnz7iTcDeJr3O6AIxlnvT/bmaAAAP/Xda35C90p9599p0F1eHR/N1KILWSoWVAiOMFjBBXaXSMxg==}
     engines: {node: '>=10.19.0'}
@@ -2071,6 +2104,10 @@ packages:
   https-proxy-agent@5.0.1:
     resolution: {integrity: sha512-dFcAjpTQFgoLMzC2VwU+C/CbS7uRL0lWmxDITmqm7C+7F0Odmj6s9l6alZc6AELXhrnggM2CeWSXHGOdX2YtwA==}
     engines: {node: '>= 6'}
+
+  https-proxy-agent@7.0.6:
+    resolution: {integrity: sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw==}
+    engines: {node: '>= 14'}
 
   humanize-ms@1.2.1:
     resolution: {integrity: sha512-Fl70vYtsAFb/C06PTS9dZBo7ihau+Tu/DNCk/OyHhea07S+aeMWpFFkUaXRa8fI+ScZbEI8dfSxwY7gxZ9SAVQ==}
@@ -2285,8 +2322,15 @@ packages:
   lodash.difference@4.5.0:
     resolution: {integrity: sha512-dS2j+W26TQ7taQBGN8Lbbq04ssV3emRw4NY58WErlTO29pIqS0HmoT5aJ9+TUQ1N3G+JOZSji4eugsWwGp9yPA==}
 
+  lodash.escaperegexp@4.1.2:
+    resolution: {integrity: sha512-TM9YBvyC84ZxE3rgfefxUWiQKLilstD6k7PTGt6wfbtXF8ixIJLOL3VYyV/z+ZiPLsVxAsKAFVwWlWeb2Y8Yyw==}
+
   lodash.flatten@4.4.0:
     resolution: {integrity: sha512-C5N2Z3DgnnKr0LOpv/hKCgKdb7ZZwafIrsesve6lmzvZIRZRGaZ/l6Q8+2W7NaT+ZwO3fFlSCzCzrDCFdJfZ4g==}
+
+  lodash.isequal@4.5.0:
+    resolution: {integrity: sha512-pDo3lu8Jhfjqls6GkMgpahsF9kCyayhgykjyLMNFTKWrpVdAQtYyB4muAMWozBB4ig/dtWAmsMxLEI8wuz+DYQ==}
+    deprecated: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
 
   lodash.isplainobject@4.0.6:
     resolution: {integrity: sha512-oSXzaWypCMHkPC3NvBEaPHf0KsA5mvPrOPgQWDsbg8n7orZ290M0BmC/jgRZ4vcJ6DTAhjrsSYgdsW/F+MFOBA==}
@@ -2918,10 +2962,6 @@ packages:
   read-cache@1.0.0:
     resolution: {integrity: sha512-Owdv/Ft7IjOgm/i0xvNDZ1LrRANRfew4b2prF3OWMQLxLfu3bS8FVhCsrSCMK4lR56Y9ya+AThoTpDCTxCmpRA==}
 
-  read-config-file@6.4.0:
-    resolution: {integrity: sha512-uB5QOBeF84PT61GlV11OTV4jUGHAO3iDEOP6v9ygxhG6Bs9PLg7WsjNT6mtIX2G+x8lJTr4ZWNeG6LDTKkNf2Q==}
-    engines: {node: '>=12.0.0'}
-
   readable-stream@2.3.8:
     resolution: {integrity: sha512-8p0AUk4XODgIewSi0l8Epjs+EVnWiK7NoDIEGU0HhE7+ZyY8D1IMY7odu5lRrFXGg71L15KG8QrPmum45RTtdA==}
 
@@ -3044,12 +3084,13 @@ packages:
   semver-compare@1.0.0:
     resolution: {integrity: sha512-YM3/ITh2MJ5MtzaM429anh+x2jiLVjqILF4m4oyQB18W7Ggea7BfqdH/wGMK7dDiMghv/6WG7znWMwUDzJiXow==}
 
-  semver@6.2.0:
-    resolution: {integrity: sha512-jdFC1VdUGT/2Scgbimf7FSx9iJLXoqfglSF+gJeuNWVpiE37OIbc1jywR/GJyFdz3mnkz2/id0L0J/cr0izR5A==}
-    hasBin: true
-
   semver@6.3.1:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
+    hasBin: true
+
+  semver@7.7.4:
+    resolution: {integrity: sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==}
+    engines: {node: '>=10'}
     hasBin: true
 
   semver@7.8.5:
@@ -3245,6 +3286,9 @@ packages:
 
   thenify@3.3.1:
     resolution: {integrity: sha512-RVZSIV5IG10Hk3enotrhvz0T9em6cyHBLkH/YAZuKqd8hRkKhSfCGIcP2KUY0EPxndzANBmNllzWPwak+bheSw==}
+
+  tiny-typed-emitter@2.1.0:
+    resolution: {integrity: sha512-qVtvMxeXbVej0cQWKqVSSAHmKZEHAvxdF8HEUBFWts8h+xEo5m/lEiPakuyZ3BnCBjOD8i24kzNOiOLLgsSxhA==}
 
   tinyglobby@0.2.17:
     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
@@ -3757,7 +3801,7 @@ snapshots:
       fs-extra: 8.1.0
       got: 11.8.5
       progress: 2.0.3
-      semver: 6.2.0
+      semver: 6.3.1
       sumchecker: 3.0.1(supports-color@7.2.0)
     optionalDependencies:
       global-agent: 3.0.0
@@ -3765,7 +3809,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@electron/notarize@2.3.2(supports-color@7.2.0)':
+  '@electron/notarize@2.5.0(supports-color@7.2.0)':
     dependencies:
       debug: 4.4.3(supports-color@7.2.0)
       fs-extra: 9.0.1
@@ -3773,7 +3817,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@electron/osx-sign@1.3.0(supports-color@7.2.0)':
+  '@electron/osx-sign@1.3.1(supports-color@7.2.0)':
     dependencies:
       compare-version: 0.1.2
       debug: 4.4.3(supports-color@7.2.0)
@@ -3784,7 +3828,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@electron/rebuild@3.6.0(bluebird@3.7.2)(supports-color@7.2.0)':
+  '@electron/rebuild@3.6.1(bluebird@3.7.2)(supports-color@7.2.0)':
     dependencies:
       '@malept/cross-spawn-promise': 2.0.0
       chalk: 4.1.2
@@ -3976,6 +4020,8 @@ snapshots:
       react-dom: 19.2.8(react@19.2.8)
 
   '@floating-ui/utils@0.2.12': {}
+
+  '@fontsource-variable/jetbrains-mono@5.3.0': {}
 
   '@gar/promisify@1.1.3': {}
 
@@ -4419,6 +4465,8 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  agent-base@7.1.4: {}
+
   agentkeepalive@4.6.0:
     dependencies:
       humanize-ms: 1.2.1
@@ -4467,36 +4515,41 @@ snapshots:
       normalize-path: 3.0.0
       picomatch: 2.3.2
 
+  app-builder-bin@5.0.0-alpha.10: {}
+
   app-builder-bin@5.0.0-alpha.4: {}
 
-  app-builder-lib@25.0.0(bluebird@3.7.2)(dmg-builder@25.0.0)(electron-builder-squirrel-windows@25.0.0)(supports-color@7.2.0):
+  app-builder-lib@25.1.8(bluebird@3.7.2)(dmg-builder@25.0.0)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0):
     dependencies:
       '@develar/schema-utils': 2.6.5
-      '@electron/notarize': 2.3.2(supports-color@7.2.0)
-      '@electron/osx-sign': 1.3.0(supports-color@7.2.0)
-      '@electron/rebuild': 3.6.0(bluebird@3.7.2)(supports-color@7.2.0)
+      '@electron/notarize': 2.5.0(supports-color@7.2.0)
+      '@electron/osx-sign': 1.3.1(supports-color@7.2.0)
+      '@electron/rebuild': 3.6.1(bluebird@3.7.2)(supports-color@7.2.0)
       '@electron/universal': 2.0.1(supports-color@7.2.0)
       '@malept/flatpak-bundler': 0.4.0(supports-color@7.2.0)
       '@types/fs-extra': 9.0.13
       async-exit-hook: 2.0.1
       bluebird-lst: 1.0.9
-      builder-util: 25.0.0(supports-color@7.2.0)
-      builder-util-runtime: 9.2.5(supports-color@7.2.0)
+      builder-util: 25.1.7(supports-color@7.2.0)
+      builder-util-runtime: 9.2.10(supports-color@7.2.0)
       chromium-pickle-js: 0.2.0
+      config-file-ts: 0.2.8-rc1
       debug: 4.4.3(supports-color@7.2.0)
-      dmg-builder: 25.0.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.0.0)(supports-color@7.2.0)
+      dmg-builder: 25.0.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
+      dotenv: 16.4.5
+      dotenv-expand: 11.0.6
       ejs: 3.1.8
-      electron-builder-squirrel-windows: 25.0.0(bluebird@3.7.2)(dmg-builder@25.0.0)(supports-color@7.2.0)
-      electron-publish: 25.0.0(supports-color@7.2.0)
+      electron-builder-squirrel-windows: 25.1.8(bluebird@3.7.2)(dmg-builder@25.0.0)(supports-color@7.2.0)
+      electron-publish: 25.1.7(supports-color@7.2.0)
       form-data: 4.0.6
       fs-extra: 10.1.0
       hosted-git-info: 4.1.0
       is-ci: 3.0.1
       isbinaryfile: 5.0.7
       js-yaml: 4.3.0
+      json5: 2.2.3
       lazy-val: 1.0.5
       minimatch: 10.2.5
-      read-config-file: 6.4.0
       resedit: 1.7.0
       sanitize-filename: 1.6.4
       semver: 7.8.5
@@ -4642,6 +4695,13 @@ snapshots:
       base64-js: 1.5.1
       ieee754: 1.2.1
 
+  builder-util-runtime@9.2.10(supports-color@7.2.0):
+    dependencies:
+      debug: 4.4.3(supports-color@7.2.0)
+      sax: 1.6.0
+    transitivePeerDependencies:
+      - supports-color
+
   builder-util-runtime@9.2.5(supports-color@7.2.0):
     dependencies:
       debug: 4.4.3(supports-color@7.2.0)
@@ -4669,6 +4729,27 @@ snapshots:
       fs-extra: 10.1.0
       http-proxy-agent: 5.0.0(supports-color@7.2.0)
       https-proxy-agent: 5.0.1(supports-color@7.2.0)
+      is-ci: 3.0.1
+      js-yaml: 4.3.0
+      source-map-support: 0.5.21
+      stat-mode: 1.0.0
+      temp-file: 3.4.0
+    transitivePeerDependencies:
+      - supports-color
+
+  builder-util@25.1.7(supports-color@7.2.0):
+    dependencies:
+      7zip-bin: 5.2.0
+      '@types/debug': 4.1.13
+      app-builder-bin: 5.0.0-alpha.10
+      bluebird-lst: 1.0.9
+      builder-util-runtime: 9.2.10(supports-color@7.2.0)
+      chalk: 4.1.2
+      cross-spawn: 7.0.6
+      debug: 4.4.3(supports-color@7.2.0)
+      fs-extra: 10.1.0
+      http-proxy-agent: 7.0.2(supports-color@7.2.0)
+      https-proxy-agent: 7.0.6(supports-color@7.2.0)
       is-ci: 3.0.1
       js-yaml: 4.3.0
       source-map-support: 0.5.21
@@ -4943,9 +5024,9 @@ snapshots:
 
   dlv@1.1.3: {}
 
-  dmg-builder@25.0.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.0.0)(supports-color@7.2.0):
+  dmg-builder@25.0.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0):
     dependencies:
-      app-builder-lib: 25.0.0(bluebird@3.7.2)(dmg-builder@25.0.0)(electron-builder-squirrel-windows@25.0.0)(supports-color@7.2.0)
+      app-builder-lib: 25.1.8(bluebird@3.7.2)(dmg-builder@25.0.0)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
       builder-util: 25.0.0(supports-color@7.2.0)
       builder-util-runtime: 9.2.5(supports-color@7.2.0)
       fs-extra: 10.1.0
@@ -4994,24 +5075,24 @@ snapshots:
     dependencies:
       jake: 10.8.5
 
-  electron-builder-squirrel-windows@25.0.0(bluebird@3.7.2)(dmg-builder@25.0.0)(supports-color@7.2.0):
+  electron-builder-squirrel-windows@25.1.8(bluebird@3.7.2)(dmg-builder@25.0.0)(supports-color@7.2.0):
     dependencies:
-      app-builder-lib: 25.0.0(bluebird@3.7.2)(dmg-builder@25.0.0)(electron-builder-squirrel-windows@25.0.0)(supports-color@7.2.0)
+      app-builder-lib: 25.1.8(bluebird@3.7.2)(dmg-builder@25.0.0)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
       archiver: 5.3.1
-      builder-util: 25.0.0(supports-color@7.2.0)
+      builder-util: 25.1.7(supports-color@7.2.0)
       fs-extra: 10.1.0
     transitivePeerDependencies:
       - bluebird
       - dmg-builder
       - supports-color
 
-  electron-builder@25.1.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.0.0)(supports-color@7.2.0):
+  electron-builder@25.1.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0):
     dependencies:
-      app-builder-lib: 25.0.0(bluebird@3.7.2)(dmg-builder@25.0.0)(electron-builder-squirrel-windows@25.0.0)(supports-color@7.2.0)
+      app-builder-lib: 25.1.8(bluebird@3.7.2)(dmg-builder@25.0.0)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
       builder-util: 25.0.0(supports-color@7.2.0)
       builder-util-runtime: 9.7.0(supports-color@7.2.0)
       chalk: 4.1.2
-      dmg-builder: 25.0.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.0.0)(supports-color@7.2.0)
+      dmg-builder: 25.0.0(bluebird@3.7.2)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
       fs-extra: 10.1.0
       is-ci: 3.0.1
       lazy-val: 1.0.5
@@ -5022,11 +5103,11 @@ snapshots:
       - electron-builder-squirrel-windows
       - supports-color
 
-  electron-publish@25.0.0(supports-color@7.2.0):
+  electron-publish@25.1.7(supports-color@7.2.0):
     dependencies:
       '@types/fs-extra': 9.0.13
-      builder-util: 25.0.0(supports-color@7.2.0)
-      builder-util-runtime: 9.2.5(supports-color@7.2.0)
+      builder-util: 25.1.7(supports-color@7.2.0)
+      builder-util-runtime: 9.2.10(supports-color@7.2.0)
       chalk: 4.1.2
       fs-extra: 10.1.0
       lazy-val: 1.0.5
@@ -5035,6 +5116,19 @@ snapshots:
       - supports-color
 
   electron-to-chromium@1.5.395: {}
+
+  electron-updater@6.8.9(supports-color@7.2.0):
+    dependencies:
+      builder-util-runtime: 9.7.0(supports-color@7.2.0)
+      fs-extra: 10.1.0
+      js-yaml: 4.3.0
+      lazy-val: 1.0.5
+      lodash.escaperegexp: 4.1.2
+      lodash.isequal: 4.5.0
+      semver: 7.7.4
+      tiny-typed-emitter: 2.1.0
+    transitivePeerDependencies:
+      - supports-color
 
   electron-vite@2.3.0(supports-color@7.2.0)(vite@6.4.3(@types/node@22.20.1)(jiti@1.21.7)):
     dependencies:
@@ -5581,6 +5675,13 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  http-proxy-agent@7.0.2(supports-color@7.2.0):
+    dependencies:
+      agent-base: 7.1.4
+      debug: 4.4.3(supports-color@7.2.0)
+    transitivePeerDependencies:
+      - supports-color
+
   http2-wrapper@1.0.3:
     dependencies:
       quick-lru: 5.1.1
@@ -5589,6 +5690,13 @@ snapshots:
   https-proxy-agent@5.0.1(supports-color@7.2.0):
     dependencies:
       agent-base: 6.0.2(supports-color@7.2.0)
+      debug: 4.4.3(supports-color@7.2.0)
+    transitivePeerDependencies:
+      - supports-color
+
+  https-proxy-agent@7.0.6(supports-color@7.2.0):
+    dependencies:
+      agent-base: 7.1.4
       debug: 4.4.3(supports-color@7.2.0)
     transitivePeerDependencies:
       - supports-color
@@ -5765,7 +5873,11 @@ snapshots:
 
   lodash.difference@4.5.0: {}
 
+  lodash.escaperegexp@4.1.2: {}
+
   lodash.flatten@4.4.0: {}
+
+  lodash.isequal@4.5.0: {}
 
   lodash.isplainobject@4.0.6: {}
 
@@ -6606,15 +6718,6 @@ snapshots:
     dependencies:
       pify: 2.3.0
 
-  read-config-file@6.4.0:
-    dependencies:
-      config-file-ts: 0.2.8-rc1
-      dotenv: 16.4.5
-      dotenv-expand: 11.0.6
-      js-yaml: 4.3.0
-      json5: 2.2.3
-      lazy-val: 1.0.5
-
   readable-stream@2.3.8:
     dependencies:
       core-util-is: 1.0.3
@@ -6810,9 +6913,9 @@ snapshots:
   semver-compare@1.0.0:
     optional: true
 
-  semver@6.2.0: {}
-
   semver@6.3.1: {}
+
+  semver@7.7.4: {}
 
   semver@7.8.5: {}
 
@@ -7088,6 +7191,8 @@ snapshots:
   thenify@3.3.1:
     dependencies:
       any-promise: 1.3.0
+
+  tiny-typed-emitter@2.1.0: {}
 
   tinyglobby@0.2.17:
     dependencies:

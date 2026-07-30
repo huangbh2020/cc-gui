@@ -15,7 +15,8 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "lint": "turbo run lint"
+    "lint": "turbo run lint",
+    "package": "turbo run package"
   },
   "devDependencies": {
     "turbo": "^2.9.0",
