@@ -81,6 +81,10 @@ jobs:
       - name: Build & package
         run: pnpm --filter @my-claude-gui/desktop package
         env:
+          # The renderer build (shiki's ~100 language grammar chunks +
+          # monaco workers) peaks above Node's default 2GB heap on CI.
+          # Raise it to 4GB so electron-vite build doesn't OOM.
+          NODE_OPTIONS: --max-old-space-size=4096
           # electron-builder reads GH_TOKEN to look up existing releases when
           # computing the auto-update channel (optional during build, but set
           # it so publish metadata is generated correctly).
