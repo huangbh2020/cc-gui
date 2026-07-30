@@ -44,6 +44,14 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # macOS runners ship Python 3.12+, which removed the `distutils` module.
+      # node-pty 1.1.0 pulls node-gyp@9, which still does
+      # `from distutils.version import StrictVersion` -> ModuleNotFoundError.
+      # Installing setuptools restores the distutils shim so native rebuild works.
+      - name: Install setuptools (macOS distutils shim for node-gyp)
+        if: runner.os == 'macOS'
+        run: python3 -m pip install setuptools
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
