@@ -1,0 +1,273 @@
+/**
+ * Response translator: OpenAI streaming chunks → Anthropic SSE event stream.
+ *
+ * The Claude binary consumes Anthropic's streaming format (message_start →
+ * content_block_start → content_block_delta ×N → content_block_stop →
+ * message_delta → message_stop). OpenAI streams a flat sequence of
+ * `data: {...}` chunks whose `choices[0].delta` carries either `content`
+ * (text) or `tool_calls[]` (function-call fragments). This class is a state
+ * machine that re-sequences OpenAI's flat stream into Anthropic's block-
+ * structured events.
+ *
+ * ## State
+ *
+ * The binary assigns each content block a sequential `index`. We track:
+ *   - whether `message_start` has been emitted (gated on first chunk),
+ *   - the currently-open block's index and type (text | tool_use), so we
+ *     can emit `content_block_stop` before opening the next one.
+ *
+ * `openBlockIndex` uses a NO_BLOCK sentinel rather than `undefined` so it
+ * stays a plain `number` — which keeps the type narrowing tractable across
+ * the many read/emit sites in `feed`.
+ *
+ * ## Why a class (not a pure function)
+ *
+ * OpenAI's tool_call arguments arrive in arbitrary fragments across many
+ * chunks; Anthropic wraps each fragment as an `input_json_delta`. Translating
+ * a single chunk therefore depends on what came before it, so the translator
+ * must hold state between chunks. The class is driven chunk-by-chunk via
+ * `feed()`, then finalized with `finish()` to close out the message.
+ *
+ * ## Tool-call index mapping
+ *
+ * OpenAI tags each tool_call fragment with its own `index` (0,1,2…). Anthropic
+ * tags content blocks with a global `index` that also counts text blocks.
+ * We maintain a map `oaiToolIndex → anthropicBlockIndex` so a tool_call that
+ * spans many chunks always lands on the same Anthropic block index.
+ */
+import type {
+  AnthropicSseEvent,
+  AnthropicUsage,
+  OpenAIChunk,
+} from "./types.js";
+
+/** Sentinel for "no block currently open" (avoids number|undefined juggling). */
+const NO_BLOCK = -1;
+
+/** Generate an id resembling Anthropic's `msg_...` format. The binary only
+ *  needs an opaque unique id; it doesn't validate the prefix. */
+function genMessageId(): string {
+  return `msg_bridge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export class OpenAiToAnthropicSse {
+  private messageId = genMessageId();
+  private model = "bridge";
+  private started = false;
+  /** The Anthropic block index currently open, or NO_BLOCK if none. */
+  private openBlockIndex = NO_BLOCK;
+  /** The type of the currently-open block, or undefined if none. */
+  private openBlockKind: "text" | "tool_use" | undefined;
+  /** Next Anthropic block index to assign. */
+  private nextIndex = 0;
+  /** Map: OpenAI tool_call.index → Anthropic block index (for that tool_use). */
+  private toolIndexMap = new Map<number, number>();
+  /** Accumulated usage from the final chunk (OpenAI emits it once, at the end). */
+  private usage: AnthropicUsage = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+  };
+
+  /** Close the open block (if any) and push its `content_block_stop`. */
+  private closeOpenBlock(events: AnthropicSseEvent[]): void {
+    if (this.openBlockIndex !== NO_BLOCK) {
+      events.push({ type: "content_block_stop", index: this.openBlockIndex });
+      this.openBlockIndex = NO_BLOCK;
+      this.openBlockKind = undefined;
+    }
+  }
+
+  /** Open a new text block (closing the previous open block first). */
+  private openTextBlock(events: AnthropicSseEvent[]): number {
+    this.closeOpenBlock(events);
+    const index = this.nextIndex++;
+    this.openBlockIndex = index;
+    this.openBlockKind = "text";
+    events.push({
+      type: "content_block_start",
+      index,
+      content_block: { type: "text", text: "" },
+    });
+    return index;
+  }
+
+  /** Open a new tool_use block (closing the previous open block first). */
+  private openToolBlock(events: AnthropicSseEvent[], id: string, name: string): number {
+    this.closeOpenBlock(events);
+    const index = this.nextIndex++;
+    this.openBlockIndex = index;
+    this.openBlockKind = "tool_use";
+    events.push({
+      type: "content_block_start",
+      index,
+      content_block: { type: "tool_use", id, name, input: {} },
+    });
+    return index;
+  }
+
+  /** Process one OpenAI SSE chunk → zero or more Anthropic events. */
+  feed(chunk: OpenAIChunk): AnthropicSseEvent[] {
+    const events: AnthropicSseEvent[] = [];
+
+    // Capture model/id off the first chunk for the message_start envelope.
+    if (!this.started) {
+      if (chunk.model) this.model = chunk.model;
+      events.push({
+        type: "message_start",
+        message: {
+          id: this.messageId,
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: this.model,
+          stop_reason: null,
+          stop_sequence: null,
+          // message_start usage is a placeholder; real totals arrive in
+          // message_delta (Anthropic's own contract does the same).
+          usage: { ...this.usage },
+        },
+      });
+      this.started = true;
+    }
+
+    if (chunk.usage) {
+      this.usage = {
+        input_tokens: chunk.usage.prompt_tokens ?? 0,
+        output_tokens: chunk.usage.completion_tokens ?? 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      };
+    }
+
+    const choices = chunk.choices;
+    const choice = choices && choices.length > 0 ? choices[0] : undefined;
+    const delta = choice?.delta;
+
+    if (delta) {
+      // Text content. Lazily open a text block on the first fragment, then
+      // emit a text_delta. Subsequent fragments reuse the open block.
+      const text = delta.content;
+      if (typeof text === "string" && text.length > 0) {
+        const index =
+          this.openBlockKind === "text" ? this.openBlockIndex : this.openTextBlock(events);
+        events.push({
+          type: "content_block_delta",
+          index,
+          delta: { type: "text_delta", text },
+        });
+      }
+
+      // Tool-call fragments. Each distinct OpenAI tool_call index maps to one
+      // Anthropic tool_use block; id/name arrive on its first fragment, and
+      // subsequent fragments carry only argument pieces.
+      const toolCalls = delta.tool_calls;
+      if (toolCalls && toolCalls.length > 0) {
+        for (const tc of toolCalls) {
+          let blockIdx = this.toolIndexMap.get(tc.index);
+          if (blockIdx === undefined) {
+            // First fragment for this tool call → open a new tool_use block.
+            const id = tc.id ?? `toolu_bridge_${this.nextIndex}`;
+            const name = tc.function?.name ?? "";
+            blockIdx = this.openToolBlock(events, id, name);
+            this.toolIndexMap.set(tc.index, blockIdx);
+          }
+          // Argument fragment → input_json_delta. OpenAI sends arguments as a
+          // JSON string that may itself arrive in pieces; Anthropic's contract
+          // is to forward each piece verbatim as `partial_json` (the SDK
+          // concatenates them before JSON.parse).
+          const argPiece = tc.function?.arguments;
+          if (typeof argPiece === "string" && argPiece.length > 0) {
+            events.push({
+              type: "content_block_delta",
+              index: blockIdx,
+              delta: { type: "input_json_delta", partial_json: argPiece },
+            });
+          }
+        }
+      }
+
+      // Reasoning content (DeepSeek/o1-style) — forward as a thinking block.
+      // The signature is faked as empty: OpenAI exposes no reasoning
+      // signature, so we can't honor multi-turn thinking continuity, but a
+      // single-turn thinking block still renders correctly in the UI.
+      const reasoning = delta.reasoning ?? delta.reasoning_content;
+      if (typeof reasoning === "string" && reasoning.length > 0) {
+        // Thinking is intentionally NOT implemented in the POC (see plan stage
+        // 2): we drop it to avoid emitting blocks the binary can't validate.
+        // This branch is a placeholder kept for stage 2.
+      }
+    }
+
+    return events;
+  }
+
+  /** Close out the message after the stream ends (or finish_reason seen).
+   *  Returns the tail events: stop the open block, then message_delta + stop. */
+  finish(stopReason: string | null | undefined): AnthropicSseEvent[] {
+    const events: AnthropicSseEvent[] = [];
+    if (!this.started) {
+      // Degenerate stream with no chunks at all — still emit a valid envelope.
+      events.push({
+        type: "message_start",
+        message: {
+          id: this.messageId,
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: this.model,
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { ...this.usage },
+        },
+      });
+      this.started = true;
+    }
+    this.closeOpenBlock(events);
+    events.push({
+      type: "message_delta",
+      delta: { stop_reason: mapStopReason(stopReason), stop_sequence: null },
+      usage: { ...this.usage },
+    });
+    events.push({ type: "message_stop" });
+    return events;
+  }
+
+  /** Reset for reuse (in case the same instance is recycled across turns).
+   *  The bridge currently creates a fresh instance per request, so this is
+   *  mainly for test ergonomics. */
+  reset(): void {
+    this.messageId = genMessageId();
+    this.started = false;
+    this.openBlockIndex = NO_BLOCK;
+    this.openBlockKind = undefined;
+    this.nextIndex = 0;
+    this.toolIndexMap.clear();
+    this.usage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    };
+  }
+}
+
+/** Map OpenAI's finish_reason onto Anthropic's stop_reason vocabulary. */
+export function mapStopReason(openaiReason: string | null | undefined): string {
+  switch (openaiReason) {
+    case "stop":
+      return "end_turn";
+    case "tool_calls":
+    case "function_call":
+      return "tool_use";
+    case "length":
+      return "max_tokens";
+    case "content_filter":
+      return "refusal";
+    default:
+      // null (still going) or unknown values → end_turn is the safe default
+      // for a terminated message.
+      return "end_turn";
+  }
+}

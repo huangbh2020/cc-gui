@@ -15,6 +15,7 @@ import { SessionRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { ApprovalBridge } from "./ApprovalBridge.js";
 import { getFileSnapshot, dropFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
+import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { log } from "@main/lib/logger.js";
 
 interface SessionRuntime {
@@ -28,6 +29,14 @@ interface SessionRuntime {
    *  can resolve snapshot paths without having to ask the provider
    *  (the TurnHandle interface doesn't expose it). */
   lastCwd: string | null;
+  /** When the session's config uses the OpenAI protocol, this holds the
+   *  customModelId whose bridge we acquired (paired with a release on
+   *  dispose). Undefined for anthropic-protocol / no-custom-model sessions. */
+  bridgeConfigId?: string;
+  /** The bridge handle when this session has acquired an OpenAI bridge. We
+   *  keep it to read its localUrl when rewriting the apiConfig each turn, and
+   *  to know the bridge is alive. Released in dispose(). */
+  bridgeHandle?: { localUrl: string };
 }
 
 const approvalBridge = new ApprovalBridge();
@@ -169,7 +178,38 @@ class RuntimeManager {
       if (!cfg) {
         log.warn(`sendTurn: custom model ${session.customModelId} not found, token undecryptable, or no role bound; falling back to default endpoint`);
       } else {
-        apiConfig = cfg;
+        // OpenAI-protocol endpoints need an in-process bridge that impersonates
+        // Anthropic /v1/messages. We rewrite the apiConfig to point at the
+        // local bridge, so the rest of the pipeline (buildCustomEnv, the binary)
+        // is completely unaware anything special is happening — it just sees an
+        // Anthropic-compatible endpoint on localhost. The bridge is shared
+        // across sessions via the registry (keyed by config id, ref-counted).
+        if (cfg.protocol === "openai") {
+          // Release any bridge we're holding for a DIFFERENT config (the user
+          // may have switched custom models mid-session), then acquire for the
+          // current one. We hold exactly one bridge per session; same-config
+          // repeats across turns reuse the existing handle without bumping the
+          // ref count again.
+          if (rt.bridgeConfigId && rt.bridgeConfigId !== session.customModelId) {
+            BridgeRegistry.release(rt.bridgeConfigId);
+            rt.bridgeConfigId = undefined;
+            rt.bridgeHandle = undefined;
+          }
+          if (!rt.bridgeConfigId) {
+            const handle = await BridgeRegistry.acquire(session.customModelId, cfg);
+            rt.bridgeConfigId = session.customModelId;
+            rt.bridgeHandle = { localUrl: handle.localUrl };
+          }
+          // rt.bridgeHandle is now guaranteed set (we just ensured it above);
+          // bind to a local so TS keeps it narrowed through the rewrite below.
+          const localUrl = rt.bridgeHandle?.localUrl;
+          // Rewrite the apiConfig to point at the local bridge so the rest of
+          // the pipeline (buildCustomEnv, the binary) is completely unaware —
+          // it just sees an Anthropic-compatible endpoint on localhost.
+          apiConfig = { ...cfg, baseUrl: localUrl ?? cfg.baseUrl };
+        } else {
+          apiConfig = cfg;
+        }
         modelForReq = undefined; // env pins ANTHROPIC_MODEL via buildCustomEnv
       }
     }
@@ -211,6 +251,13 @@ class RuntimeManager {
       /* ignore */
     }
     approvalBridge.rejectAll(sessionId);
+    // Release any OpenAI bridge this session was holding, so the ref count
+    // drops and the shared server can shut down when no session needs it.
+    if (rt.bridgeConfigId) {
+      BridgeRegistry.release(rt.bridgeConfigId);
+      rt.bridgeConfigId = undefined;
+      rt.bridgeHandle = undefined;
+    }
     // Drop the snapshot too — keep memory bounded as sessions come
     // and go. The registry holds onto the per-session FileSnapshot
     // for the lifetime of the app otherwise.

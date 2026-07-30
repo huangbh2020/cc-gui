@@ -30,10 +30,11 @@ import type {
   CustomModelInput,
   ApiConfig,
   AuthMode,
+  Protocol,
   RoleBindings,
   CustomModelRoleKey,
 } from "@contracts/customModel";
-import { CUSTOM_MODEL_ROLES } from "@contracts/customModel";
+import { CUSTOM_MODEL_ROLES, resolveProtocol } from "@contracts/customModel";
 import { SettingRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 
@@ -138,7 +139,14 @@ function readLegacyAlias(m: { alias?: unknown }):
  *  default selection. If alias.sonnet is also set it takes precedence for
  *  that tier (it's the more specific value). */
 function migrateMeta(meta: CustomModelMeta): CustomModelMeta {
-  if (meta.roles) return meta; // already new shape
+  // Backfill the protocol field for records persisted before it existed.
+  // Every pre-existing config spoke Anthropic, so "anthropic" is the safe
+  // default and keeps old configs behaving exactly as before.
+  const withProtocol: CustomModelMeta = meta.protocol
+    ? meta
+    : { ...meta, protocol: "anthropic" };
+
+  if (withProtocol.roles) return withProtocol; // already new shape
 
   const legacyModels = readLegacyModels(meta as unknown as { models?: unknown; model?: unknown });
   const legacyAlias = readLegacyAlias(meta as unknown as { alias?: unknown });
@@ -149,7 +157,7 @@ function migrateMeta(meta: CustomModelMeta): CustomModelMeta {
   else if (legacyModels.length > 0) roles.sonnet = { requestModel: legacyModels[0] };
   if (legacyAlias?.opus) roles.opus = { requestModel: legacyAlias.opus };
 
-  const { ...rest } = meta;
+  const { ...rest } = withProtocol;
   // Drop the legacy fields if present (they'll be re-stripped on next write).
   const cleaned = rest as Partial<CustomModelMeta> as Record<string, unknown>;
   delete cleaned.models;
@@ -211,6 +219,7 @@ export const CustomModelStore = {
         name: m.name,
         baseUrl: m.baseUrl,
         authMode: resolveAuthMode(m.authMode),
+        protocol: resolveProtocol(m.protocol),
         authTokenMasked: maskToken(cleartext),
         roles: m.roles ?? {},
         disableNonEssentialTraffic: m.disableNonEssentialTraffic ?? true,
@@ -238,6 +247,7 @@ export const CustomModelStore = {
         name: input.name,
         baseUrl: input.baseUrl,
         authMode: resolveAuthMode(input.authMode),
+        protocol: resolveProtocol(input.protocol),
         roles: input.roles,
         disableNonEssentialTraffic: disableTraffic,
         timeoutMs: input.timeoutMs,
@@ -251,6 +261,7 @@ export const CustomModelStore = {
         name: input.name,
         baseUrl: input.baseUrl,
         authMode: resolveAuthMode(input.authMode),
+        protocol: resolveProtocol(input.protocol),
         roles: input.roles,
         disableNonEssentialTraffic: disableTraffic,
         timeoutMs: input.timeoutMs,
@@ -308,6 +319,7 @@ export const CustomModelStore = {
       baseUrl: meta.baseUrl,
       authToken,
       authMode: resolveAuthMode(meta.authMode),
+      protocol: resolveProtocol(meta.protocol),
       selectedRole: resolvedRole,
       roles,
       disableNonEssentialTraffic: meta.disableNonEssentialTraffic ?? true,

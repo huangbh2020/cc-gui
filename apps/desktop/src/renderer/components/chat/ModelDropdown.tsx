@@ -183,6 +183,9 @@ export function ModelDropdown() {
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <span className="truncate font-medium">{m.name}</span>
+                      {m.protocol === "openai" && (
+                        <span className="shrink-0 rounded bg-surface-muted px-1 text-[9px] text-content-subtle">OpenAI</span>
+                      )}
                       {cfgActive && <IconCheck size={12} className="shrink-0" />}
                     </span>
                     <span className="ml-2 flex shrink-0 items-center gap-1">

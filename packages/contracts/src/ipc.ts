@@ -457,6 +457,8 @@ const RoleBindingsSchema = z.object({
 
 const AuthModeSchema = z.enum(["auth_token", "api_key"]);
 
+const ProtocolSchema = z.enum(["anthropic", "openai"]);
+
 /** Save (create or update) a custom-model config. On update, an omitted
  *  `authToken` keeps the existing stored token; on create, `authToken` is
  *  required. At least one role must have a `requestModel` (enforced in the
@@ -466,6 +468,7 @@ export const SaveCustomModelSchema = z.object({
   name: z.string().min(1),
   baseUrl: z.string().min(1),
   authMode: AuthModeSchema.optional(),
+  protocol: ProtocolSchema.optional(),
   authToken: z.string().optional(),
   roles: RoleBindingsSchema,
   disableNonEssentialTraffic: z.boolean().optional(),
@@ -482,6 +485,7 @@ export const TestCustomModelSchema = z.object({
   baseUrl: z.string().min(1),
   authToken: z.string().min(1),
   authMode: AuthModeSchema.optional(),
+  protocol: ProtocolSchema.optional(),
   /** The single requestModel to probe in this request. */
   model: z.string().min(1),
   /** Whether to declare 1M context (sets betas) — mirrors the role's toggle. */

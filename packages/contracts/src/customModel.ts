@@ -52,6 +52,25 @@
 /** How the credential is presented to the upstream. */
 export type AuthMode = "auth_token" | "api_key";
 
+/** The wire protocol an endpoint speaks. `anthropic` (the default) means the
+ *  endpoint implements Anthropic's `/v1/messages` — the binary talks to it
+ *  directly via `ANTHROPIC_BASE_URL`. `openai` means the endpoint speaks
+ *  OpenAI's `/v1/chat/completions`; the host runs an in-process bridge that
+ *  impersonates an Anthropic endpoint and translates both directions, so the
+ *  binary still thinks it's talking to Anthropic. */
+export type Protocol = "anthropic" | "openai";
+
+/** Default protocol when a stored config predates the `protocol` field, or when
+ *  the user creates one without choosing. `anthropic` keeps every existing
+ *  config behaving exactly as before. */
+const DEFAULT_PROTOCOL: Protocol = "anthropic";
+
+/** Normalize a possibly-undefined protocol to a concrete value. Mirrors
+ *  {@link resolveAuthMode}'s pattern so old records upgrade transparently. */
+export function resolveProtocol(p: Protocol | undefined): Protocol {
+  return p ?? DEFAULT_PROTOCOL;
+}
+
 /** The five Claude Code tiers a custom endpoint can bind. The first four are
  *  real model aliases; subagent is a usage context (the Task-tool model). */
 export type CustomModelRoleKey = "haiku" | "sonnet" | "opus" | "fable" | "subagent";
@@ -107,9 +126,12 @@ export interface ApiConfig {
   /** Cleartext credential. */
   authToken: string;
   authMode: AuthMode;
+  /** Wire protocol of the upstream endpoint. `anthropic` (default) talks to it
+   *  directly; `openai` activates the in-process protocol bridge. */
+  protocol: Protocol;
   /** The role the session has selected for this turn (one of the bindable
-   *  keys). Its `requestModel` becomes ANTHROPIC_MODEL; its `supports1m`
-   *  decides whether betas are sent. Falls back to the first bound role. */
+   * keys). Its `requestModel` becomes ANTHROPIC_MODEL; its `supports1m`
+   * decides whether betas are sent. Falls back to the first bound role. */
   selectedRole: CustomModelRoleKey;
   /** Per-tier bindings. Every tier with a `requestModel` is injected as its
    *  matching env var so background requests also route correctly. */
@@ -137,6 +159,7 @@ export interface CustomModel {
   /** Cleartext token. Only exists in main memory; persisted encrypted. */
   authToken: string;
   authMode: AuthMode;
+  protocol: Protocol;
   roles: RoleBindings;
   disableNonEssentialTraffic: boolean;
   timeoutMs?: number;
@@ -152,6 +175,8 @@ export interface CustomModelPublic {
   name: string;
   baseUrl: string;
   authMode: AuthMode;
+  /** Wire protocol (resolved to a concrete value, never undefined). */
+  protocol: Protocol;
   /** Masked token, e.g. "sk-***ab12". For display only. */
   authTokenMasked: string;
   roles: RoleBindings;
@@ -168,6 +193,8 @@ export interface CustomModelMeta {
   name: string;
   baseUrl: string;
   authMode: AuthMode;
+  /** Wire protocol. Absent on legacy records; resolve via {@link resolveProtocol}. */
+  protocol?: Protocol;
   roles: RoleBindings;
   disableNonEssentialTraffic: boolean;
   timeoutMs?: number;
@@ -183,6 +210,8 @@ export interface CustomModelInput {
   name: string;
   baseUrl: string;
   authMode?: AuthMode;
+  /** Wire protocol. Optional for backward compat; defaults to "anthropic". */
+  protocol?: Protocol;
   /** Cleartext. Required on create; optional on update (omit = keep existing). */
   authToken?: string;
   roles: RoleBindings;

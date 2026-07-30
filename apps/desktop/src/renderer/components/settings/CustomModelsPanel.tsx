@@ -11,6 +11,7 @@ import {
 import type {
   CustomModelPublic,
   AuthMode,
+  Protocol,
   RoleBindings,
   RoleBinding,
   CustomModelRoleKey,
@@ -60,6 +61,9 @@ interface FormState {
   name: string;
   baseUrl: string;
   authMode: AuthMode;
+  /** Wire protocol of the endpoint. `anthropic` (default) talks to the
+   *  endpoint directly; `openai` activates the in-process protocol bridge. */
+  protocol: Protocol;
   authToken: string;
   /** Per-tier bindings. Always all five keys present in the form (some may be
    *  empty/undefined) so the table renders every row. */
@@ -77,6 +81,7 @@ function emptyForm(): FormState {
     name: "",
     baseUrl: "",
     authMode: "auth_token",
+    protocol: "anthropic",
     authToken: "",
     roles,
     testRole: "sonnet",
@@ -92,6 +97,7 @@ function formFromConfig(m: CustomModelPublic): FormState {
     name: m.name,
     baseUrl: m.baseUrl,
     authMode: m.authMode,
+    protocol: m.protocol,
     authToken: "", // blank on edit — omit on save means "keep existing"
     roles: { ...m.roles },
     testRole:
@@ -187,6 +193,7 @@ export function CustomModelsPanel() {
       baseUrl: form.baseUrl.trim(),
       authToken: form.authToken.trim(),
       authMode: form.authMode,
+      protocol: form.protocol,
       model,
       supports1m: binding?.supports1m ?? false,
       disableNonEssentialTraffic: form.disableNonEssentialTraffic,
@@ -271,6 +278,7 @@ export function CustomModelsPanel() {
         name: form.name.trim(),
         baseUrl: form.baseUrl.trim(),
         authMode: form.authMode,
+        protocol: form.protocol,
         // Omit authToken on edit when blank → main keeps the stored token.
         authToken: form.authToken.trim() || undefined,
         roles,
@@ -505,8 +513,24 @@ function ProviderForm({
   onDelete?: () => void;
 }) {
   const isEdit = !!form.id;
+  const isOpenAi = form.protocol === "openai";
   return (
     <div className="space-y-2.5">
+      <Field label="API 格式">
+        <select
+          value={form.protocol}
+          onChange={(e) => update("protocol", e.target.value as Protocol)}
+          className={inputCls}
+        >
+          <option value="anthropic">Anthropic(原生 /v1/messages)</option>
+          <option value="openai">OpenAI(/v1/chat/completions,经本地协议翻译)</option>
+        </select>
+      </Field>
+      {isOpenAi && (
+        <p className="text-[10px] leading-relaxed text-content-subtle">
+          OpenAI 格式端点(OpenAI 官方 / Azure / vLLM / Ollama / one-api 等)会启用内置协议翻译层:Claude 仍按 Anthropic 协议运行,应用在本地把请求/响应实时翻译成 OpenAI 格式转发。建议把所有角色填成同一个模型,后台请求(Haiku/Subagent 等)也会用到。
+        </p>
+      )}
       <Field label="名称">
         <input
           type="text"
@@ -522,7 +546,7 @@ function ProviderForm({
           type="text"
           value={form.baseUrl}
           onChange={(e) => update("baseUrl", e.target.value)}
-          placeholder="https://api.deepseek.com/anthropic"
+          placeholder={isOpenAi ? "https://api.openai.com/v1" : "https://api.deepseek.com/anthropic"}
           className={inputCls}
           spellCheck={false}
         />
@@ -559,9 +583,30 @@ function ProviderForm({
       {/* Role-binding table — the core of the config. */}
       <div>
         <div className="mb-1 flex items-baseline justify-between">
-          <span className="text-[0.7857em] font-medium text-content-muted">角色绑定</span>
-          <span className="text-[0.7143em] text-content-subtle">
-            点左侧圆点选择「测试连接」用哪个角色
+          <span className="text-[11px] font-medium text-content-muted">角色绑定</span>
+          <span className="flex items-center gap-2">
+            {isOpenAi && (
+              <button
+                type="button"
+                onClick={() => {
+                  // Copy the test-role's model to every role — OpenAI endpoints
+                  // usually expose a single model, so binding all five tiers
+                  // to it keeps background requests (Haiku/Subagent) routed too.
+                  const src = form.roles[form.testRole]?.requestModel?.trim();
+                  if (!src) return;
+                  const filled: RoleBindings = {};
+                  for (const r of CUSTOM_MODEL_ROLES) filled[r] = { requestModel: src };
+                  update("roles", filled);
+                }}
+                className="text-[10px] text-accent hover:text-accent/80"
+                title="把「测试角色」的模型填到所有角色(OpenAI 通常只有一个模型)"
+              >
+                一键填充主模型
+              </button>
+            )}
+            <span className="text-[10px] text-content-subtle">
+              点左侧圆点选择「测试连接」用哪个角色
+            </span>
           </span>
         </div>
         <p className="mb-1.5 text-[0.7143em] leading-relaxed text-content-subtle">

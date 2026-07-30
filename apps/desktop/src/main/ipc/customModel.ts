@@ -56,11 +56,19 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
       baseUrl: input.baseUrl,
       authToken: input.authToken,
       authMode: input.authMode ?? "auth_token",
+      protocol: input.protocol ?? "anthropic",
       selectedRole: "sonnet",
       roles: { sonnet: { requestModel: input.model, supports1m: input.supports1m ?? false } },
       disableNonEssentialTraffic: input.disableNonEssentialTraffic ?? true,
       timeoutMs: input.timeoutMs,
     };
+    // OpenAI-format endpoints are probed directly via a minimal chat-completions
+    // request, NOT through the Claude binary. The bridge's correctness is
+    // verified separately; the probe only needs to confirm reachability + auth
+    // + that the named model exists on the endpoint.
+    if (cfg.protocol === "openai") {
+      return probeOpenAiEndpoint(cfg);
+    }
     return probeEndpoint(cfg);
   });
 }
@@ -146,6 +154,68 @@ async function probeEndpoint(
     if (/503|no available channel|无可用渠道/i.test(msg)) {
       return { ok: false, error: `网关无此模型渠道 (503):确认「模型名」与「别名映射」是否匹配该网关` };
     }
+    if (ac.signal.aborted || /abort/i.test(msg)) {
+      return { ok: false, error: `连接超时(${TEST_TIMEOUT_MS / 1000}s),请检查 Base URL 或网络` };
+    }
+    return { ok: false, error: msg };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Build the upstream chat-completions URL for an OpenAI-format endpoint,
+ *  normalizing the path (mirrors the bridge's buildUpstreamUrl). */
+function buildOpenAiUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  if (/\/v1\/chat\/completions\/?$/i.test(trimmed)) return trimmed.replace(/\/+$/, "");
+  if (/\/v1\/?$/i.test(trimmed)) return `${trimmed.replace(/\/+$/, "")}/chat/completions`;
+  return `${trimmed}/v1/chat/completions`;
+}
+
+/** Probe an OpenAI-format endpoint directly with a 1-token chat completion.
+ *  Confirms DNS reachability, auth, and that the named model exists — without
+ *  spinning up the Claude binary or the full bridge. A 200 means the saved
+ *  config will work end-to-end (the bridge uses the exact same URL + auth). */
+async function probeOpenAiEndpoint(
+  cfg: ApiConfig,
+): Promise<{ ok: boolean; detail?: string; error?: string }> {
+  const model = resolveActiveModel(cfg);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TEST_TIMEOUT_MS);
+  const url = buildOpenAiUrl(cfg.baseUrl);
+  const isAzure = /azure\.com/i.test(cfg.baseUrl);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: isAzure ? "" : `Bearer ${cfg.authToken}`,
+  };
+  if (isAzure) {
+    headers["api-key"] = cfg.authToken;
+    delete headers.Authorization;
+  }
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 1,
+      }),
+      signal: ac.signal,
+    });
+    if (res.ok) {
+      return { ok: true, detail: `connected (${model})` };
+    }
+    const errText = await res.text().catch(() => "");
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: `认证失败 (${res.status}) — 检查 Token/Key 是否正确` };
+    }
+    if (res.status === 404) {
+      return { ok: false, error: `端点或模型不存在 (404) — 检查 Base URL 路径与模型名「${model}」` };
+    }
+    return { ok: false, error: `HTTP ${res.status}: ${errText.slice(0, 200) || res.statusText}` };
+  } catch (err) {
+    const msg = (err as Error).message || String(err);
     if (ac.signal.aborted || /abort/i.test(msg)) {
       return { ok: false, error: `连接超时(${TEST_TIMEOUT_MS / 1000}s),请检查 Base URL 或网络` };
     }
