@@ -33,6 +33,10 @@ jobs:
             platform: win
 
     runs-on: ${{ matrix.os }}
+    # The default GITHUB_TOKEN is read-only; grant write on contents so
+    # softprops/action-gh-release can create the release + upload assets.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -89,10 +93,12 @@ jobs:
           # monaco workers) peaks above Node's default 2GB heap on CI.
           # Raise it to 4GB so electron-vite build doesn't OOM.
           NODE_OPTIONS: --max-old-space-size=4096
-          # electron-builder reads GH_TOKEN to look up existing releases when
-          # computing the auto-update channel (optional during build, but set
-          # it so publish metadata is generated correctly).
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prevent electron-builder from publishing itself - the default
+          # GITHUB_TOKEN lacks permission to create releases (403), and we
+          # upload artifacts separately via softprops/action-gh-release below.
+          # Setting PUBLISH=never makes electron-builder build only (it still
+          # generates latest*.yml locally for the upload step to pick up).
+          PUBLISH: never
 
       # Upload the artifacts to the GitHub Release that the tag created.
       # latest*.yml are critical - electron-updater fetches them to discover
