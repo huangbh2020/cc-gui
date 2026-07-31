@@ -76,9 +76,13 @@ jobs:
       # node-pty is a native addon - rebuild it for the runner's Electron ABI
       # before packaging so the .node binary matches.
       - name: Rebuild native modules
+        shell: bash
         run: pnpm --filter @my-claude-gui/desktop rebuild:native
 
       - name: Build & package
+        # Use bash on Windows too (the runner ships Git Bash) so the env vars
+        # and any shell syntax in the package script work uniformly.
+        shell: bash
         run: pnpm --filter @my-claude-gui/desktop package
         env:
           # The renderer build (shiki's ~100 language grammar chunks +
