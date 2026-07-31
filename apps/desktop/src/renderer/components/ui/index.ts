@@ -24,6 +24,9 @@ export type {
   DialogTriggerProps,
 } from "./dialog.js";
 
+export { ConfirmDialog } from "./confirm-dialog.js";
+export type { ConfirmDialogProps } from "./confirm-dialog.js";
+
 export { Select } from "./select.js";
 export type {
   SelectRootProps,

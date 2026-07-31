@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
+import { initFoucGuard } from "./lib/theme.js";
 import "./styles.css";
 // KaTeX typography (fonts + layout) for math rendered by rehype-katex in
 // Markdown.tsx. Without this, KaTeX emits correct HTML but no styling, so
@@ -14,6 +15,11 @@ import "katex/dist/katex.min.css";
 // default (SF Mono / Consolas / Menlo). Bundling one variable woff2 per subset
 // keeps the cost small (~200KB total). See tailwind.config.js + TerminalView.
 import "@fontsource-variable/jetbrains-mono";
+
+// Apply the initial theme class BEFORE React mounts so the first painted
+// frame matches the OS theme (FOUC guard). Must run synchronously here, ahead
+// of createRoot, and lives in this external module so it passes prod CSP.
+initFoucGuard();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

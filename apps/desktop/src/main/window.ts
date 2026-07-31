@@ -2,6 +2,7 @@ import { BrowserWindow, shell } from "electron";
 import { join } from "node:path";
 import { is } from "@main/utils.js";
 import { getEffectiveTheme } from "@main/lib/theme.js";
+import { log } from "@main/lib/logger.js";
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -80,16 +81,26 @@ export function createMainWindow(): BrowserWindow {
   mainWindow.on("ready-to-show", () => mainWindow?.show());
 
   // Forward renderer console messages to stderr so we can debug blank screens
-  // without watching DevTools.
+  // without watching DevTools, AND persist them to main.log so they survive
+  // even when launched from the Start Menu (no stderr sink). The renderer's
+  // own errors never go through the main-process `log`, so without this a
+  // blank-screen bug leaves no trace on disk after the app quits.
   mainWindow.webContents.on("console-message", (_e, level, message, line, sourceId) => {
     const tag = ["LOG", "WARN", "ERROR"][level] ?? "LOG";
-    process.stderr.write(`[renderer:${tag}] ${message} (${sourceId}:${line})\n`);
+    const line2 = `[renderer:${tag}] ${message} (${sourceId}:${line})`;
+    process.stderr.write(`${line2}\n`);
+    if (tag === "ERROR") log.error(line2);
+    else if (tag === "WARN") log.warn(line2);
   });
   mainWindow.webContents.on("render-process-gone", (_e, details) => {
-    process.stderr.write(`[renderer:GONE] ${JSON.stringify(details)}\n`);
+    const line = `[renderer:GONE] ${JSON.stringify(details)}`;
+    process.stderr.write(`${line}\n`);
+    log.error(line);
   });
   mainWindow.webContents.on("did-fail-load", (_e, code, desc, url) => {
-    process.stderr.write(`[renderer:FAIL_LOAD] ${code} ${desc} ${url}\n`);
+    const line = `[renderer:FAIL_LOAD] ${code} ${desc} ${url}`;
+    process.stderr.write(`${line}\n`);
+    log.error(line);
   });
 
   // Open external links in the system browser, never inside the app.

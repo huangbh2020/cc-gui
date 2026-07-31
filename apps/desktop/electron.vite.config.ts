@@ -49,11 +49,12 @@ export default defineConfig({
   renderer: {
     root: "src/renderer",
     build: {
-      // `name` is required by Vite when a lib entry's inferred output format
-      // is umd/iife. The renderer is loaded via loadFile (not a <script> with
-      // a global), so the name is unused at runtime - it just satisfies the
-      // build resolver.
-      lib: { entry: "index.html", name: "renderer" },
+      // Standard app mode (NOT lib mode): the renderer is loaded via
+      // `window.loadFile()` and runs as a normal web page, so Vite must emit
+      // the entry as a hashed ESM asset (`assets/index-xxxx.js`) referenced by
+      // an external <script type="module">. lib mode would instead produce a
+      // UMD bundle (`desktop.umd.cjs`) that <script type="module"> can't load
+      // under file:// (wrong MIME: text/plain) and that violates the prod CSP.
       rollupOptions: {
         input: { index: resolve("src/renderer/index.html") },
       },

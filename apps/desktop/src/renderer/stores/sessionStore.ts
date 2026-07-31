@@ -1905,6 +1905,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   addProjectFromFolder: async () => {
     const { path } = await api.pickFolder();
     if (!path) return null;
+
+    // Normalize the chosen path so the same folder isn't imported twice under
+    // different surface forms (drive-letter case, forward vs. back slashes,
+    // trailing separator). Comparison is case-insensitive on Windows/macOS
+    // where the filesystem is case-insensitive; on Linux paths stay as-is
+    // (toLowerCase on a Linux path would wrongly merge distinct folders, but
+    // it's harmless there because the only difference is the slashes).
+    const normalize = (p: string) =>
+      p
+        .replace(/\\/g, "/")
+        .replace(/\/+$/, "")
+        .toLowerCase();
+    const normalized = normalize(path);
+
+    // An existing project already points at this folder. Don't create a
+    // duplicate - just activate it (restoring if it was archived) so the user
+    // lands on the folder they picked without a second entry.
+    const existing = get().projects.find((p) => normalize(p.path) === normalized);
+    if (existing) {
+      if (existing.archived) {
+        await get().archiveProject(existing.id, false);
+      }
+      await get().selectProject(existing.id);
+      return existing.id;
+    }
+
     const name = path.replace(/\\/g, "/").split("/").pop() ?? path;
     const { project } = await api.project.create({ name, path });
     set((s) => ({

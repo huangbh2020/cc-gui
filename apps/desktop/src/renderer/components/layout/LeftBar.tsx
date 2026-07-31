@@ -15,8 +15,9 @@ import {
   IconPencil,
   IconCopy,
 } from "@renderer/lib/icons.js";
-import { Button, Dialog, Input } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, Dialog, Input } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
+import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Project, Session } from "@contracts/session";
 
@@ -151,6 +152,17 @@ export function LeftBar() {
   // ── Rename dialog state.
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
 
+  // ── Delete confirmation dialog state. A single controlled ConfirmDialog
+  // replaces the three native confirm() calls (active project, archived
+  // project, archived session). The `kind` discriminator carries enough
+  // context to render the right title/description and dispatch the right
+  // destructive action on confirm.
+  const [confirmDelete, setConfirmDelete] = useState<
+    | { kind: "project"; id: string; name: string }
+    | { kind: "session"; id: string; title: string }
+    | null
+  >(null);
+
   // Split into active vs archived. Active projects show in the tree;
   // archived projects (whole-project archive) show as their own rows in
   // the archived bin, while archived SESSIONS under still-active projects
@@ -208,9 +220,7 @@ export function LeftBar() {
                 onLoadMore={() => void loadMoreSessions(p.id)}
                 onSelectSession={(sid) => void openTab(sid)}
                 onDelete={() => {
-                  if (confirm(`删除项目「${p.name}」及其所有线程?此操作不可恢复。`)) {
-                    void deleteProject(p.id);
-                  }
+                  setConfirmDelete({ kind: "project", id: p.id, name: p.name });
                 }}
                 onArchiveSession={(sid) => void archiveSession(sid, true)}
                 onDeleteSession={(s) => void deleteSession(s.id)}
@@ -251,9 +261,7 @@ export function LeftBar() {
                   title={p.name}
                   onRestore={() => void archiveProject(p.id, false)}
                   onDelete={() => {
-                    if (confirm(`彻底删除项目「${p.name}」及其所有线程?`)) {
-                      void deleteProject(p.id);
-                    }
+                    setConfirmDelete({ kind: "project", id: p.id, name: p.name });
                   }}
                 />
               ))}
@@ -272,9 +280,7 @@ export function LeftBar() {
                         title={s.title}
                         onRestore={() => void archiveSession(s.id, false)}
                         onDelete={() => {
-                          if (confirm(`彻底删除线程「${s.title}」?`)) {
-                            void deleteSession(s.id);
-                          }
+                          setConfirmDelete({ kind: "session", id: s.id, title: s.title });
                         }}
                       />
                     ))}
@@ -324,6 +330,30 @@ export function LeftBar() {
         onSubmit={async (id, title) => {
           await renameSession(id, title);
           setRenaming(null);
+        }}
+      />
+
+      {/* Delete confirmation dialog (shared by project / archived project /
+          archived session destructive actions). Replaces the native
+          confirm() prompts that previously blocked the renderer. */}
+      <ConfirmDialog
+        open={confirmDelete != null}
+        danger
+        title={confirmDelete?.kind === "project" ? "删除项目" : "删除线程"}
+        description={
+          confirmDelete?.kind === "project"
+            ? <>确认删除项目「{confirmDelete.name}」及其所有线程?此操作不可恢复。</>
+            : <>确认彻底删除线程「{confirmDelete?.title}」?此操作不可恢复。</>
+        }
+        confirmText="删除"
+        onOpenChange={(open) => { if (!open) setConfirmDelete(null); }}
+        onConfirm={() => {
+          if (!confirmDelete) return;
+          if (confirmDelete.kind === "project") {
+            void deleteProject(confirmDelete.id);
+          } else {
+            void deleteSession(confirmDelete.id);
+          }
         }}
       />
     </div>
@@ -470,6 +500,14 @@ function SessionRow({
   onContext: (x: number, y: number) => void;
 }) {
   const [pendingConfirm, setPendingConfirm] = useState<null | "archive" | "delete">(null);
+  // Whether the pointer is over this row. We swap the right-aligned payload
+  // between the relative-time label (default) and the archive/delete action
+  // buttons (on hover), so the time can hug the right edge without the
+  // always-reserved action buttons leaving a gap.
+  const [hovered, setHovered] = useState(false);
+  const idle = pendingConfirm === null && !isRunning;
+  const showTime = idle && !hovered;
+  const showActions = idle && hovered;
 
   const handleRowClick = () => {
     setPendingConfirm(null);
@@ -480,6 +518,8 @@ function SessionRow({
     <li
       ref={(el) => registerNode(session.id, el)}
       onClick={handleRowClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       onContextMenu={(e) => {
         // Suppress the menu while an inline confirm is mid-flight, otherwise
         // right-clicking the confirm buttons would lose the pending state.
@@ -493,10 +533,23 @@ function SessionRow({
           ? "bg-surface-hover text-content shadow-sm ring-1 ring-inset ring-accent/35"
           : "text-content-muted hover:bg-surface-muted/50",
       )}
-      title={session.title}
+      title={`${session.title}\n${formatFullTime(session.updatedAt)}`}
     >
       <IconMessage size={14} className="shrink-0" />
       <span className="min-w-0 flex-1 truncate">{session.title}</span>
+
+      {/* Relative time of the last activity (updatedAt), docked to the right
+          edge. The row swaps between two right-aligned payloads: the time
+          label by default, and the archive/delete action buttons on hover.
+          While an inline confirm is pending or a turn is running, neither the
+          time nor the normal actions show (the confirm buttons / spinner take
+          their place). The full timestamp stays available via the hover
+          tooltip on the <li>. */}
+      {showTime && (
+        <span className="shrink-0 text-content-subtle/70 [font-size:var(--rp-fs-sm)]">
+          {formatRelativeTime(session.updatedAt)}
+        </span>
+      )}
 
       {/* Inline confirm — shown after the first click on archive or delete.
           Two icons replace the normal single-action button: a confirm check
@@ -539,13 +592,15 @@ function SessionRow({
         </>
       )}
 
-      {/* Normal action buttons — hidden on running threads (no hover actions
-          while the turn is in flight, keeping the row clean). */}
-      {!isRunning && pendingConfirm === null && (
+      {/* Normal action buttons - only mounted on hover (and only when the row
+          is idle), so the relative-time label can sit flush against the right
+          edge instead of sharing space with hidden-but-reserved buttons. */}
+      {showActions && (
         <>
           <HoverIconButton
             onClick={() => { setPendingConfirm("archive"); }}
             title="归档"
+            className="opacity-100"
           >
             <IconArchive size={13} />
           </HoverIconButton>
@@ -553,6 +608,7 @@ function SessionRow({
             onClick={() => { setPendingConfirm("delete"); }}
             title="删除"
             danger
+            className="opacity-100"
           >
             <IconTrash size={13} />
           </HoverIconButton>
@@ -573,11 +629,12 @@ function SessionRow({
 /* ── Hover-revealed inline icon button (archive / delete) ── */
 
 function HoverIconButton({
-  onClick, title, danger, children,
+  onClick, title, danger, className, children,
 }: {
   onClick: () => void;
   title: string;
   danger?: boolean;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -587,6 +644,7 @@ function HoverIconButton({
         "flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors",
         "hover:bg-surface-hover group-hover:opacity-100",
         danger ? "hover:text-danger" : "hover:text-content",
+        className,
       )}
       title={title}
     >

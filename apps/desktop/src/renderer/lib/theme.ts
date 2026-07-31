@@ -4,13 +4,38 @@ import type { ThemeName, EffectiveTheme } from "@contracts/theme";
 
 /**
  * Toggle the `.dark` class on <html>, which (with `darkMode: 'class'` in the
- * Tailwind config) is what actually re-themes the UI. Exposed for the inline
- * FOUC script in index.html to call before React mounts.
+ * Tailwind config) is what actually re-themes the UI. Exposed for the FOUC
+ * guard below and for useTheme() to keep the class in sync.
  */
 export function applyThemeClass(effective: EffectiveTheme): void {
   const root = document.documentElement;
   if (effective === "dark") root.classList.add("dark");
   else root.classList.remove("dark");
+}
+
+/**
+ * FOUC guard: apply the initial `.dark` class to <html> BEFORE React mounts,
+ * so the first painted frame matches the OS theme preference. Call this once
+ * at the top of main.tsx (synchronously, before createRoot).
+ *
+ * We can't read the persisted SQLite preference here (preload/IPC aren't ready
+ * yet), so we fall back to the OS `prefers-color-scheme` media query - which
+ * matches the default "system" theme. The main process has already set
+ * `nativeTheme.themeSource` from the persisted preference during `whenReady`,
+ * so under Electron this media query reflects the *resolved* theme, not just
+ * the raw OS setting. useTheme() corrects the class the moment it loads the
+ * real preference.
+ *
+ * Lives in an external ESM module (not an inline <script>) so it passes the
+ * production CSP `script-src 'self'`.
+ */
+export function initFoucGuard(): void {
+  try {
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    applyThemeClass(prefersDark ? "dark" : "light");
+  } catch {
+    // matchMedia unavailable - leave default (light); useTheme() will fix up.
+  }
 }
 
 export interface ThemeState {
