@@ -88,12 +88,27 @@ jobs:
       # version from there to name the installers + populate latest.yml, so the
       # artifacts track the pushed tag instead of the hardcoded 0.1.0. Only CI
       # does this; local `pnpm package` keeps the dev version in package.json.
+      #
+      # The version is passed via env (VERSION) rather than string-interpolated
+      # into the JS source, so a malformed tag can't inject code. Paths use
+      # path.resolve against cwd because require() in `node -e` resolves
+      # relative paths unreliably across Node versions/platforms (it failed
+      # with MODULE_NOT_FOUND for './apps/desktop/package.json' on windows-2022).
       - name: Set version from tag
         shell: bash
+        env:
+          VERSION: "${{ github.ref_name }}"
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          node -e "const p=require('./apps/desktop/package.json');p.version='$VERSION';require('fs').writeFileSync('./apps/desktop/package.json',JSON.stringify(p,null,2)+'\n')"
-          echo "Release version: $VERSION"
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const v = process.env.VERSION.replace(/^v/, "");
+            const file = path.resolve("apps/desktop/package.json");
+            const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+            pkg.version = v;
+            fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
+            console.log("Release version: " + v);
+          '
 
       - name: Build & package
         # Use bash on Windows too (the runner ships Git Bash) so the env vars
