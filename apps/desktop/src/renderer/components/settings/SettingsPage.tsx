@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ThreePaneLayout } from "@renderer/components/layout/ThreePaneLayout.js";
-import { ClaudePathPanel } from "./ClaudePathPanel.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
 import { GitPanel } from "./GitPanel.js";
@@ -14,24 +13,22 @@ import { AboutPanel } from "./AboutPanel.js";
  *
  * Rendered as a sibling view to the workspace (toggled by `settingsOpen` in
  * the session store). Reuses the same ThreePaneLayout shell as the main
- * workspace — the only difference is the right sidebar is collapsed and the
+ * workspace - the only difference is the right sidebar is collapsed and the
  * left sidebar hosts the settings navigation instead of the project tree.
  *
  * Available sections:
- *  - Claude CLI 路径 (ClaudePathPanel)
- *  - 模型配置        (CustomModelsPanel - two-column: provider list + config form)
- *  - 外观           (AppearancePanel - flat one-row-per-feature list)
- *  - Git            (GitPanel)
- *  - 终端           (TerminalPanel - shell override + per-project commands)
- *  - 关于           (AboutPanel - version / license / repo links)
+ *  - 模型配置 (CustomModelsPanel - two-column: provider list + config form)
+ *  - 外观    (AppearancePanel - flat one-row-per-feature list)
+ *  - Git     (GitPanel)
+ *  - 终端    (TerminalPanel - shell override + per-project commands)
+ *  - 关于    (AboutPanel - version / license / repo links)
  *
  * (“通用” section temporarily hidden - not yet implemented.)
  *
- * Panels are conditionally rendered (mount/unmount on nav switch) rather than
- * kept alive — `ClaudePathPanel` is designed to reload its value on mount, so
- * fresh-mount per nav switch is the intended pattern.
+ * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
+ * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "claude-path" | "custom-models" | "appearance" | "git" | "terminal" | "about";
+type SectionId = "general" | "custom-models" | "appearance" | "git" | "terminal" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -40,7 +37,6 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   // { id: "general", label: "通用" }, // 暂时屏蔽:通用设置尚未实现,日后恢复
-  { id: "claude-path", label: "Claude CLI 路径" },
   { id: "custom-models", label: "模型配置" },
   { id: "appearance", label: "外观" },
   { id: "git", label: "Git" },
@@ -56,7 +52,7 @@ export function SettingsPage() {
   // value). Without this the settings sidebar was a hardcoded 280px while the
   // titlebar strip tracked the user's dragged width - they'd drift apart.
   const leftWidth = useSessionStore((s) => s.leftWidth);
-  const [active, setActive] = useState<SectionId>("claude-path");
+  const [active, setActive] = useState<SectionId>("custom-models");
 
   // Esc returns to the workspace (preserves the modal's keyboard shortcut).
   useEffect(() => {
@@ -101,7 +97,6 @@ export function SettingsPage() {
           className="min-h-0 flex-1 overflow-y-auto px-6 py-5"
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
-          {active === "claude-path" && <ClaudePathPanel />}
           {active === "custom-models" && <CustomModelsPanel />}
           {active === "appearance" && <AppearancePanel />}
           {active === "git" && <GitPanel />}

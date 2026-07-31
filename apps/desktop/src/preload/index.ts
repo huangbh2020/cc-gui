@@ -179,12 +179,6 @@ const api = {
   pickFolder: (): Promise<{ path: string | null }> =>
     ipcRenderer.invoke("dialog:pickFolder"),
 
-  /** @deprecated Use provider.healthCheck() instead. Kept for SettingsModal backward compat. */
-  pickFile: (() => ipcRenderer.invoke(IPC.DIALOG_PICK_FILE)) as RpcMap["dialog.pickFile"],
-  /** @deprecated Use provider.healthCheck() instead. Kept for SettingsModal backward compat. */
-  testClaudePath: ((input: { path: string }) =>
-    ipcRenderer.invoke(IPC.CLAUDE_TEST_PATH, input)) as RpcMap["claude.testPath"],
-
   /** Probe whether the default provider is functional. */
   claudeHealthCheck: (): Promise<{
     installed: boolean;

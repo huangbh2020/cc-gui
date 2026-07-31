@@ -46,7 +46,7 @@ function ShellSection() {
   const [saved, setSaved] = useState(false);
 
   // Load the current setting on mount (panel is freshly mounted per nav
-  // switch, mirroring ClaudePathPanel's pattern).
+  // switch, so reload its value each time it's shown).
   useEffect(() => {
     setSaved(false);
     void (async () => {

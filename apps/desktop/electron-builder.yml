@@ -5,7 +5,10 @@
 appId: com.huangbh.mcode
 productName: Mcode
 copyright: MIT
-# Version is read from package.json (currently 0.1.0).
+# Version is read from apps/desktop/package.json. In CI, the release workflow
+# overwrites that field with the pushed git tag (e.g. v0.1.4 -> 0.1.4) before
+# packaging, so artifact names track the tag. Local `pnpm package` keeps the
+# dev version (0.1.0).
 
 directories:
   output: release
@@ -37,9 +40,13 @@ files:
 
 # node-pty ships a native .node addon; sql.js loads a wasm/asm.js blob at
 # runtime. Unpack them from the asar so they can be require()'d from disk.
+# The Claude Agent SDK's platform subpackages (...-win32-x64 etc.) ship a
+# native claude binary that child_process.spawn must execute - it can't be
+# loaded from inside the asar virtual fs, so unpack those subpackages too.
 asarUnpack:
   - "**/*.{node,dll}"
   - "**/sql.js/**"
+  - "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
 
 # Pin the main entry explicitly (matches package.json "main").
 extraMetadata:

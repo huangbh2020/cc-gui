@@ -15,9 +15,8 @@ import {
   SaveMessagesSchema,
   GetSettingSchema,
   SetSettingSchema,
-  TestClaudePathSchema,
 } from "@contracts/ipc";
-import type { SaveMessagesInput, TestClaudePathResult } from "@contracts/ipc";
+import type { SaveMessagesInput } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import type { UserInputAnswers } from "@contracts/provider";
 import { uid } from "@main/utils.js";
@@ -245,26 +244,6 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     if (input.permissionMode) {
       runtimeManager.setPermissionMode(input.sessionId, input.permissionMode);
     }
-  });
-
-  // ── Legacy: file picker + claude path test (kept for SettingsModal backward compat) ──
-  ipcMain.handle(IPC.DIALOG_PICK_FILE, async () => {
-    const result = await dialog.showOpenDialog({
-      properties: ["openFile"],
-      filters: [
-        { name: "Executable", extensions: ["exe", "cmd", "cjs", "bat"] },
-        { name: "All Files", extensions: ["*"] },
-      ],
-    });
-    if (result.canceled || result.filePaths.length === 0) return { path: null };
-    return { path: result.filePaths[0] };
-  });
-
-  /** @deprecated The SDK bundles its own binary; path config is no longer needed. */
-  ipcMain.handle(IPC.CLAUDE_TEST_PATH, async (_evt, raw): Promise<TestClaudePathResult> => {
-    TestClaudePathSchema.parse(raw);
-    // In SDK mode we don't test user-provided paths — the SDK manages its own binary.
-    return { ok: false, error: "Path configuration is deprecated. The Agent SDK bundles its own Claude binary." };
   });
 }
 

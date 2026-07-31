@@ -17,16 +17,6 @@ import type { ThemeName, EffectiveTheme, ThemeChangedMessage } from "./theme.js"
 export const DEFAULT_PROVIDER_ID = "claude-sdk";
 
 /**
- * Setting key under which the user's configured claude CLI path is persisted
- * (in the `settings` table). Shared between main (resolver/handler) and
- * renderer (settings modal) so the string never drifts.
- *
- * @deprecated With the Agent SDK, the SDK bundles its own binary — this
- * setting is only relevant for the legacy CLI spawn path.
- */
-export const CLAUDE_PATH_SETTING_KEY = "claudePath";
-
-/**
  * Setting key under which the user's color-scheme preference is persisted.
  * Value is one of {@link ThemeName}: "dark" | "light" | "system". Shared
  * between main (theme module + IPC handler) and renderer (settings panel +
@@ -416,24 +406,12 @@ export const SaveMessagesSchema = z.object({
  */
 export type SaveMessagesInput = { sessionId: string; messages: MessageRecord[] };
 
-/* ── Settings & claude path config ── */
+/* ── Settings ── */
 export const GetSettingSchema = z.object({ key: z.string() });
 export type GetSettingInput = z.infer<typeof GetSettingSchema>;
 
 export const SetSettingSchema = z.object({ key: z.string(), value: z.string() });
 export type SetSettingInput = z.infer<typeof SetSettingSchema>;
-
-export const TestClaudePathSchema = z.object({ path: z.string() });
-export type TestClaudePathInput = z.infer<typeof TestClaudePathSchema>;
-
-/** Result of probing a configured claude path by running `claude --version`. */
-export interface TestClaudePathResult {
-  ok: boolean;
-  /** claude's version string on success. */
-  version?: string;
-  /** Error message on failure (not found / non-zero exit / timeout). */
-  error?: string;
-}
 
 /* ── Custom model configs (user-defined Anthropic-compatible endpoints) ── */
 
@@ -1061,11 +1039,9 @@ export interface RpcMap {
   "provider.list": () => Promise<{
     providers: Array<{ id: string; displayName: string; capabilities: ProviderCapabilities }>;
   }>;
-  // Settings & claude path
+  // Settings
   "setting.get": (input: GetSettingInput) => Promise<{ value: string | null }>;
   "setting.set": (input: SetSettingInput) => Promise<void>;
-  "claude.testPath": (input: TestClaudePathInput) => Promise<TestClaudePathResult>;
-  "dialog.pickFile": () => Promise<{ path: string | null }>;
   // Custom models (user-defined Anthropic-compatible endpoints)
   "customModel.list": () => Promise<{ models: CustomModelPublic[] }>;
   "customModel.save": (input: SaveCustomModelInput) => Promise<{ models: CustomModelPublic[] }>;
@@ -1169,11 +1145,9 @@ export const IPC = {
   SESSION_SAVE_MESSAGES: "session:saveMessages",
   SESSION_UPDATE_SETTINGS: "session:updateSettings",
   PROVIDER_LIST: "provider:list",
-  // Settings & claude path config
+  // Settings
   SETTING_GET: "setting:get",
   SETTING_SET: "setting:set",
-  CLAUDE_TEST_PATH: "claude:testPath",
-  DIALOG_PICK_FILE: "dialog:pickFile",
   // Custom models (user-defined Anthropic-compatible endpoints)
   CUSTOM_MODEL_LIST: "customModel:list",
   CUSTOM_MODEL_SAVE: "customModel:save",

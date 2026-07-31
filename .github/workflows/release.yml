@@ -83,6 +83,18 @@ jobs:
         shell: bash
         run: pnpm --filter @mcode/desktop rebuild:native
 
+      # Derive the release version from the git tag (e.g. "v0.1.4" -> "0.1.4")
+      # and write it into the desktop package.json. electron-builder reads the
+      # version from there to name the installers + populate latest.yml, so the
+      # artifacts track the pushed tag instead of the hardcoded 0.1.0. Only CI
+      # does this; local `pnpm package` keeps the dev version in package.json.
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e "const p=require('./apps/desktop/package.json');p.version='$VERSION';require('fs').writeFileSync('./apps/desktop/package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "Release version: $VERSION"
+
       - name: Build & package
         # Use bash on Windows too (the runner ships Git Bash) so the env vars
         # and any shell syntax in the package script work uniformly.
