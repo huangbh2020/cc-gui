@@ -20,6 +20,7 @@ import type { AskUserQuestionItem, PermissionMode } from "@contracts/runtime";
 import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
 import { buildCustomEnv } from "./customEnv.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
+import { resolveSdkBinaryPath } from "./sdkBinaryPath.js";
 
 /** Tools that mutate files on disk — auto-approved under `acceptEdits`
  *  mode without prompting the user. Mirrors Claude Code's own grouping. */
@@ -97,6 +98,14 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // See https://github.com/anthropics/claude-agent-sdk-typescript/issues/359
       debug: process.platform === "win32" ? true : undefined,
     };
+
+    // In a packaged Electron app, the SDK resolves its bundled `claude` binary
+    // to a path INSIDE app.asar. spawn() can't execute an .exe from the asar
+    // virtual fs ("exists but failed to launch"), so we point it at the real
+    // on-disk copy under app.asar.unpacked. No-op in dev (null -> SDK resolves
+    // node_modules itself). See sdkBinaryPath.ts for the full rationale.
+    const binaryPath = resolveSdkBinaryPath();
+    if (binaryPath) options.pathToClaudeCodeExecutable = binaryPath;
 
     // Custom endpoint injection: when the host provides apiConfig, route this
     // turn to the user's Anthropic-compatible endpoint by setting the SDK env.
@@ -405,11 +414,13 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     try {
       // A quick probe: spawn a minimal query and capture the system/init message
       // to verify the SDK binary is functional.
+      const binaryPath = resolveSdkBinaryPath();
       const q = query({
         prompt: "",
         options: {
           maxTurns: 0,
           includePartialMessages: false,
+          ...(binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {}),
         },
       });
       // We just need the first system/init message to confirm the binary works.

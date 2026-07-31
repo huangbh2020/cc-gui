@@ -43,10 +43,17 @@ files:
 # The Claude Agent SDK's platform subpackages (...-win32-x64 etc.) ship a
 # native claude binary that child_process.spawn must execute - it can't be
 # loaded from inside the asar virtual fs, so unpack those subpackages too.
+#
+# node-pty's conpty.node also needs sibling .exe files (conpty/OpenConsole.exe,
+# winpty-agent.exe) discoverable on disk - those are .exe so the {node,dll}
+# glob misses them. Unpack node-pty's whole build/Release + prebuilds so every
+# native helper ships as a real file.
 asarUnpack:
   - "**/*.{node,dll}"
   - "**/sql.js/**"
   - "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+  - "**/node_modules/node-pty/build/Release/**"
+  - "**/node_modules/node-pty/prebuilds/**"
 
 # Pin the main entry explicitly (matches package.json "main").
 extraMetadata:
