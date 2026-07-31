@@ -49,7 +49,12 @@ export function createMainWindow(): BrowserWindow {
     minHeight: 640,
     show: false,
     autoHideMenuBar: true,
-    title: "Claude GUI",
+    title: "Mcode",
+    // Window/taskbar icon. In dev the build/ tree sits two levels up from
+    // out/main; in packaged builds electron-builder injects the icon from
+    // build/icon.ico/.icns into the executable itself, so this is mainly for
+    // the dev experience (otherwise the default Electron icon shows up).
+    icon: join(__dirname, "../../build/icon.png"),
     backgroundColor: bgColor(),
     // Hidden title-bar + overlay lets us render custom content (the toggle
     // button plus a draggable handle) in the title-bar row alongside the
