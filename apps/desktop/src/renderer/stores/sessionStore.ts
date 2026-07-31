@@ -369,6 +369,13 @@ export interface SessionState {
    *  `turn.rewound` for the same session. */
   turnFilesBySession: Record<string, TurnFileEntry[]>;
 
+  /** Per-session ephemeral queue of absolute file paths the user wants added
+   *  to the composer as file-reference tags (e.g. from the file-tree context
+   *  menu's "Add to chat" action). The owning ChatPane drains its session's
+   *  queue via {@link drainChatFileQueue} and converts the paths to tags.
+   *  NOT persisted - it's a one-shot hand-off channel, not session data. */
+  chatFileQueueBySession: Record<string, string[]>;
+
   /* ── IDE right-panel state ──
    *  Editor state (open files, active file, view mode, expanded tree dirs)
    *  is PER-PROJECT: switching to project B shows B's open files, and
@@ -583,6 +590,17 @@ export interface SessionState {
   rewindTurn: () => Promise<void>;
   refreshClaudeHealth: () => Promise<void>;
 
+  /** Enqueue a file path to be added to the active session's composer as a
+   *  file-reference tag. The owning ChatPane drains its queue (see
+   *  {@link drainChatFileQueue}) and converts the path to a tag. No-op if no
+   *  active session. Duplicate paths within the queue are kept; the composer
+   *  dedups by absolute path when materializing tags. */
+  enqueueChatFile: (filePath: string) => void;
+  /** Read and clear the active session's pending chat-file queue, returning
+   *  the paths so the caller can turn them into tags. Returns an empty array
+   *  if no active session or queue is empty. */
+  drainChatFileQueue: () => string[];
+
   /* ── IDE right-panel actions ── */
   /** Switch the active right-panel tab. Persists to settings. */
   setRightPanelTab: (tab: RightPanelTab) => void;
@@ -703,6 +721,8 @@ function fromRecords(records: MessageRecord[]): ChatMessage[] {
 export const EMPTY_MESSAGES: ChatMessage[] = [];
 export const EMPTY_TODOS: TodoItem[] = [];
 export const EMPTY_TURN_FILES: TurnFileEntry[] = [];
+/** Stable empty chat-file queue reference (selector must return a stable array). */
+export const EMPTY_CHAT_QUEUE: string[] = [];
 const EMPTY_CUSTOM_MODELS: CustomModelPublic[] = [];
 const EMPTY_SESSIONS: Session[] = [];
 export const EMPTY_SUBAGENTS: SubagentSnapshot[] = [];
@@ -1611,6 +1631,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   pendingApprovals: [],
   pendingPlanApprovalBySession: {},
   turnFilesBySession: {},
+  chatFileQueueBySession: {},
   // IDE right-panel. Editor state is per-project (keyed by projectId);
   // init() hydrates from the settings table. rightPanelTab / ideEditorMode
   // are global user prefs.
@@ -2104,6 +2125,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     syncConfigFromSession(set, get, sessionId);
     hydrateContextSnapshot(set, get, sessionId);
     hydrateCapsule(set, get, sessionId);
+    hydrateTurnFiles(set, get, sessionId);
     set((s) => ({
       activeSessionId: sessionId,
       // Append only if not already present; preserves the order in which
@@ -2337,6 +2359,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete pendingQuestionBySession[id];
       const turnFilesBySession = { ...s.turnFilesBySession };
       delete turnFilesBySession[id];
+      const chatFileQueueBySession = { ...s.chatFileQueueBySession };
+      delete chatFileQueueBySession[id];
       const contextSnapshotBySession = { ...s.contextSnapshotBySession };
       delete contextSnapshotBySession[id];
       const usageHistoryBySession = { ...s.usageHistoryBySession };
@@ -2364,6 +2388,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           subagentsBySession,
           pendingQuestionBySession,
           turnFilesBySession,
+          chatFileQueueBySession,
           contextSnapshotBySession,
           usageHistoryBySession,
           pendingPlanApprovalBySession,
@@ -2399,6 +2424,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         subagentsBySession,
         pendingQuestionBySession,
         turnFilesBySession,
+        chatFileQueueBySession,
         contextSnapshotBySession,
         usageHistoryBySession,
         pendingPlanApprovalBySession,
@@ -2771,6 +2797,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             : { ...s.messagesBySession, [sid]: next },
         };
       });
+      // turn.files is emitted from flushFinal(), which runs AFTER the `result`
+      // message already emitted turn.done. So the saveMessages fired at turn.done
+      // captured a snapshot WITHOUT this card. Persist again now (the card is
+      // attached to the just-closed turn's trailing assistant message) so it
+      // survives restart - otherwise reopening the session loses every turn's
+      // modified-files card. IPC ordering preserves "last write wins" since this
+      // call lands after the turn.done one.
+      const filesSnapshot = get().messagesBySession[sid];
+      if (filesSnapshot) {
+        void api.session.saveMessages({ sessionId: sid, messages: toRecords(sid, filesSnapshot) });
+      }
       return;
     }
     if (e.type === "turn.rewound") {
@@ -2789,6 +2826,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             : { ...s.messagesBySession, [sid]: next },
         };
       });
+      // Persist the rewound state: the latest turn's card was removed from the
+      // stream. Without this, reopening the session would resurrect the card
+      // from the pre-rewind snapshot saved at turn.done. main also clears the
+      // sessions.turn_files column on turn.rewound, but the per-message card
+      // lives in the messages table and needs its own save.
+      const rewoundSnapshot = get().messagesBySession[sid];
+      if (rewoundSnapshot) {
+        void api.session.saveMessages({ sessionId: sid, messages: toRecords(sid, rewoundSnapshot) });
+      }
       return;
     }
 
@@ -3351,6 +3397,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   refreshClaudeHealth: async () => {
     const health = await api.claudeHealthCheck();
     set({ claudeInstalled: health.installed });
+  },
+
+  enqueueChatFile: (filePath) => {
+    const sessionId = get().activeSessionId;
+    if (!sessionId) return;
+    set((s) => {
+      const prev = s.chatFileQueueBySession[sessionId] ?? [];
+      return {
+        chatFileQueueBySession: {
+          ...s.chatFileQueueBySession,
+          [sessionId]: [...prev, filePath],
+        },
+      };
+    });
+  },
+
+  drainChatFileQueue: () => {
+    const sessionId = get().activeSessionId;
+    if (!sessionId) return [];
+    const queued = get().chatFileQueueBySession[sessionId];
+    if (!queued || queued.length === 0) return [];
+    set((s) => {
+      const { [sessionId]: _drop, ...rest } = s.chatFileQueueBySession;
+      return { chatFileQueueBySession: rest };
+    });
+    return queued;
   },
 
   /* ─────────────────── IDE right-panel actions ─────────────────── */

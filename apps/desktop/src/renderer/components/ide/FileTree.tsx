@@ -1,7 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
-import { dirname } from "@renderer/lib/path.js";
+import { dirname, relativePath } from "@renderer/lib/path.js";
 import type { FileTreeEntry } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -13,6 +14,11 @@ import {
   IconFolderOpen,
   IconFile,
   IconLoader2,
+  IconExternalLink,
+  IconClipboard,
+  IconCopy,
+  IconMessage,
+  IconCheck,
 } from "@renderer/lib/icons.js";
 
 /** Stable empty array for the expanded-dirs selector (Zustand Object.is). */
@@ -27,6 +33,67 @@ const EMPTY_EXPANDED: string[] = [];
  */
 type FileNodeRegister = (path: string, el: HTMLButtonElement | null) => void;
 const FileNodeRegistryContext = createContext<FileNodeRegister | null>(null);
+
+/* ───────────────────────── context menu ───────────────────────── */
+
+/** Shared popup + item classNames for the file-tree right-click menu. Mirrors
+ *  the styling used by the Git panel's context menu (GitRepoCard) so the two
+ *  surfaces stay visually consistent. */
+const MENU_POPUP_CLASS = cn(
+  "z-50 min-w-[160px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
+  "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+  "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+  "transition-[transform,opacity] duration-100",
+);
+const MENU_ITEM_CLASS =
+  "flex w-full items-center gap-2 px-3 py-1.5 text-left [font-size:var(--right-panel-font-size)] text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted";
+
+/** One context-menu item with a leading icon. Keeps the per-row menus below
+ *  compact and the icon+label spacing uniform. */
+function MenuItem({
+  icon,
+  label,
+  onClick,
+  danger,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <ContextMenu.Item
+      onClick={onClick}
+      className={cn(MENU_ITEM_CLASS, danger && "text-danger data-[highlighted]:bg-danger/10")}
+    >
+      <span className="shrink-0">{icon}</span>
+      <span className="truncate">{label}</span>
+    </ContextMenu.Item>
+  );
+}
+
+/** Copy-to-clipboard with a brief inline "已复制" toast pinned to the row's
+ *  top-right. Shared by the file and directory context menus. Returns the
+ *  copy handler and the toast element (render once per row, near the trigger). */
+function useCopyFeedback() {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copy = useCallback((text: string) => {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
+    });
+  }, []);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const toast = copied ? (
+    <div className="pointer-events-none absolute right-2 top-0 z-50 flex -translate-y-full items-center gap-1 rounded-md bg-accent/15 px-1.5 py-0.5 text-accent [font-size:var(--right-panel-font-size)] shadow-sm">
+      <IconCheck size={10} />
+      已复制
+    </div>
+  ) : null;
+  return { copy, toast };
+}
 
 /* ───────────────────────── FileTree root ───────────────────────── */
 
@@ -203,6 +270,7 @@ function TreeNode({
       depth={depth}
       active={isActiveFile}
       onClick={() => openFileInIde(entry.path)}
+      projectPath={projectPath}
     />
   );
 }
@@ -223,6 +291,7 @@ function DirNode({
 }) {
   const [children, setChildren] = useState<FileTreeEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const { copy: copyWithFeedback, toast: copiedToast } = useCopyFeedback();
 
   // Lazy-load children when first expanded. We cache the result so subsequent
   // collapses/re-expansions don't re-fetch (unless the user manually refreshes
@@ -253,24 +322,57 @@ function DirNode({
   }, [isOpen, children, entry.path, projectPath]);
 
   return (
-    <div>
-      <button
-        type="button"
-        onClick={onToggle}
-        className={cn(
-          "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors hover:bg-surface-hover/50",
-        )}
-        style={{ paddingLeft: depth * 12 + 4 }}
-      >
-        <span className="shrink-0 text-content-subtle">
-          {isOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
-        </span>
-        <span className="shrink-0 text-content-subtle">
-          {isOpen ? <IconFolderOpen size={13} /> : <IconFolder size={13} />}
-        </span>
-        <span className="truncate text-content-muted">{entry.name}</span>
-        {loading && <IconLoader2 size={10} className="ml-auto animate-spin text-content-subtle" />}
-      </button>
+    <div className="relative">
+      <ContextMenu.Root>
+        <ContextMenu.Trigger
+          render={
+            <button
+              type="button"
+              onClick={onToggle}
+              className={cn(
+                "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors hover:bg-surface-hover/50",
+              )}
+              style={{ paddingLeft: depth * 12 + 4 }}
+            />
+          }
+        >
+          <span className="shrink-0 text-content-subtle">
+            {isOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+          </span>
+          <span className="shrink-0 text-content-subtle">
+            {isOpen ? <IconFolderOpen size={13} /> : <IconFolder size={13} />}
+          </span>
+          <span className="truncate text-content-muted">{entry.name}</span>
+          {loading && <IconLoader2 size={10} className="ml-auto animate-spin text-content-subtle" />}
+        </ContextMenu.Trigger>
+        <ContextMenu.Portal>
+          <ContextMenu.Positioner>
+            <ContextMenu.Popup className={MENU_POPUP_CLASS}>
+              <MenuItem
+                icon={<IconFolderOpen size={12} />}
+                label={isOpen ? "折叠" : "展开"}
+                onClick={onToggle}
+              />
+              <MenuItem
+                icon={<IconExternalLink size={12} />}
+                label="在资源管理器中显示"
+                onClick={() => void api.shell.showItemInFolder({ path: entry.path })}
+              />
+              <MenuItem
+                icon={<IconClipboard size={12} />}
+                label="复制绝对路径"
+                onClick={() => copyWithFeedback(entry.path)}
+              />
+              <MenuItem
+                icon={<IconCopy size={12} />}
+                label="复制相对路径"
+                onClick={() => copyWithFeedback(relativePath(entry.path, projectPath))}
+              />
+            </ContextMenu.Popup>
+          </ContextMenu.Positioner>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
+      {copiedToast}
       {isOpen && children && children.length > 0 && (
         <div>
           {children.map((c) => (
@@ -290,12 +392,14 @@ function FileNodeRow({
   depth,
   active,
   onClick,
+  projectPath,
 }: {
   name: string;
   path: string;
   depth: number;
   active: boolean;
   onClick: () => void;
+  projectPath: string;
 }) {
   // Agent-touched marker: look up this file in the active session's turn-files.
   const turnFile = useAgentTouchedFile(path);
@@ -303,44 +407,82 @@ function FileNodeRow({
   // effect can scrollIntoView it once mounted (may be delayed while ancestor
   // dirs lazily load). Null when rendered outside a FileTree (defensive).
   const registerNode = useContext(FileNodeRegistryContext);
+  const { copy: copyWithFeedback, toast: copiedToast } = useCopyFeedback();
+  const enqueueChatFile = useSessionStore((s) => s.enqueueChatFile);
 
   return (
-    <button
-      type="button"
-      ref={registerNode ? (el) => registerNode(path, el) : undefined}
-      draggable
-      onDragStart={(e) => {
-        // Stash the file path in a custom MIME type so the composer's drop
-        // handler can read it. effectAllowed=copy signals "this creates a
-        // new reference" (not a move).
-        e.dataTransfer.setData(FILE_DRAG_MIME, path);
-        e.dataTransfer.effectAllowed = "copy";
-      }}
-      onClick={onClick}
-      className={cn(
-        "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors",
-        active ? "bg-accent/15 text-content" : "text-content-muted hover:bg-surface-hover/50",
-      )}
-      style={{ paddingLeft: depth * 12 + 4 }}
-      title={path}
-    >
-      {/* Spacer to align with directory chevrons. */}
-      <span className="w-3 shrink-0" />
-      <span className="shrink-0 text-content-subtle">
-        <IconFile size={13} />
-      </span>
-      <span className="truncate">{name}</span>
-      {/* Agent-touched dot: accent for created, danger-ish for modified. */}
-      {turnFile && (
-        <span
-          className={cn(
-            "ml-auto h-1.5 w-1.5 shrink-0 rounded-full",
-            turnFile.kind === "created" ? "bg-accent" : "bg-info",
+    <div className="relative">
+      <ContextMenu.Root>
+        <ContextMenu.Trigger
+          render={
+            <button
+              type="button"
+              ref={registerNode ? (el) => registerNode(path, el) : undefined}
+              draggable
+              onDragStart={(e) => {
+                // Stash the file path in a custom MIME type so the composer's drop
+                // handler can read it. effectAllowed=copy signals "this creates a
+                // new reference" (not a move).
+                e.dataTransfer.setData(FILE_DRAG_MIME, path);
+                e.dataTransfer.effectAllowed = "copy";
+              }}
+              onClick={onClick}
+              className={cn(
+                "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors",
+                active ? "bg-accent/15 text-content" : "text-content-muted hover:bg-surface-hover/50",
+              )}
+              style={{ paddingLeft: depth * 12 + 4 }}
+              title={path}
+            />
+          }
+        >
+          {/* Spacer to align with directory chevrons. */}
+          <span className="w-3 shrink-0" />
+          <span className="shrink-0 text-content-subtle">
+            <IconFile size={13} />
+          </span>
+          <span className="truncate">{name}</span>
+          {/* Agent-touched dot: accent for created, danger-ish for modified. */}
+          {turnFile && (
+            <span
+              className={cn(
+                "ml-auto h-1.5 w-1.5 shrink-0 rounded-full",
+                turnFile.kind === "created" ? "bg-accent" : "bg-info",
+              )}
+              title={turnFile.kind === "created" ? "本轮新建" : "本轮修改"}
+            />
           )}
-          title={turnFile.kind === "created" ? "本轮新建" : "本轮修改"}
-        />
-      )}
-    </button>
+        </ContextMenu.Trigger>
+        <ContextMenu.Portal>
+          <ContextMenu.Positioner>
+            <ContextMenu.Popup className={MENU_POPUP_CLASS}>
+              <MenuItem icon={<IconFile size={12} />} label="打开" onClick={onClick} />
+              <MenuItem
+                icon={<IconExternalLink size={12} />}
+                label="在资源管理器中显示"
+                onClick={() => void api.shell.showItemInFolder({ path })}
+              />
+              <MenuItem
+                icon={<IconClipboard size={12} />}
+                label="复制绝对路径"
+                onClick={() => copyWithFeedback(path)}
+              />
+              <MenuItem
+                icon={<IconCopy size={12} />}
+                label="复制相对路径"
+                onClick={() => copyWithFeedback(relativePath(path, projectPath))}
+              />
+              <MenuItem
+                icon={<IconMessage size={12} />}
+                label="添加到聊天"
+                onClick={() => enqueueChatFile(path)}
+              />
+            </ContextMenu.Popup>
+          </ContextMenu.Positioner>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
+      {copiedToast}
+    </div>
   );
 }
 

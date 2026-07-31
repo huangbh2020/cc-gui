@@ -45,3 +45,25 @@ export function joinPath(base: string, add: string): string {
   const right = add.startsWith("/") || add.startsWith("\\") ? add.slice(1) : add;
   return left + right;
 }
+
+/** The path of `absPath` relative to `root`, using forward slashes, e.g.
+ *  `relativePath("/proj/src/a.ts", "/proj")` -> `"src/a.ts"`. Returns the
+ *  path with any leading separator stripped. If `absPath` is not under `root`
+ *  (after normalizing separators), returns `absPath` unchanged as a defensive
+ *  fallback rather than an empty or misleading string.
+ *
+ *  Renderer-safe (no `node:path`): pure string arithmetic handling both `/`
+ *  and `\` so cross-platform project paths normalize correctly. */
+export function relativePath(absPath: string, root: string): string {
+  // Normalize both to forward slashes for a single comparison path.
+  const normAbs = absPath.replace(/\\/g, "/");
+  const normRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normRoot) return normAbs;
+  // Match root either exactly or as a directory prefix (followed by "/").
+  if (normAbs === normRoot) return "";
+  if (normAbs.startsWith(normRoot + "/")) {
+    return normAbs.slice(normRoot.length + 1);
+  }
+  // Not under root - return the normalized input unchanged (defensive).
+  return normAbs;
+}

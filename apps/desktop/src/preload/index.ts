@@ -103,6 +103,13 @@ const api = {
   shell: {
     openPath: ((input) =>
       ipcRenderer.invoke(IPC.SHELL_OPEN_PATH, input)) as RpcMap["shell.openPath"],
+    /** Reveal a file or directory inside a project root in the OS file
+     *  manager, selecting it. Used by the file-tree context menu. */
+    showItemInFolder: ((input) =>
+      ipcRenderer.invoke(
+        IPC.SHELL_SHOW_ITEM_IN_FOLDER,
+        input,
+      )) as RpcMap["shell.showItemInFolder"],
   },
 
   /** Filesystem operations for the IDE right panel + diff rendering. Every
@@ -157,6 +164,10 @@ const api = {
       ipcRenderer.invoke(IPC.GIT_SHOW_COMMIT, input)) as RpcMap["git.showCommit"],
     showFile: ((input) =>
       ipcRenderer.invoke(IPC.GIT_SHOW_FILE, input)) as RpcMap["git.showFile"],
+    listBranches: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_LIST_BRANCHES, input)) as RpcMap["git.listBranches"],
+    checkout: ((input) =>
+      ipcRenderer.invoke(IPC.GIT_CHECKOUT, input)) as RpcMap["git.checkout"],
   },
 
   /** Integrated terminal (xterm in renderer ↔ node-pty in main). Paths on

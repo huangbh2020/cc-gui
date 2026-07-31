@@ -5,7 +5,7 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { joinPath, basename } from "@renderer/lib/path.js";
 import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
-import type { GitRepo, GitStatusResult, GitFileStatus } from "@contracts/ipc";
+import type { GitRepo, GitStatusResult, GitFileStatus, GitBranchInfo, GitBranchListResult } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
 import { Button, Dialog } from "@renderer/components/ui/index.js";
@@ -31,6 +31,7 @@ import {
   IconCircleCheck,
   IconCircleXFilled,
   IconX,
+  IconTag,
 } from "@renderer/lib/icons.js";
 
 /** A single git operation log entry - one per pull/push/commit/sync/etc. */
@@ -91,6 +92,14 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
   // doubles as the dialog's open trigger (null = closed).
   const [conflictFiles, setConflictFiles] = useState<string[] | null>(null);
   const [resolving, setResolving] = useState(false);
+  // Branch picker state: the grouped branch/tag list (fetched on menu open),
+  // a search filter, the in-flight checkout, and the "new branch" dialog.
+  const [branches, setBranches] = useState<GitBranchListResult | null>(null);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [branchQuery, setBranchQuery] = useState("");
+  const [checkingOut, setCheckingOut] = useState(false);
+  const [newBranchOpen, setNewBranchOpen] = useState(false);
+  const [newBranchName, setNewBranchName] = useState("");
   const collapsedGitRepos = useSessionStore((s) => s.collapsedGitRepos);
   const toggleCollapsedGitRepo = useSessionStore((s) => s.toggleCollapsedGitRepo);
   const conflictResolveModel = useSessionStore((s) => s.conflictResolveModel);
@@ -121,6 +130,70 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     },
     [],
   );
+
+  /** Fetch the grouped branch/tag list for the picker. Called on menu open. */
+  const loadBranches = useCallback(async () => {
+    setBranchesLoading(true);
+    setBranchQuery("");
+    try {
+      const { branches: list } = await api.git.listBranches({ repoPath: repo.path });
+      setBranches(list);
+    } catch {
+      setBranches(null);
+    } finally {
+      setBranchesLoading(false);
+    }
+  }, [repo.path]);
+
+  /** Check out a ref, then refresh. `newBranch` (when set) creates a local
+   *  branch from the target first (tracking branch / new branch). */
+  const handleCheckout = useCallback(
+    async (branch: string, newBranch?: string) => {
+      setCheckingOut(true);
+      try {
+        const res = await api.git.checkout({ repoPath: repo.path, branch, newBranch });
+        if (!res.ok) {
+          setError(res.error ?? "切换分支失败");
+          prependLog({ op: "discard", status: "failure", message: res.error });
+        } else {
+          prependLog({ op: "discard", status: "success" });
+        }
+        await refresh();
+      } catch (err) {
+        const msg = (err as Error).message ?? "切换分支失败";
+        setError(msg);
+        prependLog({ op: "discard", status: "failure", message: msg });
+      } finally {
+        setCheckingOut(false);
+      }
+    },
+    [repo.path, refresh, prependLog],
+  );
+
+  /** Create a new branch from HEAD and switch to it. */
+  const handleCreateBranch = useCallback(async () => {
+    const name = newBranchName.trim();
+    if (!name) return;
+    setNewBranchOpen(false);
+    setNewBranchName("");
+    await handleCheckout("HEAD", name);
+  }, [newBranchName, handleCheckout]);
+
+  /** Filtered branch groups for the search box (matches name or commit subject). */
+  const filteredBranches = useMemo(() => {
+    if (!branches) return null;
+    const q = branchQuery.trim().toLowerCase();
+    if (!q) return branches;
+    const match = (b: GitBranchInfo) =>
+      b.name.toLowerCase().includes(q) || b.label.toLowerCase().includes(q);
+    return {
+      current: branches.current,
+      detached: branches.detached,
+      local: branches.local.filter(match),
+      remote: branches.remote.filter(match),
+      tags: branches.tags.filter(match),
+    };
+  }, [branches, branchQuery]);
 
   useEffect(() => {
     void refresh();
@@ -415,11 +488,112 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         </div>
         {/* Row 2: branch + ahead/behind + remote actions. */}
         <div className="flex items-center gap-1.5">
-          {status?.branch && (
-            <span className="shrink-0 rounded bg-surface-muted px-1.5 py-0.5 font-mono [font-size:var(--rp-fs-xxs)] text-content-muted">
-              {status.branch}
-            </span>
-          )}
+          <Menu.Root onOpenChange={(open) => open && void loadBranches()}>
+            <Menu.Trigger
+              className={cn(
+                "flex shrink-0 items-center gap-0.5 rounded bg-surface-muted px-1.5 py-0.5 font-mono [font-size:var(--rp-fs-xxs)] text-content-muted transition-colors",
+                "hover:bg-surface-hover hover:text-content",
+              )}
+              title="切换分支"
+            >
+              <IconGitBranch size={10} className="shrink-0 opacity-80" />
+              <span className="truncate max-w-[120px]">{status?.branch || "HEAD"}</span>
+              <IconChevronDown size={9} className="shrink-0 opacity-60" />
+            </Menu.Trigger>
+            <Menu.Portal>
+              <Menu.Positioner side="bottom" align="start" sideOffset={4}>
+                <Menu.Popup
+                  className={cn(
+                    "z-50 flex max-h-[360px] min-w-[260px] flex-col rounded-md border border-edge bg-surface py-1 shadow-2xl",
+                    "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+                    "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+                    "transition-[transform,opacity] duration-100",
+                  )}
+                >
+                  {/* Search + "new branch" header (non-menu-item, so it doesn't
+                      steal keyboard navigation from the branch list below). */}
+                  <div className="flex items-center gap-1 px-2 pb-1">
+                    <input
+                      value={branchQuery}
+                      onChange={(e) => setBranchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        // Prevent the Menu from interpreting arrow/Home/End as
+                        // item navigation while typing in the filter box.
+                        if (["ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) {
+                          e.stopPropagation();
+                        }
+                      }}
+                      placeholder="搜索分支或标签..."
+                      className="min-w-0 flex-1 rounded border border-edge bg-surface px-1.5 py-0.5 text-[11px] text-content outline-none placeholder:text-content-subtle focus:border-accent"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setNewBranchOpen(true)}
+                      title="新建分支"
+                      className="flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-content-muted transition-colors hover:bg-surface-muted hover:text-accent"
+                    >
+                      <IconPlus size={11} />
+                    </button>
+                  </div>
+
+                  {/* Scrollable grouped list. */}
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    {branchesLoading ? (
+                      <div className="flex items-center justify-center gap-1.5 px-3 py-4 text-[11px] text-content-subtle">
+                        <IconLoader2 size={12} className="animate-spin" />
+                        加载中...
+                      </div>
+                    ) : !filteredBranches ? (
+                      <div className="px-3 py-4 text-center text-[11px] text-content-subtle">
+                        无法读取分支
+                      </div>
+                    ) : (
+                      <>
+                        {checkingOut && (
+                          <div className="flex items-center justify-center gap-1.5 border-b border-edge px-3 py-1 text-[11px] text-content-subtle">
+                            <IconLoader2 size={12} className="animate-spin" />
+                            切换中...
+                          </div>
+                        )}
+                        {filteredBranches.local.length === 0 &&
+                          filteredBranches.remote.length === 0 &&
+                          filteredBranches.tags.length === 0 && (
+                            <div className="px-3 py-3 text-center text-[11px] text-content-subtle">
+                              {branchQuery ? "无匹配结果" : "无分支"}
+                            </div>
+                          )}
+                        {filteredBranches.local.length > 0 && (
+                          <BranchGroup
+                            label="本地分支"
+                            items={filteredBranches.local}
+                            localNames={new Set(filteredBranches.local.map((b) => b.name))}
+                            onCheckout={handleCheckout}
+                          />
+                        )}
+                        {filteredBranches.remote.length > 0 && (
+                          <BranchGroup
+                            label="远程分支"
+                            items={filteredBranches.remote}
+                            localNames={new Set(filteredBranches.local.map((b) => b.name))}
+                            onCheckout={handleCheckout}
+                          />
+                        )}
+                        {filteredBranches.tags.length > 0 && (
+                          <BranchGroup
+                            label="标签"
+                            items={filteredBranches.tags}
+                            localNames={new Set(filteredBranches.local.map((b) => b.name))}
+                            onCheckout={handleCheckout}
+                            icon={<IconTag size={11} />}
+                          />
+                        )}
+                      </>
+                    )}
+                  </div>
+                </Menu.Popup>
+              </Menu.Positioner>
+            </Menu.Portal>
+          </Menu.Root>
           {status && status.ahead > 0 && (
             <span className="flex shrink-0 items-center gap-0.5 [font-size:var(--rp-fs-xxs)] text-accent" title="领先上游">
               <IconArrowUp size={10} />
@@ -597,11 +771,43 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
+
+      {/* ── New branch dialog ──
+          Creates a local branch from HEAD and switches to it. */}
+      <Dialog.Root open={newBranchOpen} onOpenChange={setNewBranchOpen}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup className="w-[360px] max-w-[90vw] p-4">
+            <Dialog.Title>新建分支</Dialog.Title>
+            <Dialog.Description className="mt-1">
+              从当前 HEAD 创建新分支并切换过去。
+            </Dialog.Description>
+            <input
+              value={newBranchName}
+              onChange={(e) => setNewBranchName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newBranchName.trim()) void handleCreateBranch();
+              }}
+              autoFocus
+              placeholder="分支名,如 feature/xxx"
+              className="mt-3 w-full rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-xs text-content outline-none placeholder:text-content-subtle focus:border-accent"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setNewBranchOpen(false)}>
+                取消
+              </Button>
+              <Button size="sm" onClick={handleCreateBranch} disabled={!newBranchName.trim() || checkingOut}>
+                {checkingOut ? <IconLoader2 size={12} className="animate-spin" /> : <IconPlus size={12} />}
+                创建并切换
+              </Button>
+            </div>
+            <Dialog.Close />
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
-
-/* ───────────────────────── commit box with dropdown ───────────────────────── */
 
 function CommitBox({
   repoPath,
@@ -833,6 +1039,73 @@ function CommitBox({
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
+    </div>
+  );
+}
+
+/* ─────────────────── branch picker group ─────────────────── */
+
+/** A labeled group of refs (local branches / remote branches / tags) inside
+ *  the branch picker. Each row checks out its ref when clicked.
+ *
+ *  - Local branches: `git checkout <name>`.
+ *  - Remote branches: if a local branch of the same short name exists, switch
+ *    to it; otherwise create a tracking branch (`git checkout -b <name> <origin/name>`).
+ *  - Tags: `git checkout <tag>` (detached HEAD). */
+function BranchGroup({
+  label,
+  items,
+  localNames,
+  onCheckout,
+  icon,
+}: {
+  label: string;
+  items: GitBranchInfo[];
+  /** Short names of local branches - used to decide tracking-branch creation
+   *  for remote refs. */
+  localNames: Set<string>;
+  onCheckout: (branch: string, newBranch?: string) => void;
+  icon?: React.ReactNode;
+}) {
+  const handleClick = (b: GitBranchInfo) => {
+    if (b.current) return;
+    if (b.type === "remote") {
+      // `origin/foo` -> short name `foo`. Track if no local branch yet.
+      const shortName = b.name.includes("/") ? b.name.slice(b.name.indexOf("/") + 1) : b.name;
+      if (localNames.has(shortName)) {
+        onCheckout(shortName);
+      } else {
+        onCheckout(b.name, shortName);
+      }
+    } else {
+      onCheckout(b.name);
+    }
+  };
+  return (
+    <div className="py-0.5">
+      <div className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-content-subtle">
+        {label}
+      </div>
+      {items.map((b) => (
+        <Menu.Item
+          key={`${b.type}/${b.name}`}
+          onClick={() => handleClick(b)}
+          className={cn(
+            "flex w-full items-center gap-1.5 px-2 py-1 text-left text-[11px] outline-none select-none",
+            "data-[highlighted]:bg-surface-muted",
+            b.current ? "text-accent" : "text-content-muted",
+          )}
+        >
+          <span className="shrink-0 opacity-80">{icon ?? <IconGitBranch size={11} />}</span>
+          <span className="min-w-0 flex-1 truncate font-mono">{b.name}</span>
+          {b.label && (
+            <span className="min-w-0 max-w-[120px] truncate text-[10px] text-content-subtle" title={b.label}>
+              {b.label}
+            </span>
+          )}
+          {b.current && <IconCheck size={11} className="shrink-0" />}
+        </Menu.Item>
+      ))}
     </div>
   );
 }

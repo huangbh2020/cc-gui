@@ -13,7 +13,7 @@ import {
   IconLoader2,
   IconPaperclip,
 } from "@renderer/lib/icons.js";
-import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
+import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, EMPTY_CHAT_QUEUE, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import type { PermissionMode } from "@contracts/runtime";
@@ -606,6 +606,22 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     },
     [],
   );
+
+  // Drain the per-session "add to chat" queue. Other surfaces (e.g. the
+  // file-tree context menu) push absolute paths into the queue via
+  // `enqueueChatFile`; this effect materializes them as file-reference tags
+  // in the composer. Subscribe to this session's queue so the effect fires
+  // whenever it becomes non-empty, then drain (read + clear) and convert.
+  const chatFileQueue = useSessionStore((s) =>
+    sessionId ? s.chatFileQueueBySession[sessionId] ?? EMPTY_CHAT_QUEUE : EMPTY_CHAT_QUEUE,
+  );
+  const drainChatFileQueue = useSessionStore((s) => s.drainChatFileQueue);
+  useEffect(() => {
+    if (chatFileQueue.length === 0) return;
+    const paths = drainChatFileQueue();
+    if (paths.length === 0) return;
+    setTags((prev) => appendUniqueFileTags(prev, paths));
+  }, [chatFileQueue, drainChatFileQueue]);
 
   /** Mention picker confirm: drop the @token, add a file tag, refocus. */
   const handleMentionPick = useCallback(

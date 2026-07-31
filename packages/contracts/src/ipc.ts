@@ -375,6 +375,14 @@ export type RenameSessionInput = z.infer<typeof RenameSessionSchema>;
 export const OpenPathSchema = z.object({ path: z.string() });
 export type OpenPathInput = z.infer<typeof OpenPathSchema>;
 
+/* Reveal a file or directory in the OS file manager (Finder / Explorer),
+ * selecting it. Unlike `shell.openPath`, this accepts any path that resolves
+ * inside a known project root (not just the root itself) - the main handler
+ * enforces the same project-root containment check as the file handlers. Used
+ * by the file-tree context menu's "Reveal in Explorer" action. */
+export const ShowItemInFolderSchema = z.object({ path: z.string() });
+export type ShowItemInFolderInput = z.infer<typeof ShowItemInFolderSchema>;
+
 /** List a project's sessions with optional pagination + archived filter.
  *  The left-bar tree loads the first `limit` (default 5) non-archived threads
  *  and appends the next page on "load more"; the archived bin requests
@@ -940,6 +948,60 @@ export const GitShowFileSchema = z.object({
 });
 export type GitShowFileInput = z.infer<typeof GitShowFileSchema>;
 
+/* ── Git branch switching (list / checkout) ── */
+
+/** Ref kind for `git.listBranches` entries. */
+export type GitBranchType = "local" | "remote" | "tag";
+
+/** One branch / tag entry in a `git.listBranches` result. */
+export interface GitBranchInfo {
+  /** Display name: short name for local (main), `origin/main` for remote,
+   *  tag name for tags (v1.0.0). */
+  name: string;
+  /** True when this is the currently checked-out ref. */
+  current: boolean;
+  /** Short commit hash at this ref. */
+  commit: string;
+  /** Commit subject (first line of the message) at this ref. */
+  label: string;
+  /** Ref kind discriminator. */
+  type: GitBranchType;
+}
+
+/** Grouped ref list returned by `git.listBranches`. */
+export interface GitBranchListResult {
+  /** Current branch name (empty string in detached HEAD). */
+  current: string;
+  /** True when the repo is in a detached HEAD state. */
+  detached: boolean;
+  /** Local branches (refs/heads). */
+  local: GitBranchInfo[];
+  /** Remote branches (refs/remotes), excluding the HEAD symref of each remote. */
+  remote: GitBranchInfo[];
+  /** Tags (refs/tags), annotated + lightweight. */
+  tags: GitBranchInfo[];
+}
+
+/** Switch the working tree to another branch / tag / ref.
+ *
+ *  - `branch` is the target ref (local branch, remote branch, tag, or `HEAD`).
+ *    Restricted to safe ref characters to avoid CLI injection (same charset as
+ *    `GitLogSchema.ref`).
+ *  - `newBranch`, when set, creates a new local branch from `branch` and checks
+ *    it out (i.e. `git checkout -b <newBranch> <branch>`). Used both for
+ *    creating a fresh branch from HEAD (`branch: "HEAD"`) and for tracking a
+ *    remote branch (`branch: "origin/foo"`, `newBranch: "foo"`). */
+export const GitCheckoutSchema = z.object({
+  repoPath: z.string(),
+  branch: z.string().regex(/^[A-Za-z0-9._/\-@^{}~]+$/, "invalid git ref"),
+  /** When provided, create this new local branch from `branch` and check it out. */
+  newBranch: z
+    .string()
+    .regex(/^[A-Za-z0-9._/\-]+$/, "invalid branch name")
+    .optional(),
+});
+export type GitCheckoutInput = z.infer<typeof GitCheckoutSchema>;
+
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
 export interface ClaudeEventMessage {
@@ -1142,6 +1204,11 @@ export interface RpcMap {
   "git.showFile": (
     input: GitShowFileInput,
   ) => Promise<{ before: string; after: string }>;
+  /** List local branches, remote branches and tags for a repo (grouped). */
+  "git.listBranches": (input: GitRepoPathInput) => Promise<{ branches: GitBranchListResult }>;
+  /** Check out a branch / tag / ref. With `newBranch`, creates a new local
+   *  branch from the target and checks it out (tracking branch or new branch). */
+  "git.checkout": (input: GitCheckoutInput) => Promise<GitOpResult>;
   // Integrated terminal (P4 IDE right panel)
   /** Spawn a PTY in the project cwd (or a subdir). */
   "terminal.create": (input: TerminalCreateInput) => Promise<TerminalCreateResult>;
@@ -1169,6 +1236,9 @@ export interface RpcMap {
   /** Open a path in the OS file manager. Main refuses any path that isn't a
    *  known project root, so this can't be used to open arbitrary locations. */
   "shell.openPath": (input: OpenPathInput) => Promise<void>;
+  /** Reveal a file or directory in the OS file manager, selecting it. Accepts
+   *  any path that resolves inside a known project root (not just the root). */
+  "shell.showItemInFolder": (input: ShowItemInFolderInput) => Promise<void>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -1227,6 +1297,8 @@ export const IPC = {
   GIT_LOG: "git:log",
   GIT_SHOW_COMMIT: "git:showCommit",
   GIT_SHOW_FILE: "git:showFile",
+  GIT_LIST_BRANCHES: "git:listBranches",
+  GIT_CHECKOUT: "git:checkout",
   // Integrated terminal (P4 IDE right panel)
   TERMINAL_CREATE: "terminal:create",
   TERMINAL_WRITE: "terminal:write",
@@ -1241,6 +1313,8 @@ export const IPC = {
   APP_QUIT_AND_INSTALL: "app:quitAndInstall",
   // Open a project root in the OS file manager (main refuses non-project paths)
   SHELL_OPEN_PATH: "shell:openPath",
+  // Reveal a file/dir inside a project root in the OS file manager (selects it)
+  SHELL_SHOW_ITEM_IN_FOLDER: "shell:showItemInFolder",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",

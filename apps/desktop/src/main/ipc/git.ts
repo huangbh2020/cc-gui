@@ -31,6 +31,7 @@ import {
   GitLogSchema,
   GitShowCommitSchema,
   GitShowFileSchema,
+  GitCheckoutSchema,
 } from "@contracts/ipc";
 import type {
   GitRepo,
@@ -41,6 +42,8 @@ import type {
   GitCommitFile,
   GitCommitFileStatus,
   GitCommitDetail,
+  GitBranchInfo,
+  GitBranchListResult,
 } from "@contracts/ipc";
 import { ProjectRepo, SettingRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
@@ -725,6 +728,119 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       if (/503|no available channel/i.test(msg)) {
         return { ok: false, error: "网关无此模型渠道,请检查模型名配置" };
       }
+      return { ok: false, error: msg };
+    }
+  });
+
+  /* ── git:listBranches - local / remote branches + tags (grouped) ── */
+  ipcMain.handle(IPC.GIT_LIST_BRANCHES, async (_evt, raw) => {
+    const input = GitRepoPathSchema.parse(raw);
+    if (!findContainingProject(input.repoPath)) {
+      log.warn(`git.listBranches refused - repoPath outside any project: ${input.repoPath}`);
+      return { branches: { current: "", detached: false, local: [], remote: [], tags: [] } };
+    }
+    try {
+      const git = simpleGit(input.repoPath);
+      // `for-each-ref` gives us refname / short hash / subject in one shot.
+      // Record separator \x1e, field separator \x1f. `*HEAD` symrefs under
+      // refs/remotes are excluded - they duplicate a real remote branch and
+      // would confuse checkout. `*{/*}` dereferences annotated tags to the
+      // commit they point at, so `commit`/`label` match the actual commit.
+      const fmt = "%(refname)%x1f%(objectname:short)%x1f%(contents:subject)%x1e";
+      const rawRefs = await git.raw([
+        "for-each-ref",
+        `--format=${fmt}`,
+        "refs/heads",
+        "refs/remotes",
+        "refs/tags",
+      ]);
+
+      // Determine current ref (branch name, or empty under detached HEAD).
+      let current = "";
+      let detached = false;
+      const curBranch = await git.revparse(["--abbrev-ref", "HEAD"]).catch(() => "");
+      current = (curBranch || "").trim();
+      if (current === "HEAD" || current === "") {
+        detached = true;
+        current = "";
+      }
+
+      const local: GitBranchInfo[] = [];
+      const remote: GitBranchInfo[] = [];
+      const tags: GitBranchInfo[] = [];
+
+      for (const record of rawRefs.split("\x1e")) {
+        const line = record.trim();
+        if (!line) continue;
+        const [refname, commit, label] = line.split("\x1f");
+        if (!refname) continue;
+
+        // refs/heads/<name>
+        if (refname.startsWith("refs/heads/")) {
+          const name = refname.slice("refs/heads/".length);
+          local.push({
+            name,
+            current: name === current,
+            commit: commit || "",
+            label: label || "",
+            type: "local",
+          });
+          continue;
+        }
+        // refs/remotes/<remote>/<name> - skip <remote>/HEAD symrefs.
+        if (refname.startsWith("refs/remotes/")) {
+          const full = refname.slice("refs/remotes/".length);
+          if (full.endsWith("/HEAD")) continue;
+          remote.push({
+            name: full,
+            current: full === current,
+            commit: commit || "",
+            label: label || "",
+            type: "remote",
+          });
+          continue;
+        }
+        // refs/tags/<name>
+        if (refname.startsWith("refs/tags/")) {
+          const name = refname.slice("refs/tags/".length);
+          // Under detached HEAD, mark the tag matching the current commit.
+          tags.push({
+            name,
+            current: false,
+            commit: commit || "",
+            label: label || "",
+            type: "tag",
+          });
+        }
+      }
+
+      return { branches: { current, detached, local, remote, tags } };
+    } catch (err) {
+      log.warn(`git.listBranches failed for ${input.repoPath}: ${(err as Error).message}`);
+      return { branches: { current: "", detached: false, local: [], remote: [], tags: [] } };
+    }
+  });
+
+  /* ── git:checkout - switch branch / tag / ref (optionally create new) ── */
+  ipcMain.handle(IPC.GIT_CHECKOUT, async (_evt, raw) => {
+    const input = GitCheckoutSchema.parse(raw);
+    if (!findContainingProject(input.repoPath)) {
+      return { ok: false, error: "仓库路径不在任何已添加的项目内" };
+    }
+    try {
+      const git = simpleGit(input.repoPath);
+      if (input.newBranch) {
+        // `git checkout -b <newBranch> <branch>` - create + switch.
+        await git.checkoutBranch(input.newBranch, input.branch);
+        log.info(`git.checkout created ${input.newBranch} from ${input.branch} in ${input.repoPath}`);
+      } else {
+        await git.checkout(input.branch);
+        log.info(`git.checkout switched to ${input.branch} in ${input.repoPath}`);
+      }
+      return { ok: true };
+    } catch (err) {
+      const msg = (err as Error).message;
+      log.warn(`git.checkout failed for ${input.repoPath}: ${msg}`);
       return { ok: false, error: msg };
     }
   });
