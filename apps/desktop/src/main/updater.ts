@@ -12,8 +12,14 @@
  *  - `update-available` -> push `update:available` to renderer (autoDownload
  *    is OFF, so the user opts in via the About panel's "download" button).
  *  - `app.downloadUpdate()` -> `autoUpdater.downloadUpdate()`.
+ *  - `download-progress` -> push `update:downloadProgress` (percent + bytes)
+ *    and persist the snapshot so reopening the About panel keeps the bar.
  *  - `update-downloaded` -> push `update:downloaded`; the renderer offers
  *    "restart & install" -> `app.quitAndInstall()`.
+ *
+ * The download/downloaded states are persisted to the settings table
+ * (UPDATE_STATE_SETTING_KEY) so that remounting the About panel or restarting
+ * the app mid-flow restores the banner instead of dropping back to idle.
  *
  * Every public function is wrapped so update failures never crash the app -
  * the updater is a convenience, not a core path.
@@ -26,10 +32,16 @@ import { app } from "electron";
 // same pattern used for other CJS deps in this bundle (sql.js, simple-git).
 import electronUpdater from "electron-updater";
 const { autoUpdater } = electronUpdater;
-import { IPC, type CheckForUpdatesResult } from "@contracts/ipc";
+import {
+  IPC,
+  UPDATE_STATE_SETTING_KEY,
+  type CheckForUpdatesResult,
+  type PersistedUpdateState,
+} from "@contracts/ipc";
 import { sendToRenderer } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
 import { is } from "@main/utils.js";
+import { SettingRepo } from "@main/store/repositories.js";
 
 /** Delay before the first automatic update check after boot (ms). */
 const FIRST_CHECK_DELAY_MS = 10_000;
@@ -41,6 +53,10 @@ let initialized = false;
 
 /** Track the latest update info so the check RPC can report it synchronously. */
 let pendingVersion: string | null = null;
+
+/** Version currently being downloaded (set when download starts, cleared on
+ *  completion/error). Used to tag download-progress events with a version. */
+let downloadingVersion: string | null = null;
 
 /** Wire autoUpdater event listeners and schedule periodic checks.
  *  Safe to call in dev - it short-circuits and does nothing. */
@@ -69,12 +85,18 @@ export function initUpdater(): void {
 
     autoUpdater.on("update-not-available", (info) => {
       pendingVersion = null;
+      // A previously discovered update may have been superseded; clear any
+      // stale "downloading"/"downloaded" snapshot so the About panel doesn't
+      // show a ghost banner for a version that no longer exists.
+      clearPersistedUpdateState();
       log.info(`updater: up-to-date (${info.version ?? app.getVersion()})`);
     });
 
     autoUpdater.on("update-downloaded", (info) => {
       const version = info.version ?? "";
+      downloadingVersion = null;
       log.info(`updater: update downloaded ${version}`);
+      persistUpdateState({ status: "downloaded", version });
       sendToRenderer(IPC.UPDATE_DOWNLOADED, {
         channel: IPC.UPDATE_DOWNLOADED,
         version,
@@ -84,13 +106,35 @@ export function initUpdater(): void {
 
     autoUpdater.on("error", (err) => {
       log.error(`updater: error ${err?.message ?? String(err)}`);
+      // A download error leaves no usable snapshot; clear it so the About
+      // panel doesn't get stuck on a stale "downloading" bar on next open.
+      if (downloadingVersion !== null) {
+        downloadingVersion = null;
+        clearPersistedUpdateState();
+      }
     });
 
     autoUpdater.on("download-progress", (progress) => {
-      // Progress is informational; we don't surface it to the renderer yet.
+      const version = downloadingVersion ?? pendingVersion ?? "";
+      const percent = progress.percent ?? 0;
       log.info(
-        `updater: downloading ${progress.percent?.toFixed(1) ?? "?"}% (${progress.transferred}/${progress.total})`,
+        `updater: downloading ${percent.toFixed(1)}% (${progress.transferred}/${progress.total})`,
       );
+      persistUpdateState({
+        status: "downloading",
+        version,
+        percent,
+        transferred: progress.transferred,
+        total: progress.total,
+      });
+      sendToRenderer(IPC.UPDATE_DOWNLOAD_PROGRESS, {
+        channel: IPC.UPDATE_DOWNLOAD_PROGRESS,
+        version,
+        percent,
+        transferred: progress.transferred,
+        total: progress.total,
+        bytesPerSecond: progress.bytesPerSecond,
+      });
     });
 
     // Delayed first check, then recurring.
@@ -137,8 +181,17 @@ export async function checkForUpdates(): Promise<CheckForUpdatesResult> {
 export async function downloadUpdate(): Promise<void> {
   if (!is.prod || !initialized) return;
   try {
+    // Record the version being downloaded so download-progress events can tag
+    // it, and seed the persisted state so an early remount shows "downloading"
+    // even before the first progress chunk arrives.
+    downloadingVersion = pendingVersion;
+    if (downloadingVersion) {
+      persistUpdateState({ status: "downloading", version: downloadingVersion });
+    }
     await autoUpdater.downloadUpdate();
   } catch (err) {
+    downloadingVersion = null;
+    clearPersistedUpdateState();
     log.error(`updater: downloadUpdate failed ${err instanceof Error ? err.message : String(err)}`);
   }
 }
@@ -147,8 +200,61 @@ export async function downloadUpdate(): Promise<void> {
 export async function quitAndInstall(): Promise<void> {
   if (!is.prod || !initialized) return;
   try {
+    // The install will swap the binary and restart; clear the persisted state
+    // so the next launch (running the new version) doesn't show a stale banner.
+    clearPersistedUpdateState();
     autoUpdater.quitAndInstall();
   } catch (err) {
     log.error(`updater: quitAndInstall failed ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/* ── Persisted update-state helpers ──
+ *  The download/downloaded states are written to the settings table so the
+ *  About panel can restore its banner after remount or app restart. These are
+ *  guarded so a DB write failure never breaks the update flow itself. */
+
+/** Write a snapshot of the current update flow to the settings table. */
+function persistUpdateState(
+  state:
+    | { status: "downloading"; version: string; percent?: number; transferred?: number; total?: number }
+    | { status: "downloaded"; version: string },
+): void {
+  try {
+    const snapshot: PersistedUpdateState = {
+      status: state.status,
+      version: state.version,
+      percent: state.status === "downloading" ? (state.percent ?? 0) : 0,
+      transferred: state.status === "downloading" ? (state.transferred ?? 0) : 0,
+      total: state.status === "downloading" ? (state.total ?? 0) : 0,
+      updatedAt: new Date().toISOString(),
+    };
+    SettingRepo.set(UPDATE_STATE_SETTING_KEY, JSON.stringify(snapshot));
+  } catch (err) {
+    // Persisting the snapshot is best-effort; never let it break the updater.
+    log.error(`updater: persist state failed ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** Remove the persisted update state (after install, or when it goes stale). */
+function clearPersistedUpdateState(): void {
+  try {
+    SettingRepo.set(UPDATE_STATE_SETTING_KEY, "");
+  } catch (err) {
+    log.error(`updater: clear state failed ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** Read the persisted update state, or null if none/cleared. Used by the About
+ *  panel on mount to restore its banner without re-checking for updates. */
+export function getPersistedUpdateState(): PersistedUpdateState | null {
+  try {
+    const raw = SettingRepo.get(UPDATE_STATE_SETTING_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedUpdateState;
+    if (parsed.status !== "downloading" && parsed.status !== "downloaded") return null;
+    return parsed;
+  } catch {
+    return null;
   }
 }

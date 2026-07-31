@@ -13,7 +13,12 @@ import {
   IconRocket,
   SiGithub,
 } from "@renderer/lib/icons.js";
-import type { AppInfoResult, CheckForUpdatesResult } from "@contracts/ipc";
+import {
+  UPDATE_STATE_SETTING_KEY,
+  type AppInfoResult,
+  type CheckForUpdatesResult,
+  type PersistedUpdateState,
+} from "@contracts/ipc";
 
 /**
  * About panel - app identity, runtime info, license, repo links, and update
@@ -45,9 +50,52 @@ type UpdateState =
   | { kind: "checking" }
   | { kind: "up-to-date"; version: string }
   | { kind: "available"; version: string }
-  | { kind: "downloading" }
+  | { kind: "downloading"; percent: number; transferred: number; total: number }
   | { kind: "downloaded"; version: string }
   | { kind: "error"; message: string };
+
+/** Format a byte count as a human-readable string (e.g. "12.3 MB"). */
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes < 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+/** Restore the in-memory UpdateState from a persisted snapshot (read on mount
+ *  so reopening the About panel or restarting the app keeps the banner). */
+function stateFromPersisted(persisted: PersistedUpdateState | null): UpdateState | null {
+  if (!persisted) return null;
+  if (persisted.status === "downloading") {
+    return {
+      kind: "downloading",
+      percent: persisted.percent,
+      transferred: persisted.transferred,
+      total: persisted.total,
+    };
+  }
+  if (persisted.status === "downloaded") {
+    return { kind: "downloaded", version: persisted.version };
+  }
+  return null;
+}
+
+/** Parse a persisted update-state JSON string, returning null on any error so
+ *  a corrupt entry never breaks the panel. */
+function safeParse(raw: string): PersistedUpdateState | null {
+  try {
+    const parsed = JSON.parse(raw) as PersistedUpdateState;
+    if (parsed.status !== "downloading" && parsed.status !== "downloaded") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 /** Human-readable OS label from the platform string. */
 function platformLabel(platform: string): string {
@@ -76,18 +124,48 @@ export function AboutPanel() {
     };
   }, []);
 
+  // Restore the update banner from the persisted snapshot so reopening the
+  // About panel (or restarting the app mid-download) keeps showing progress /
+  // "ready to install" instead of dropping back to idle.
+  useEffect(() => {
+    let cancelled = false;
+    void api.setting
+      .get({ key: UPDATE_STATE_SETTING_KEY })
+      .then(({ value }) => {
+        if (cancelled) return;
+        const restored = stateFromPersisted(value ? safeParse(value) : null);
+        if (restored) setUpdateState(restored);
+      })
+      .catch(() => {
+        // DB read failure is non-fatal; just leave state as idle.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Subscribe to updater push events. update-available fires when the main
   // process finds a newer version (either from the boot check or a manual
-  // check); update-downloaded fires once the download finishes.
+  // check); update-downloadProgress carries live percent/byte counts;
+  // update-downloaded fires once the download finishes.
   useEffect(() => {
     const offAvailable = api.on.updateAvailable((msg) => {
       setUpdateState({ kind: "available", version: msg.version });
+    });
+    const offProgress = api.on.updateDownloadProgress((msg) => {
+      setUpdateState({
+        kind: "downloading",
+        percent: msg.percent,
+        transferred: msg.transferred,
+        total: msg.total,
+      });
     });
     const offDownloaded = api.on.updateDownloaded((msg) => {
       setUpdateState({ kind: "downloaded", version: msg.version });
     });
     return () => {
       offAvailable();
+      offProgress();
       offDownloaded();
     };
   }, []);
@@ -130,10 +208,11 @@ export function AboutPanel() {
   };
 
   const onDownloadUpdate = async () => {
-    setUpdateState({ kind: "downloading" });
+    setUpdateState({ kind: "downloading", percent: 0, transferred: 0, total: 0 });
     try {
       await api.app.downloadUpdate();
-      // update-downloaded push event will move us to "downloaded".
+      // update-downloadProgress events will refresh percent/bytes;
+      // update-downloaded will move us to "downloaded".
     } catch (err) {
       setUpdateState({
         kind: "error",
@@ -271,6 +350,39 @@ function UpdateBanner({
 }) {
   if (state.kind === "idle" || state.kind === "checking") return null;
 
+  // Downloading gets a richer layout: a progress bar + percent/byte counter.
+  if (state.kind === "downloading") {
+    const percent = Math.min(100, Math.max(0, state.percent));
+    const bytesText =
+      state.total > 0
+        ? `${formatBytes(state.transferred)} / ${formatBytes(state.total)}`
+        : formatBytes(state.transferred);
+    return (
+      <div
+        className={cn(
+          "mt-6 flex w-full max-w-md flex-col gap-2 rounded-lg border border-accent/30 bg-accent/5 px-4 py-3",
+        )}
+      >
+        <div className="flex items-center gap-2.5">
+          <IconRefresh size={16} className="shrink-0 animate-spin text-accent" />
+          <span className="truncate text-[0.8571em] text-content">
+            正在下载更新… {percent.toFixed(0)}%
+          </span>
+          <span className="ml-auto shrink-0 tabular-nums text-[0.7143em] text-content-muted">
+            {bytesText}
+          </span>
+        </div>
+        {/* Progress bar track + fill. */}
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-150 ease-out"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
+
   let icon: React.ReactNode;
   let message: string;
   let action: { label: string; onClick: () => void; icon?: React.ReactNode } | null = null;
@@ -286,10 +398,6 @@ function UpdateBanner({
       message = `发现新版本 v${state.version}`;
       action = { label: "立即下载", onClick: onDownload, icon: <IconDownload size={14} /> };
       tone = "accent";
-      break;
-    case "downloading":
-      icon = <IconRefresh size={16} className="animate-spin text-accent" />;
-      message = "正在下载更新…";
       break;
     case "downloaded":
       icon = <IconRocket size={16} className="text-accent" />;

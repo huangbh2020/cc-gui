@@ -34,7 +34,7 @@ function overlayColors() {
  *  `setTitleBarOverlay` only exists on Windows and Linux, where
  *  `titleBarOverlay` paints the area behind the native min/max/close buttons.
  *  macOS uses the traffic-light buttons (see `trafficLightPosition`) and has no
- *  overlay, so the call is a no-op there — without this guard it throws
+ *  overlay, so the call is a no-op there - without this guard it throws
  *  "setTitleBarOverlay is not a function" on macOS. */
 export function updateTitleBarOverlay(): void {
   if (process.platform === "darwin") return;
@@ -79,6 +79,14 @@ export function createMainWindow(): BrowserWindow {
   });
 
   mainWindow.on("ready-to-show", () => mainWindow?.show());
+  // Null out the reference once the window is gone so the optional chains in
+  // sendToRenderer / updateTitleBarOverlay / getMainWindow short-circuit
+  // instead of operating on a destroyed BrowserWindow. Without this, async
+  // callbacks (node-pty onExit/onData, approval bridges) that fire during quit
+  // would dereference a stale, already-destroyed window.
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 
   // Forward renderer console messages to stderr so we can debug blank screens
   // without watching DevTools, AND persist them to main.log so they survive
@@ -133,7 +141,18 @@ export function getMainWindow(): BrowserWindow | null {
   return mainWindow;
 }
 
-/** Send a push event to the renderer (main → renderer). */
+/** Send a push event to the renderer (main -> renderer).
+ *
+ *  Defensive against a closed/destroyed window: node-pty's onExit/onData and
+ *  the approval bridges fire asynchronously, so they can run after the window
+ *  has torn down during quit. Calling webContents.send() on a destroyed window
+ *  throws "Object has been destroyed" (an uncaught main-process exception).
+ *  Drop silently in that case - the renderer is gone and nobody can receive
+ *  the message anyway. */
 export function sendToRenderer(channel: string, ...args: unknown[]): void {
-  mainWindow?.webContents.send(channel, ...args);
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  const wc = win.webContents;
+  if (wc.isDestroyed()) return;
+  wc.send(channel, ...args);
 }

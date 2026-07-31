@@ -168,6 +168,15 @@ type RenderItem =
       turnMeta?: TurnMeta;
       isStreamingTail: boolean;
       isTurnTail: boolean;
+    }
+  | {
+      // Synthesized "开始 · 用时" row shown between send and the first
+      // assistant content block. Not a real message - it's derived in
+      // groupMessagesForRender from runningTurnStartedAt so the user sees
+      // immediate running feedback (stat row + spinner) before any token
+      // lands. Disappears the moment a real assistant turnMeta appears.
+      kind: "pendingTurn";
+      turnMeta: TurnMeta;
     };
 
 /** Flatten a cluster's messages into a single procedural-block stream for
@@ -212,6 +221,10 @@ function isCompletedTurnTail(
 function groupMessagesForRender(
   messages: ChatMessage[],
   isRunning: boolean,
+  /** Send-time anchor (runningTurnStartedAt[sid]) used to synthesize a
+   *  pendingTurn row before the first assistant block arrives. Undefined
+   *  when no turn is in flight or the anchor wasn't stamped. */
+  runningTurnStartedAt?: number,
 ): RenderItem[] {
   const items: RenderItem[] = [];
   let run: ChatMessage[] = [];
@@ -251,6 +264,27 @@ function groupMessagesForRender(
     }
   }
   flush();
+
+  // Synthesize a pendingTurn row when a turn is in flight but no real
+  // assistant content has arrived yet (no open turnMeta exists). This gives
+  // the user immediate "开始 · 用时" + spinner feedback right after send,
+  // instead of a blank gap until the first token lands. The moment a real
+  // assistant message is created (with its own turnMeta), the open-turn
+  // check below becomes false and this row stops rendering - the real
+  // TurnStatRow takes over with the same startedAt (the isNewTurn sites
+  // fall back to runningTurnStartedAt), so timing is continuous.
+  if (isRunning && runningTurnStartedAt != null) {
+    const hasOpenTurn = messages.some(
+      (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
+    );
+    if (!hasOpenTurn) {
+      items.push({
+        kind: "pendingTurn",
+        turnMeta: { startedAt: runningTurnStartedAt },
+      });
+    }
+  }
+
   return items;
 }
 
@@ -327,12 +361,17 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     (s) => (s.subagentsBySession[sessionId] ?? EMPTY_SUBAGENTS).some((a) => a.status === "running"),
   );
   const sessionBusy = isRunning || hasRunningSubagents;
+  // Send-time anchor for the synthesized pendingTurn row (see
+  // groupMessagesForRender). Subscribed so the row appears the instant
+  // sendPrompt stamps it, before any assistant token arrives. Returns
+  // undefined when idle - a stable primitive, no referential churn.
+  const runningTurnStartedAt = useSessionStore((s) => s.runningTurnStartedAt[sessionId]);
   // Merge consecutive purely-procedural assistant messages (thinking + tool
   // only, no text) into single render clusters so a multi-step turn reads
   // as one compact "思考 + N 个操作" card instead of N stacked cards.
   const renderItems = useMemo(
-    () => groupMessagesForRender(messages, isRunning),
-    [messages, isRunning],
+    () => groupMessagesForRender(messages, isRunning, runningTurnStartedAt),
+    [messages, isRunning, runningTurnStartedAt],
   );
   const sendPrompt = useSessionStore((s) => s.sendPrompt);
   const interrupt = useSessionStore((s) => s.interrupt);
@@ -770,6 +809,23 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           </div>
         );
       }
+      if (item.kind === "pendingTurn") {
+        // Synthesized pre-token running row: just the stat row (which carries
+        // its own spinner via the `live` branch) plus a streaming-tail
+        // spinner, mirroring a real streaming assistant message's tail so the
+        // feedback reads as "the model is working". Disappears once a real
+        // assistant turnMeta exists (groupMessagesForRender stops emitting it).
+        return (
+          <div className="px-[var(--chat-gutter)]">
+            <div className="mx-auto max-w-5xl">
+              <TurnStatRow meta={item.turnMeta} />
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <IconLoader2 size={12} className="animate-spin text-accent" />
+              </div>
+            </div>
+          </div>
+        );
+      }
       const blocks = flattenCluster(item.msgs);
       return (
         <div key={item.msgs[0].id} className="px-[var(--chat-gutter)]">
@@ -822,6 +878,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               renderItem={renderListItem}
               keyExtractor={(item) => {
                 if (item.kind === "single") return item.msg.id;
+                if (item.kind === "pendingTurn") return "pending-turn";
                 return `cluster:${item.msgs[0].id}`;
               }}
               maintainScrollAtEnd

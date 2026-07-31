@@ -262,6 +262,16 @@ export interface SessionState {
    *  `isRunningForActiveSession` selector below (or compute on the fly)
    *  so consumers always see "am I running?" relative to the active thread. */
   runningBySession: Record<string, boolean>;
+  /** Per-session wall-clock ms stamped at send time - the time anchor for the
+   *  "开始 · 用时" stat row BEFORE the first assistant content block arrives.
+   *  Without this, the stat row only appears when the first delta/tool/plan
+   *  lands (which can lag send by seconds while the model "thinks"), leaving
+   *  the user with no running feedback. The three isNewTurn stamping sites
+   *  (flushDeltas / tool.use / upsertLivePlanBlock) fall back to this value
+   *  so the real turnMeta.continues the synthesized row's timing seamlessly.
+   *  NOT persisted - it's transient: cleared on turn.done / error / interrupt
+   *  / session delete, alongside runningBySession. */
+  runningTurnStartedAt: Record<string, number>;
   claudeInstalled: boolean | null;
   /** Settings modal visibility (opened from the LeftBar ⚙ footer and the CLI-missing CTA). */
   settingsOpen: boolean;
@@ -1018,6 +1028,10 @@ function upsertLivePlanBlock(
   plan: string,
   phase: PlanUpdateEvent["phase"],
   hasApproval: boolean,
+  /** Send-time anchor (runningTurnStartedAt) to stamp on a newly-opened
+   *  turn's turnMeta, so the real row continues the synthesized pendingTurn
+   *  row's timing seamlessly. Omitted on the cleared-phase path. */
+  startedAtAnchor?: number,
 ): ChatMessage[] {
   if (phase === "cleared") {
     // Remove any live plan block from the current turn's trailing assistant
@@ -1035,7 +1049,7 @@ function upsertLivePlanBlock(
   const targetIndex = findOpenTurnTrailingAssistant(next);
   if (targetIndex === -1) {
     // No open-turn assistant message exists yet. Plan events commonly arrive
-    // before any text/tool block, so we open the turn here — same heuristic
+    // before any text/tool block, so we open the turn here - same heuristic
     // as the tool.use branch: a turn is "open" while any assistant message
     // has turnMeta.endedAt === undefined; if none, this starts a new turn.
     const isNewTurn = !next.some(
@@ -1047,7 +1061,9 @@ function upsertLivePlanBlock(
       role: "assistant",
       blocks: [block],
       createdAt: Date.now(),
-      ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
+      // Prefer the send-time anchor so timing is continuous with the
+      // synthesized pendingTurn row; fall back to now if none was passed.
+      ...(isNewTurn ? { turnMeta: { startedAt: startedAtAnchor ?? Date.now() } } : {}),
     };
     next = [...next, msg];
     // A new plan-mode turn is opening → demote any prior latest turn-files
@@ -1424,13 +1440,20 @@ function flushDeltas(): void {
           const isNewTurn = !next.some(
             (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
           );
+          // Prefer the send-time anchor (stamped in sendPrompt) so the real
+          // turnMeta continues the synthesized pendingTurn row's timing
+          // seamlessly - otherwise the duration would jump (the anchor is
+          // earlier than this first-delta arrival). Falls back to now if the
+          // anchor is missing (e.g. a resumed/legacy turn with no anchor).
+          const startedAt =
+            (isNewTurn && useSessionStore.getState().runningTurnStartedAt[sid]) || Date.now();
           msg = {
             id: e.messageId,
             sessionId: sid,
             role: "assistant",
             blocks: [],
             createdAt: Date.now(),
-            ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
+            ...(isNewTurn ? { turnMeta: { startedAt } } : {}),
           };
           next = [...next, msg];
           // A new turn is opening → demote the previous "latest" turn-files
@@ -1557,6 +1580,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   accentColor: null,
   messagesBySession: {},
   runningBySession: {},
+  runningTurnStartedAt: {},
   claudeInstalled: null,
   settingsOpen: false,
   commandPaletteOpen: false,
@@ -2301,6 +2325,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete messagesBySession[id];
       const runningBySession = { ...s.runningBySession };
       delete runningBySession[id];
+      const runningTurnStartedAt = { ...s.runningTurnStartedAt };
+      delete runningTurnStartedAt[id];
       const todosBySession = { ...s.todosBySession };
       delete todosBySession[id];
       const planBySession = { ...s.planBySession };
@@ -2332,6 +2358,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           sessionsHasMoreByProject: { ...s.sessionsHasMoreByProject, [projectId]: hasMoreActive },
           messagesBySession,
           runningBySession,
+          runningTurnStartedAt,
           todosBySession,
           planBySession,
           subagentsBySession,
@@ -2366,6 +2393,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         sessionsHasMoreByProject: { ...s.sessionsHasMoreByProject, [projectId]: hasMoreActive },
         messagesBySession,
         runningBySession,
+        runningTurnStartedAt,
         todosBySession,
         planBySession,
         subagentsBySession,
@@ -2539,24 +2567,46 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         [sessionId]: [...(s.messagesBySession[sessionId] ?? []), userMsg],
       },
       runningBySession: { ...s.runningBySession, [sessionId]: true },
+      // Stamp the turn's start time NOW (send moment), not when the first
+      // assistant block arrives. This anchors the synthesized "开始 · 用时"
+      // row that renders before any token lands, and the real turnMeta
+      // (stamped at the first delta/tool/plan) falls back to this value so
+      // the timing is continuous across the handoff.
+      runningTurnStartedAt: { ...s.runningTurnStartedAt, [sessionId]: Date.now() },
     }));
 
 	    // 2. fire the turn; events stream back via ingestEvent. Ship the
 	    //    current model / customModelId / effort / permissionMode from the
-	    //    store as per-turn overrides — the DB row may be stale because
+	    //    store as per-turn overrides - the DB row may be stale because
 	    //    `setModel` / `setCustomModel` persist via fire-and-forget
 	    //    `updateSettings`, which races `sendTurn`. The main handler
 	    //    applies these overrides to the in-memory session so
 	    //    RuntimeManager always sees the latest UI state.
 	    const { model, customModelId, effort, permissionMode } = get();
-	    const { session: updated } = await api.claude.sendTurn({
-	      sessionId,
-	      prompt,
-	      model,
-	      effort,
-	      permissionMode,
-	      customModelId,
-	    });
+	    let updated;
+	    try {
+	      ({ session: updated } = await api.claude.sendTurn({
+	        sessionId,
+	        prompt,
+	        model,
+	        effort,
+	        permissionMode,
+	        customModelId,
+	      }));
+	    } catch (err) {
+	      // The IPC itself rejected (not a streamed `error` event). Without
+	      // this the running flag + synthesized stat row would stick forever
+	      // - no turn.done/error event will arrive to clear them. Reset both
+	      // so the composer unlocks and the pending row disappears.
+	      console.error("sendTurn IPC failed:", err);
+	      set((s) => {
+	        const runningBySession = { ...s.runningBySession, [sessionId]: false };
+	        const runningTurnStartedAt = { ...s.runningTurnStartedAt };
+	        delete runningTurnStartedAt[sessionId];
+	        return { runningBySession, runningTurnStartedAt };
+	      });
+	      return;
+	    }
     set((s) => {
       const pid = updated.projectId;
       const prevList = s.sessionsByProject[pid] ?? [];
@@ -2575,7 +2625,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Clear only the interrupted thread's flag. The `turn.done` (with reason
     // "interrupted") event from main will also clear it; doing it here too
     // is a defensive in case the event races with the user click.
-    set((s) => ({ runningBySession: { ...s.runningBySession, [sessionId]: false } }));
+    set((s) => {
+      const runningTurnStartedAt = { ...s.runningTurnStartedAt };
+      delete runningTurnStartedAt[sessionId];
+      return {
+        runningBySession: { ...s.runningBySession, [sessionId]: false },
+        runningTurnStartedAt,
+      };
+    });
   },
 
   ingestEvent: (e) => {
@@ -2606,7 +2663,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set((s) => {
         const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
         const hasApproval = !!s.pendingPlanApprovalBySession[sid];
-        const next = upsertLivePlanBlock(list, e.plan, e.phase, hasApproval);
+        const next = upsertLivePlanBlock(list, e.plan, e.phase, hasApproval, s.runningTurnStartedAt[sid] ?? Date.now());
         return {
           planBySession: {
             ...s.planBySession,
@@ -2681,7 +2738,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // payload — re-sync the inline block so it shows exactly what the
         // user is being asked to approve (phase stays "ready" per the prior
         // plan.update emitted by the adapter on ExitPlanMode).
-        const next = upsertLivePlanBlock(list, e.plan, "ready", true);
+        const next = upsertLivePlanBlock(list, e.plan, "ready", true, s.runningTurnStartedAt[sid] ?? Date.now());
         return {
           pendingPlanApprovalBySession: {
             ...s.pendingPlanApprovalBySession,
@@ -2779,13 +2836,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             const isNewTurn = !next.some(
               (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
             );
+            // Prefer the send-time anchor (stamped in sendPrompt) so the real
+            // turnMeta continues the synthesized pendingTurn row's timing
+            // seamlessly - otherwise the duration would jump. Falls back to
+            // now if the anchor is missing (resumed/legacy turn).
+            const startedAt = (isNewTurn && s.runningTurnStartedAt[sid]) || Date.now();
             lastAssistant = {
               id: `a_${Date.now()}`,
               sessionId: sid,
               role: "assistant",
               blocks: [],
               createdAt: Date.now(),
-              ...(isNewTurn ? { turnMeta: { startedAt: Date.now() } } : {}),
+              ...(isNewTurn ? { turnMeta: { startedAt } } : {}),
             };
             next = [...next, lastAssistant];
             // A new turn opened (no prior assistant message at all) — demote
@@ -2822,14 +2884,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               ? { ...m, turnMeta: { ...m.turnMeta, endedAt: errEndedAt } }
               : m,
           );
-          set((s) => ({
-            runningBySession: { ...s.runningBySession, [sid]: false },
-            // Only drop approvals + files belonging to this session; the
-            // head pendingApprovals is per-session already, but it's a
-            // flat array — filter down to the affected one.
-            pendingApprovals: s.pendingApprovals.filter((p) => p.sessionId !== sid),
-            turnFilesBySession: { ...s.turnFilesBySession, [sid]: [] },
-          }));
+          set((s) => {
+            const runningTurnStartedAt = { ...s.runningTurnStartedAt };
+            delete runningTurnStartedAt[sid];
+            return {
+              runningBySession: { ...s.runningBySession, [sid]: false },
+              runningTurnStartedAt,
+              // Only drop approvals + files belonging to this session; the
+              // head pendingApprovals is per-session already, but it's a
+              // flat array - filter down to the affected one.
+              pendingApprovals: s.pendingApprovals.filter((p) => p.sessionId !== sid),
+              turnFilesBySession: { ...s.turnFilesBySession, [sid]: [] },
+            };
+          });
           break;
         }
         case "turn.done": {
@@ -2916,6 +2983,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 : prevHistory;
             return {
               runningBySession: { ...s.runningBySession, [sid]: false },
+              // Turn closed - drop the send-time anchor so the synthesized
+              // pendingTurn row stops rendering (it keys off isRunning, but
+              // clearing this is belt-and-suspenders and keeps the slice tidy
+              // for the next turn).
+              runningTurnStartedAt: (() => {
+                const m = { ...s.runningTurnStartedAt };
+                delete m[sid];
+                return m;
+              })(),
               pendingApprovals: s.pendingApprovals.filter((p) => p.sessionId !== sid),
               pendingPlanApprovalBySession: restPlanApprovals,
               // Keep the plan card visible when the plan was APPROVED (phase
@@ -3240,7 +3316,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // on reject it emits phase:"cleared" which removes the block. Either
         // way we flip hasApproval off immediately so the badge doesn't linger.
         const list = s.messagesBySession[sessionId] ?? EMPTY_MESSAGES;
-        const next = upsertLivePlanBlock(list, pending.plan, "ready", false);
+        const next = upsertLivePlanBlock(list, pending.plan, "ready", false, s.runningTurnStartedAt[sessionId] ?? Date.now());
         return {
           pendingPlanApprovalBySession: rest,
           messagesBySession: next === list

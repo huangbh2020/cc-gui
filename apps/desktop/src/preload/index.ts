@@ -239,6 +239,17 @@ const api = {
         ipcRenderer.off(IPC.UPDATE_AVAILABLE, listener);
       };
     },
+    /** Fires repeatedly while an update downloads, carrying percent + byte
+     *  counts so the About panel can render a progress bar. */
+    updateDownloadProgress(handler: (msg: Extract<MainToRendererMessage, { channel: "update:downloadProgress" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.UPDATE_DOWNLOAD_PROGRESS) handler(msg);
+      };
+      ipcRenderer.on(IPC.UPDATE_DOWNLOAD_PROGRESS, listener);
+      return () => {
+        ipcRenderer.off(IPC.UPDATE_DOWNLOAD_PROGRESS, listener);
+      };
+    },
     /** Fires when a downloaded update is ready to install. */
     updateDownloaded(handler: (msg: Extract<MainToRendererMessage, { channel: "update:downloaded" }>) => void): () => void {
       const listener = (_e: unknown, msg: MainToRendererMessage) => {

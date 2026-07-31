@@ -230,35 +230,30 @@ const BlockView = memo(function BlockView({
   block: Block;
   defaultOpen?: boolean;
   beforeMap?: BeforeContentMap;
-  /** When true, the text block is still receiving deltas — skip the expensive
-   *  Markdown parse and render as cheap whitespace-pre-wrap until done. */
+  /** Formerly drove a raw-text short-circuit for the streaming tail; now
+   *  unused by the text branch (markdown renders progressively via
+   *  useDeferredValue instead). Kept on the signature for interface
+   *  stability - MessageBlocks still forwards it down. */
   isStreamingTail?: boolean;
 }) {
   switch (block.kind) {
     case "text": {
-      // ── useDeferredValue: defer markdown parsing until text settles ──
-      // During streaming the text changes every delta (~60 Hz). Parsing
-      // markdown + syntax highlighting on every frame is wasteful. We create
-      // a deferred copy of the text that React may lag behind the real value;
-      // while they differ we render cheap white-space-pre-wrap, and only when
-      // the deffered value catches up (i.e. deltas have paused) do we run
-      // the full Markdown component. This keeps the UI responsive during
-      // long streaming turns.
+      // useDeferredValue throttles the markdown re-parse: `block.text` updates
+      // every delta (~60 Hz) but `deferredText` only advances when React has
+      // idle time, so <Markdown> (memoized) re-renders at a paced cadence
+      // instead of every frame. Markdown thus appears PROGRESSIVELY during
+      // streaming and converges naturally when the turn ends - no more
+      // "raw text until done, then flip to markdown" delay.
       //
-      // For the *streaming tail* (isStreamingTail=true) we always render raw
-      // text — the message is still actively receiving deltas so there's no
-      // point parsing markdown at all until the turn finishes.
+      // We deliberately no longer fall back to whitespace-pre-wrap while
+      // streaming (the old `isStreamingTail || isStale` short-circuit): that
+      // held the whole message as plain text for the entire turn, which is
+      // what users perceived as "markdown rendering lag". Shiki highlighting
+      // of code blocks is itself deferred inside <Markdown> (lazy highlighter
+      // singleton + LRU cache + useMemo on rawCode), so the expensive path is
+      // already guarded without sacrificing live markdown formatting.
       // eslint-disable-next-line react-hooks/rules-of-hooks
       const deferredText = useDeferredValue(block.text);
-      const isStale = deferredText !== block.text;
-
-      if (isStreamingTail || isStale) {
-        return (
-          <div className="whitespace-pre-wrap break-words leading-relaxed text-content [font-size:var(--chat-font-size)]">
-            {block.text}
-          </div>
-        );
-      }
       return <Markdown>{deferredText}</Markdown>;
     }
 

@@ -28,6 +28,17 @@ export const THEME_SETTING_KEY = "theme";
 export const ThemeNameSchema = z.enum(["dark", "light", "system"]);
 
 /**
+ * Setting key under which the auto-update flow state is persisted, so reopening
+ * the About panel (or restarting the app mid-download) restores the progress /
+ * "ready to install" banner instead of dropping the user back to idle.
+ *
+ * Value is a JSON-encoded {@link PersistedUpdateState} string. The main process
+ * writes it from the autoUpdater event callbacks; the renderer reads it on mount
+ * via the generic `setting.get` IPC and clears it after install.
+ */
+export const UPDATE_STATE_SETTING_KEY = "update.state";
+
+/**
  * Display mode for the center pane:
  *  - "single" (default): clicking a thread in the left bar replaces the
  *    center pane content (legacy behavior).
@@ -532,6 +543,43 @@ export interface UpdateDownloadedMessage {
   releaseNotes?: string;
 }
 
+/** Pushed repeatedly while an update downloads, carrying live progress so the
+ *  About panel can render a percentage + byte counter instead of a static
+ *  spinner. `percent` is 0-100. */
+export interface UpdateDownloadProgressMessage {
+  channel: "update:downloadProgress";
+  /** Version string of the update being downloaded. */
+  version: string;
+  /** Download progress, 0-100. */
+  percent: number;
+  /** Bytes transferred so far. */
+  transferred: number;
+  /** Total bytes to download (0 if unknown). */
+  total: number;
+  /** Current download speed in bytes/second. */
+  bytesPerSecond: number;
+}
+
+/** Persisted snapshot of the update flow, stored under
+ *  {@link UPDATE_STATE_SETTING_KEY} so the About panel can restore the banner
+ *  after being unmounted/remounted or after an app restart. Only the states
+ *  worth restoring are persisted - transient checks/errors stay in memory. */
+export interface PersistedUpdateState {
+  /** "downloading" = an update is mid-download (autoUpdater resumes on boot);
+   *  "downloaded" = an update is ready to install on next restart. */
+  status: "downloading" | "downloaded";
+  /** Version string of the update. */
+  version: string;
+  /** Last seen download percent (0-100). Only meaningful for "downloading". */
+  percent: number;
+  /** Bytes transferred so far. Only meaningful for "downloading". */
+  transferred: number;
+  /** Total bytes (0 if unknown). Only meaningful for "downloading". */
+  total: number;
+  /** ISO timestamp of when this snapshot was written. */
+  updatedAt: string;
+}
+
 /* ── File operations (read / list dir / write) ── */
 
 /** Read a single file's current content as utf-8 text. The main handler
@@ -920,6 +968,7 @@ export type MainToRendererMessage =
   | TerminalExitMessage
   | ThemeChangedMessage
   | UpdateAvailableMessage
+  | UpdateDownloadProgressMessage
   | UpdateDownloadedMessage;
 
 /* ── Integrated terminal (xterm.js + node-pty) ──
@@ -1198,6 +1247,7 @@ export const IPC = {
   TERMINAL_EXIT: "terminal:exit",
   THEME_CHANGED: "theme:changed",
   UPDATE_AVAILABLE: "update:available",
+  UPDATE_DOWNLOAD_PROGRESS: "update:downloadProgress",
   UPDATE_DOWNLOADED: "update:downloaded",
 } as const;
 
