@@ -81,13 +81,13 @@ jobs:
       # before packaging so the .node binary matches.
       - name: Rebuild native modules
         shell: bash
-        run: pnpm --filter @my-claude-gui/desktop rebuild:native
+        run: pnpm --filter @mcode/desktop rebuild:native
 
       - name: Build & package
         # Use bash on Windows too (the runner ships Git Bash) so the env vars
         # and any shell syntax in the package script work uniformly.
         shell: bash
-        run: pnpm --filter @my-claude-gui/desktop package
+        run: pnpm --filter @mcode/desktop package
         env:
           # The renderer build (shiki's ~100 language grammar chunks +
           # monaco workers) peaks above Node's default 2GB heap on CI.

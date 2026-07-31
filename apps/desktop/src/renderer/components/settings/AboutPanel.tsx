@@ -31,11 +31,11 @@ import type { AppInfoResult, CheckForUpdatesResult } from "@contracts/ipc";
  */
 
 /** App display name (matches the root package.json "name"). */
-const APP_NAME = "my-claude-gui";
+const APP_NAME = "Mcode";
 /** One-line description shown under the app name. */
 const APP_DESC = "基于 Claude Agent SDK 构建的桌面端 GUI(Electron 三栏 IDE)";
 /** GitHub repo URL. */
-const REPO_URL = "https://github.com/huangbh2020/cc-gui";
+const REPO_URL = "https://github.com/huangbh2020/mcode";
 /** SPDX license identifier. */
 const LICENSE = "MIT";
 

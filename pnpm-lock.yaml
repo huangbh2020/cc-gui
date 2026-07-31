@@ -41,12 +41,12 @@ importers:
       '@legendapp/list':
         specifier: 3.0.0-beta.44
         version: 3.0.0-beta.44(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@mcode/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@monaco-editor/react':
         specifier: ^4.7.0
         version: 4.7.0(monaco-editor@0.56.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@my-claude-gui/contracts':
-        specifier: workspace:*
-        version: link:../../packages/contracts
       '@shikijs/rehype':
         specifier: ^4.3.1
         version: 4.3.1
@@ -4067,7 +4067,7 @@ snapshots:
   '@jridgewell/trace-mapping@0.3.31':
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
-      '@jridgewell/sourcemap-codec': 1.5.0
+      '@jridgewell/sourcemap-codec': 1.4.15
 
   '@kwsites/file-exists@1.1.1(supports-color@7.2.0)':
     dependencies:

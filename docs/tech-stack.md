@@ -1,6 +1,6 @@
 # 技术栈文档
 
-> my-claude-gui — 基于 Claude Agent SDK 的桌面端 GUI
+> Mcode — 基于 Claude Agent SDK 的桌面端 GUI
 >
 > 本文档记录项目**实际使用**的技术栈与依赖,以及关键的技术决策与踩坑记录。所有版本号来自 `package.json`,与实际安装一致。
 
@@ -102,7 +102,7 @@
 ## 四、目录结构
 
 ```
-my-claude-gui/
+mcode/
 ├── package.json              # workspace 根(turbo + pnpm)
 ├── pnpm-workspace.yaml       # workspace 包定义 + onlyBuiltDependencies
 ├── turbo.json                # 任务编排

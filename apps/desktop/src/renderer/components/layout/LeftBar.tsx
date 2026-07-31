@@ -35,7 +35,7 @@ import type { Project, Session } from "@contracts/session";
  *
  * Layout sketch:
  *   EXPLORER                       [+ 添加项目]
- *   ▾ 📁 my-claude-gui         + 🗑
+ *   ▾ 📁 mcode                 + 🗑
  *       💬 P2会话持久化         📦 🗑
  *       💬 自定义模型     ✓    📦 🗑
  *       加载更多（还有 3 条）

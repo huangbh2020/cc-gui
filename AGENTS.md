@@ -1,12 +1,12 @@
 # AGENTS.md
 
-本文件指导 AI agent(含本项目自身用 Claude Code 开发时)如何理解并参与 my-claude-gui 的开发。先读本文,再动手。
+本文件指导 AI agent(含本项目自身用 Claude Code 开发时)如何理解并参与 Mcode 的开发。先读本文,再动手。
 
 ---
 
 ## 项目是什么
 
-**my-claude-gui** — 基于 Claude Agent SDK 构建的**桌面端 GUI**(Electron 三栏 IDE)。
+**Mcode**(*my* Code)- 基于 Claude Agent SDK 构建的**桌面端 GUI**(Electron 三栏 IDE)。
 
 核心理念:**不重新实现 agent,只做 Claude 的交互界面**。通过 Agent SDK 驱动 claude agent loop;本应用负责会话管理、实时渲染、工具审批、IDE 能力(文件/git/终端)。
 

@@ -1,4 +1,4 @@
-# my-claude-gui
+# Mcode
 
 **English** | [中文](#中文)
 
@@ -6,9 +6,9 @@
 
 ## English
 
-A desktop GUI for [Claude Code](https://code.claude.com/) — a three-pane IDE built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk). It does **not** reimplement the agent; it provides the interaction surface: session management, real-time streaming, tool approvals, and IDE affordances (files, git, terminal).
+**Mcode** - *my* Code. A desktop GUI for [Claude Code](https://code.claude.com/) - a three-pane IDE built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk). It does **not** reimplement the agent; it provides the interaction surface: session management, real-time streaming, tool approvals, and IDE affordances (files, git, terminal).
 
-![Home](docs/iamges/首页分栏效果.png)
+![Home](docs/images/首页分栏效果.png)
 
 ### Features
 
@@ -28,7 +28,7 @@ A desktop GUI for [Claude Code](https://code.claude.com/) — a three-pane IDE b
 - **Git**: view changed files, inspect line-by-line diffs, and configure git identity.
 - **Terminal**: a built-in terminal (xterm.js + node-pty) at the bottom of the right panel.
 
-![Git diff](docs/iamges/git差异预览.png)
+![Git diff](docs/images/git差异预览.png)
 
 #### ⚙️ Rich settings
 - **Model**: pick the model, set the reasoning effort, choose a permission mode, or specify a custom model id (for OpenAI-compatible endpoints).
@@ -38,7 +38,7 @@ A desktop GUI for [Claude Code](https://code.claude.com/) — a three-pane IDE b
 
 | Model settings | Appearance | Terminal | Git |
 |---|---|---|---|
-| ![Model](docs/iamges/模型设置.png) | ![Appearance](docs/iamges/外观设置.png) | ![Terminal](docs/iamges/终端设置.png) | ![Git](docs/iamges/git设置.png) |
+| ![Model](docs/images/模型设置.png) | ![Appearance](docs/images/外观设置.png) | ![Terminal](docs/images/终端设置.png) | ![Git](docs/images/git设置.png) |
 
 #### 🔄 Other
 - Auto-update via `electron-updater` (pulls `latest*.yml` from GitHub Releases); manual check in **Settings → About**.
@@ -74,7 +74,7 @@ pnpm package
 
 ### Download
 
-Pre-built binaries are published on [GitHub Releases](https://github.com/huangbh2020/cc-gui/releases):
+Pre-built binaries are published on [GitHub Releases](https://github.com/huangbh2020/mcode/releases):
 
 - **macOS**: `.dmg` (arm64 + x64) — unsigned; right-click → Open on first launch.
 - **Windows**: `.exe` NSIS installer (x64) — unsigned; SmartScreen will warn.
@@ -99,9 +99,9 @@ MIT. This project does not redistribute or bundle a standalone `claude` binary �
 
 ## 中文
 
-基于 [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) 构建的 [Claude Code](https://code.claude.com/) 桌面端 GUI——一个三栏 IDE。本应用**不重新实现 agent**,只提供交互界面:会话管理、实时流式渲染、工具审批、IDE 能力(文件、git、终端)。
+**Mcode** - *my* Code。基于 [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) 构建的 [Claude Code](https://code.claude.com/) 桌面端 GUI--一个三栏 IDE。本应用**不重新实现 agent**,只提供交互界面:会话管理、实时流式渲染、工具审批、IDE 能力(文件、git、终端)。
 
-![首页](docs/iamges/首页分栏效果.png)
+![首页](docs/images/首页分栏效果.png)
 
 ### 功能特性
 
@@ -121,7 +121,7 @@ MIT. This project does not redistribute or bundle a standalone `claude` binary �
 - **Git**:查看改动文件、逐行 diff 预览、配置 git 身份。
 - **终端**:右栏底部的内置终端(xterm.js + node-pty)。
 
-![Git 差异预览](docs/iamges/git差异预览.png)
+![Git 差异预览](docs/images/git差异预览.png)
 
 #### ⚙️ 丰富的设置
 - **模型**:选择模型、设置思考力度、选择权限模式,或填写自定义模型 id(兼容 OpenAI 协议端点)。
@@ -131,7 +131,7 @@ MIT. This project does not redistribute or bundle a standalone `claude` binary �
 
 | 模型设置 | 外观设置 | 终端设置 | Git 设置 |
 |---|---|---|---|
-| ![模型设置](docs/iamges/模型设置.png) | ![外观设置](docs/iamges/外观设置.png) | ![终端设置](docs/iamges/终端设置.png) | ![Git 设置](docs/iamges/git设置.png) |
+| ![模型设置](docs/images/模型设置.png) | ![外观设置](docs/images/外观设置.png) | ![终端设置](docs/images/终端设置.png) | ![Git 设置](docs/images/git设置.png) |
 
 #### 🔄 其他
 - 自动更新:通过 `electron-updater` 从 GitHub Releases 拉 `latest*.yml`;也可在**设置 → 关于**手动检查。
@@ -167,7 +167,7 @@ pnpm package
 
 ### 下载
 
-预编译二进制发布在 [GitHub Releases](https://github.com/huangbh2020/cc-gui/releases):
+预编译二进制发布在 [GitHub Releases](https://github.com/huangbh2020/mcode/releases):
 
 - **macOS**:`.dmg`(arm64 + x64)——未签名,首次打开需右键 → 打开。
 - **Windows**:`.exe` NSIS 安装包(x64)——未签名,SmartScreen 会提示。

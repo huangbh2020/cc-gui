@@ -2,17 +2,17 @@
  * Dereference pnpm WORKSPACE symlinks that point outside the app dir.
  *
  * electron-builder's asar packager walks node_modules and follows symlinks.
- * pnpm workspaces symlink the workspace package (e.g. @my-claude-gui/contracts)
+ * pnpm workspaces symlink the workspace package (e.g. @mcode/contracts)
  * to ../../../../packages/contracts, which resolves OUTSIDE apps/desktop and
  * whose path contains no "node_modules" segment. The packager then throws
  * "path must be under appDir" because the real path neither starts with the app
  * dir nor contains node_modules (the two cases getRelativePath allows).
  *
  * Regular .pnpm symlinks are fine - their paths contain "node_modules", which
- * the packager handles. Only workspace packages (under @my-claude-gui/) point
+ * the packager handles. Only workspace packages (under @mcode/) point
  * outside via a packages/ path, so we dereference ONLY those.
  *
- * This script replaces just the @my-claude-gui/* symlinks with real directory
+ * This script replaces just the @mcode/* symlinks with real directory
  * copies. It's idempotent and leaves native modules (.pnpm symlinks) intact so
  * @electron/rebuild can still rebuild them.
  *
@@ -23,14 +23,14 @@ const { readdirSync, readlinkSync, rmSync, lstatSync, cpSync } = require("node:f
 const { dirname, join, resolve } = require("node:path");
 
 const appDir = resolve(__dirname, "..");
-const scopedDir = join(appDir, "node_modules", "@my-claude-gui");
+const scopedDir = join(appDir, "node_modules", "@mcode");
 
 let count = 0;
 let entries;
 try {
   entries = readdirSync(scopedDir);
 } catch {
-  console.log("[dereference] no @my-claude-gui scope in node_modules - nothing to do");
+  console.log("[dereference] no @mcode scope in node_modules - nothing to do");
   process.exit(0);
 }
 

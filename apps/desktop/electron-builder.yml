@@ -2,8 +2,8 @@
 # Run via `pnpm package` (electron-vite build && electron-builder).
 # Output goes to `apps/desktop/release/` (gitignored).
 
-appId: com.huangbh.claude-gui
-productName: Claude GUI
+appId: com.huangbh.mcode
+productName: Mcode
 copyright: MIT
 # Version is read from package.json (currently 0.1.0).
 
@@ -33,7 +33,7 @@ files:
   # not needed in node_modules at runtime. Excluding it also avoids asar errors:
   # the workspace symlink resolves outside the app dir, which the packager
   # rejects ("path must be under appDir").
-  - "!**/node_modules/@my-claude-gui/**"
+  - "!**/node_modules/@mcode/**"
 
 # node-pty ships a native .node addon; sql.js loads a wasm/asm.js blob at
 # runtime. Unpack them from the asar so they can be require()'d from disk.
@@ -78,4 +78,4 @@ nsis:
 publish:
   provider: github
   owner: huangbh2020
-  repo: cc-gui
+  repo: mcode

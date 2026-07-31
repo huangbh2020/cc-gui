@@ -1,5 +1,5 @@
 {
-  "name": "@my-claude-gui/contracts",
+  "name": "@mcode/contracts",
   "version": "0.0.0",
   "private": true,
   "type": "module",
