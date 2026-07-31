@@ -63,7 +63,8 @@ const MESSAGE_LIST_TOP_PADDING = 10;
 
 /** Distance from the bottom (px) under which the list is considered "at the
  *  bottom" - the jump-to-bottom button is hidden, and new content auto-follows.
- *  Kept small so the button appears as soon as the user scrolls up at all. */
+ *  The button appears once the user scrolls more than this far below the
+ *  latest content, i.e. as soon as they scroll up past one screenful. */
 const NEAR_BOTTOM_THRESHOLD = 80;
 
 /** Format a wall-clock ms timestamp as HH:MM:SS (local time). */
@@ -632,10 +633,21 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // otherwise. Used both by the onScroll handler and the data-change effect so
   // the button stays correct when content grows without a scroll event (e.g.
   // streaming deltas append while the user is parked mid-history).
+  //
+  // LegendList's `getState()` exposes three relevant values:
+  //   - scroll        : current scroll offset from the top
+  //   - scrollLength  : the *viewport* height (NOT total content height!)
+  //   - contentLength : total scrollable content height
+  // Distance from the bottom is therefore `contentLength - scroll - scrollLength`
+  // (mirrors the library's own `distanceFromEnd` in checkAtBottom.ts). The
+  // previous code used `scrollLength - scroll`, which treats the viewport
+  // height as the content height and only surfaces the button after scrolling
+  // up past ~one viewport minus 80px.
   const recomputeNearBottom = useCallback((): boolean => {
     const state = virtualListRef.current?.getState();
     if (!state) return true; // no list yet -> treat as "at bottom" (no button)
-    return state.scrollLength - state.scroll < NEAR_BOTTOM_THRESHOLD;
+    const distanceFromEnd = state.contentLength - state.scroll - state.scrollLength;
+    return distanceFromEnd < NEAR_BOTTOM_THRESHOLD;
   }, []);
 
   // Scroll callback from LegendList: update scroll position for MessageTimeline
@@ -644,7 +656,8 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     const state = virtualListRef.current?.getState();
     if (!state) return;
     setVirtualScrollTop(state.scroll);
-    setShowJumpBottom(state.scrollLength - state.scroll >= NEAR_BOTTOM_THRESHOLD);
+    const distanceFromEnd = state.contentLength - state.scroll - state.scrollLength;
+    setShowJumpBottom(distanceFromEnd >= NEAR_BOTTOM_THRESHOLD);
   }, []);
 
   // Whether the session has any messages yet. Computed early (before the

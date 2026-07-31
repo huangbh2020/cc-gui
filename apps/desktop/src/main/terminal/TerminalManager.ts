@@ -129,13 +129,23 @@ class TerminalManagerImpl {
     const id = randomUUID();
     let pty: IPty;
     try {
+      // On Windows, force the conpty.dll path (useConptyDll: true). node-pty's
+      // default ConPTY path (useConptyDll: false) forks a helper process
+      // (conpty_console_list_agent) on every kill(); that helper calls
+      // AttachConsole(shellPid), which races with the shell exiting and throws
+      // an uncaught "Error: AttachConsole failed" from the forked child. It's
+      // harmless (the child crashes, parent carries on with a 5s fallback) but
+      // spams stderr on app shutdown (disposeAll -> kill each terminal) and on
+      // every terminal close. The DLL path kills via inSocket.destroy() +
+      // ptyNative.kill() and never forks the agent, eliminating the noise.
+      // Non-Windows ignores the option.
       pty = ptyMod.spawn(resolved.file, resolved.args, {
         name: "xterm-256color",
         cols,
         rows,
         cwd: opts.cwd,
         env,
-        // Windows: use ConPTY when available (node-pty default on modern Win).
+        useConptyDll: process.platform === "win32",
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

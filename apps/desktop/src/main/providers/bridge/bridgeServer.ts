@@ -265,8 +265,18 @@ export async function startBridge(upstream: UpstreamConfig): Promise<BridgeHandl
   const server: Server = createServer((req, res) => {
     // The Claude binary POSTs to {baseUrl}/v1/messages. Accept either
     // /v1/messages or a bare /messages for robustness.
-    const url = req.url ?? "";
-    if (req.method === "POST" && (url.endsWith("/v1/messages") || url.endsWith("/messages"))) {
+    //
+    // IMPORTANT: strip the query string before matching. The binary appends
+    // `?beta=true` to the path when ANTHROPIC_MODEL is a non-first-party name
+    // (it negotiates the anthropic-beta capability via query instead of a
+    // header on third-party routes). A bare `endsWith("/v1/messages")` fails
+    // to match `/v1/messages?beta=true`, so the request fell through to the
+    // 404 branch and the binary interpreted that 404 as "selected model may
+    // not exist" - which is exactly the failure users saw with OpenAI-format
+    // gateways (e.g. MiniMax-M3). Matching on the path alone fixes it.
+    const rawUrl = req.url ?? "";
+    const path = rawUrl.split("?", 2)[0];
+    if (req.method === "POST" && (path.endsWith("/v1/messages") || path.endsWith("/messages"))) {
       handleMessages(req, res, upstream).catch((err) => {
         log.error(`bridge: handler threw: ${(err as Error).message}`);
         sendError(res, 500, "internal bridge error");

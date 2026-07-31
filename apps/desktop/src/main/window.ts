@@ -96,7 +96,16 @@ export function createMainWindow(): BrowserWindow {
   // Load the renderer.
   if (is.dev && process.env["ELECTRON_RENDERER_URL"]) {
     mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
-    mainWindow.webContents.openDevTools({ mode: "detach" });
+    // DevTools is intentionally NOT auto-opened. The detached DevTools
+    // front-end emits harmless-but-noisy Chromium console errors on every
+    // startup (e.g. "Autofill.enable wasn't found", "Unknown VE context:
+    // language-mismatch") because Electron's bundled Chromium doesn't
+    // implement every CDP domain the DevTools UI probes. Those errors come
+    // from Chromium's own logging, not the console-message listener above,
+    // so they can't be filtered in app code. Renderer errors are already
+    // surfaced via the listener above -> [renderer:ERROR] on stderr, so a
+    // blank screen is debuggable without DevTools. Press Ctrl+Shift+I
+    // (Cmd+Option+I on macOS) to open DevTools manually when needed.
   } else {
     mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
