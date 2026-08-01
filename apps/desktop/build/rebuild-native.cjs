@@ -17,8 +17,12 @@
  *      host arch - same behavior as before.
  *   2. Sets `npm_config_arch` so downstream tooling (fix-node-pty-conpty.cjs)
  *      resolves the matching arch-specific binaries.
- *   3. Spawns `electron-builder install-app-deps` (with `--arch` when
- *      MCODE_ARCH is set), inheriting stdio so CI logs stream through.
+ *   3. Runs electron-builder's JS CLI entry (`electron-builder install-app-deps`,
+ *      plus `--arch` when MCODE_ARCH is set) with the current Node binary,
+ *      inheriting stdio so CI logs stream through. We spawn the JS entry
+ *      directly instead of the `electron-builder` bin shim because on Windows
+ *      the shim is a `.cmd` file, which child_process.spawnSync refuses to run
+ *      without `shell: true` (CVE-2024-27980 -> EINVAL for .cmd/.bat files).
  *   4. Runs fix-node-pty-conpty.cjs (no-op on non-Windows).
  *
  * Run via `pnpm --filter @mcode/desktop rebuild:native`.
@@ -42,20 +46,27 @@ if (process.env.MCODE_ARCH) {
   process.env.npm_config_arch = arch;
 }
 
-// electron-builder is on PATH via pnpm/node_modules/.bin. spawnSync resolves
-// binaries from the parent's PATH, which pnpm sets up for script execution.
+// electron-builder is a workspace dependency of @mcode/desktop; resolve its CLI
+// entry relative to this file (works under pnpm's layout) and run it with the
+// current Node. This avoids PATH/.bin resolution entirely, so it behaves the
+// same on Windows (.cmd shims) and POSIX (shebang shims).
+const electronBuilderCli = require.resolve("electron-builder/cli.js", {
+  paths: [__dirname],
+});
+
 const args = ["install-app-deps"];
 if (process.env.MCODE_ARCH) {
   args.push("--arch", arch);
 }
 
 console.log(`[rebuild-native] electron-builder ${args.join(" ")} (host=${process.arch}, target=${arch})`);
-const result = spawnSync("electron-builder", args, { stdio: "inherit" });
+const result = spawnSync(process.execPath, [electronBuilderCli, ...args], { stdio: "inherit" });
+if (result.error) {
+  console.error(`[rebuild-native] failed to spawn ${electronBuilderCli}: ${result.error.message}`);
+  process.exit(1);
+}
 if (result.status !== 0) {
   process.exit(result.status ?? 1);
-}
-if (result.error) {
-  throw result.error;
 }
 
 // Run the conpty fixer. require()-ing it executes its top-level code (it's a
