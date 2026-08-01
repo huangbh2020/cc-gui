@@ -350,6 +350,11 @@ export interface SessionState {
   /** Per-session plan-mode draft (empty = not in plan mode). Drives the
    *  Plan section of the activity capsule. */
   planBySession: Record<string, PlanDraft>;
+  /** Per-session plan text selected for viewing in the right-side plan
+   *  drawer. null = drawer closed. Set when the user clicks a plan title in
+   *  the activity popover; cleared on close / session reset. Ephemeral (not
+   *  persisted) - it's a transient view, not session state. */
+  planDrawerPlanBySession: Record<string, string | null>;
   /** Per-session subagent roster (REPLACE semantics from `subagent.update`).
    *  Empty array = no subagents active. Includes recently-completed ones
    *  until the next turn clears them. */
@@ -638,6 +643,12 @@ export interface SessionState {
    *  mode and the model can revise. On success the pending card clears;
    *  on IPC failure it stays so the user can retry. */
   submitPlanApproval: (requestId: string, approved: boolean, editedPlan?: string, reason?: string) => Promise<void>;
+  /** Open the right-side plan drawer for a session, showing the given plan
+   *  markdown. Called when the user clicks a plan title in the activity
+   *  popover. Ephemeral view state (not persisted). */
+  openPlanDrawer: (sessionId: string, plan: string) => void;
+  /** Close the plan drawer for a session. */
+  closePlanDrawer: (sessionId: string) => void;
   /** Rewind the most recent turn: restore all files Edit/Write touched
    *  to their pre-turn state. The IPC call returns the list of restored
    *  paths; we leave the UI state update to the `turn.rewound` event
@@ -1189,7 +1200,20 @@ function upsertLivePlanBlock(
   if (existingIdx >= 0) {
     blocks = target.blocks.map((b, i) => (i === existingIdx ? block : b));
   } else {
-    blocks = [...target.blocks, block];
+    // Insert the plan block BEFORE any existing turn-files block so the plan
+    // card always renders above the "本轮修改文件" card in the stream,
+    // regardless of event arrival order (turn.files can land first when a
+    // plan.update arrives after turn.done in edge cases).
+    const turnFilesIdx = target.blocks.findIndex((b) => b.kind === "turn-files");
+    if (turnFilesIdx >= 0) {
+      blocks = [
+        ...target.blocks.slice(0, turnFilesIdx),
+        block,
+        ...target.blocks.slice(turnFilesIdx),
+      ];
+    } else {
+      blocks = [...target.blocks, block];
+    }
   }
   next = next.map((m, i) => (i === targetIndex ? { ...m, blocks } : m));
   return next;
@@ -1334,7 +1358,21 @@ function upsertLiveTurnFilesBlock(messages: ChatMessage[], files: TurnFileEntry[
   if (existingIdx >= 0) {
     blocks = target.blocks.map((b, i) => (i === existingIdx ? block : b));
   } else {
-    blocks = [...target.blocks, block];
+    // Insert the turn-files block AFTER any existing plan block so the
+    // "本轮修改文件" card always renders below the plan card in the stream.
+    // Find the last plan block (if any) and insert after it; otherwise append.
+    let insertAt = target.blocks.length;
+    for (let i = target.blocks.length - 1; i >= 0; i--) {
+      if (target.blocks[i]?.kind === "plan") {
+        insertAt = i + 1;
+        break;
+      }
+    }
+    blocks = [
+      ...target.blocks.slice(0, insertAt),
+      block,
+      ...target.blocks.slice(insertAt),
+    ];
   }
   next = next.map((m, i) => (i === targetIndex ? { ...m, blocks } : m));
   // This turn's card is now the latest → demote every OTHER turn's card to
@@ -1714,6 +1752,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   effort: "high",
   todosBySession: {},
   planBySession: {},
+  planDrawerPlanBySession: {},
   subagentsBySession: {},
   contextSnapshotBySession: {},
   usageHistoryBySession: {},
@@ -2466,6 +2505,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete usageHistoryBySession[id];
       const pendingPlanApprovalBySession = { ...s.pendingPlanApprovalBySession };
       delete pendingPlanApprovalBySession[id];
+      const planDrawerPlanBySession = { ...s.planDrawerPlanBySession };
+      delete planDrawerPlanBySession[id];
       const pendingApprovals = s.pendingApprovals.filter((p) => p.sessionId !== id);
       // Drop the session from the tab strip too. If it was the active tab,
       // the focus jumps to the previous tab (openTab logic replicated
@@ -2491,6 +2532,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           contextSnapshotBySession,
           usageHistoryBySession,
           pendingPlanApprovalBySession,
+          planDrawerPlanBySession,
           pendingApprovals,
           openTabs,
         };
@@ -2527,6 +2569,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         contextSnapshotBySession,
         usageHistoryBySession,
         pendingPlanApprovalBySession,
+        planDrawerPlanBySession,
         pendingApprovals,
         openTabs: finalActive ? openTabs : openTabs,
         sessions: isActiveProject ? nextList : s.sessions,
@@ -3594,6 +3637,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       console.error("claude.respondPlanApproval failed:", err);
     }
+  },
+
+  openPlanDrawer: (sessionId, plan) => {
+    set((s) => ({
+      planDrawerPlanBySession: { ...s.planDrawerPlanBySession, [sessionId]: plan },
+    }));
+  },
+  closePlanDrawer: (sessionId) => {
+    set((s) => {
+      const { [sessionId]: _drop, ...rest } = s.planDrawerPlanBySession;
+      return { planDrawerPlanBySession: rest };
+    });
   },
 
   rewindTurn: async () => {

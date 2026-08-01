@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useDeferredValue, type ReactNode, type ComponentType } from "react";
+import { memo, useState, useMemo, useEffect, useDeferredValue, type ReactNode, type ComponentType } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconChevronDown,
@@ -24,7 +24,7 @@ import {
   IconWorldSearch,
   IconHelpCircle,
 } from "@renderer/lib/icons.js";
-import type { Block } from "@renderer/stores/sessionStore.js";
+import type { Block, TurnMeta } from "@renderer/stores/sessionStore.js";
 import { Markdown } from "./Markdown.js";
 import { DiffView } from "./DiffView.js";
 import { PlanStreamBlock } from "./PlanStreamBlock.js";
@@ -49,17 +49,22 @@ const MessageBlocks = memo(function MessageBlocks({
   blocks,
   beforeMap,
   isStreamingTail,
+  onOpenPlan,
 }: {
   blocks: Block[];
   /** Pre-turn file contents for Write-tool diffing. Forwarded down to any
-   *  procedural group rendered inside this message (the single-message
-   *  path — the cluster path in ChatPane passes beforeMap directly to
-   *  ProceduralGroup). */
+   * procedural group rendered inside this message (the single-message
+   * path - the cluster path in ChatPane passes beforeMap directly to
+   * ProceduralGroup). */
   beforeMap?: BeforeContentMap;
   /** When true, this message is the last one in the stream and is still
-   *  receiving content deltas. Instructs text blocks to skip expensive
-   *  Markdown parsing and render as raw text until streaming settles. */
+   * receiving content deltas. Instructs text blocks to skip expensive
+   * Markdown parsing and render as raw text until streaming settles. */
   isStreamingTail?: boolean;
+  /** Called when the user clicks an inline plan block - opens the right-side
+   *  PlanDrawer with that plan's full markdown content. Forwarded to
+   *  PlanStreamBlock via BlockView. */
+  onOpenPlan?: (plan: string) => void;
 }) {
   if (blocks.length === 0) return null;
   const segments = groupBlocks(blocks);
@@ -67,7 +72,7 @@ const MessageBlocks = memo(function MessageBlocks({
     <div className="space-y-2">
       {segments.map((seg, i) =>
         seg.kind === "single" ? (
-          <BlockView key={i} block={seg.block} defaultOpen={seg.defaultOpen} beforeMap={beforeMap} isStreamingTail={isStreamingTail} />
+          <BlockView key={i} block={seg.block} defaultOpen={seg.defaultOpen} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} />
         ) : (
           <ProceduralGroup key={i} blocks={seg.blocks} beforeMap={beforeMap} turnActive={isStreamingTail} />
         ),
@@ -163,9 +168,10 @@ export function ProceduralGroup({
   blocks,
   beforeMap,
   turnActive = false,
+  turnMeta,
 }: {
   blocks: ProceduralBlock[];
-  /** Pre-turn file contents for Write-tool diffing. Optional — omitted in
+  /** Pre-turn file contents for Write-tool diffing. Optional - omitted in
    *  the single-message (non-cluster) render path where diffs aren't
    *  shown. Forwarded down to WriteToolCard. */
   beforeMap?: BeforeContentMap;
@@ -173,8 +179,21 @@ export function ProceduralGroup({
    *  of the stream). Gates the "current operation" ticker: it only shows for
    *  the card that is executing right now and clears once the turn ends. */
   turnActive?: boolean;
+  /** The turn's timing metadata. When `endedAt` is set the turn has
+   *  completed - the group collapses to a compact "✓ 完成 N 步操作"
+   *  summary so the final text reply becomes the visual focus. Omitted on
+   *  the single-message render path (no turn context available). */
+  turnMeta?: TurnMeta;
 }) {
   const [open, setOpen] = useState(false);
+  const completed = turnMeta?.endedAt !== undefined;
+
+  // When the turn completes, collapse the group so the process recedes and
+  // the final text reply takes focus. The user can still re-expand by
+  // clicking - this only fires on the false->true transition.
+  useEffect(() => {
+    if (completed) setOpen(false);
+  }, [completed]);
 
   const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
   const thinkingCount = blocks.filter((b) => b.kind === "thinking").length;
@@ -200,9 +219,13 @@ export function ProceduralGroup({
   for (const b of toolBlocks) counts.set(b.toolName, (counts.get(b.toolName) ?? 0) + 1);
   const breakdown = [...counts.entries()].map(([n, c]) => `${n} ×${c}`).join(" · ");
 
-  // Summary label: "思考 + N 个操作" / "N 个操作" / "思考".
+  // Summary label. While streaming: "思考 + N 个操作" / "N 个操作" / "思考".
+  // Once the turn completes: "完成 N 步操作" / "思考完成" - the process
+  // recedes so the final text reply reads as the focus of the turn.
   let label: string;
-  if (thinkingCount > 0 && toolBlocks.length > 0) {
+  if (completed) {
+    label = toolBlocks.length > 0 ? `完成 ${toolBlocks.length} 步操作` : "思考完成";
+  } else if (thinkingCount > 0 && toolBlocks.length > 0) {
     label = `思考 + ${toolBlocks.length} 个操作`;
   } else if (toolBlocks.length > 0) {
     label = `${toolBlocks.length} 个操作`;
@@ -216,11 +239,15 @@ export function ProceduralGroup({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/40"
       >
-        <StatusIcon status={aggregateStatus} />
+        {completed && aggregateStatus !== "error" ? (
+          <IconCheck size={12} className="shrink-0 text-accent" />
+        ) : (
+          <StatusIcon status={aggregateStatus} />
+        )}
         <IconActivity size={14} className="shrink-0 text-content-muted" />
         <span className="font-medium text-content-muted">{label}</span>
         {breakdown && <span className="truncate text-content-subtle">{breakdown}</span>}
-        <CurrentOpTicker op={runningTool} turnActive={turnActive} />
+        {!completed && <CurrentOpTicker op={runningTool} turnActive={turnActive} />}
         <Chevron open={open} />
       </button>
       {open && (
@@ -239,6 +266,7 @@ const BlockView = memo(function BlockView({
   defaultOpen = false,
   beforeMap,
   isStreamingTail,
+  onOpenPlan,
 }: {
   block: Block;
   defaultOpen?: boolean;
@@ -248,6 +276,8 @@ const BlockView = memo(function BlockView({
    *  useDeferredValue instead). Kept on the signature for interface
    *  stability - MessageBlocks still forwards it down. */
   isStreamingTail?: boolean;
+  /** Forwarded to PlanStreamBlock - opens the PlanDrawer on click. */
+  onOpenPlan?: (plan: string) => void;
 }) {
   switch (block.kind) {
     case "text": {
@@ -300,14 +330,16 @@ const BlockView = memo(function BlockView({
 
     case "plan":
       // Inline read-only plan card that lives in the message stream as a
-      // per-turn trailing block (drafting → 待审阅 → 已就绪). The actionable
-      // approve/reject sheet stays above the composer in PlanApprovalPrompt;
-      // this block is purely the reading view.
+      // per-turn trailing block (drafting -> 待审阅 -> 已就绪). Clicking it
+      // opens the right-side PlanDrawer to view the full plan content; the
+      // actionable approve/reject sheet stays above the composer in
+      // PlanApprovalPrompt.
       return (
         <PlanStreamBlock
           plan={block.plan}
           phase={block.phase}
           hasApproval={block.hasApproval}
+          onOpenPlan={onOpenPlan}
         />
       );
 

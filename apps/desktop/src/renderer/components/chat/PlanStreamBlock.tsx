@@ -1,36 +1,43 @@
-import { useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
-import {
-  IconClipboard,
-  IconChevronDown,
-  IconChevronRight,
-} from "@renderer/lib/icons.js";
+import { IconRocket } from "@renderer/lib/icons.js";
 import { Markdown } from "./Markdown.js";
+import { extractPlanTitle } from "./StatusCapsule.js";
 import type { PlanUpdateEvent } from "@contracts/runtime";
+
+/** Max characters of plan text to preview inline before truncating. The full
+ *  content lives in the PlanDrawer - this is just a glimpse so the user can
+ *  tell what the plan is about without opening it. */
+const PLAN_PREVIEW_CHARS = 200;
+
+/** Truncate a string to N characters with an ellipsis. */
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, n).trimEnd() + "…";
+}
 
 /**
  * Read-only inline plan card rendered in the message stream (at the turn's
- * output tail, before the TurnFilesCard). Keeps the plan visible as a
- * collapsible card the user can expand/collapse to review the full drafted /
- * approved plan text without blocking the composer.
+ * output tail, before the TurnFilesCard).
  *
- * Drafting phase: the model is still working on the plan (EnterPlanMode was
- *   called, ExitPlanMode hasn't been approved yet). Shows a "草拟中" badge.
- * Ready phase: the model called ExitPlanMode and (if applicable) the user
- *   approved it. Shows "已就绪" and stays rendered after the turn ends so the
- *   the user can revisit the plan they approved.
+ * Visually distinct from other cards: uses an accent-tinted border + surface
+ * so it stands out as a plan, not just another tool card. The card is
+ * expanded by default showing a truncated preview of the plan markdown, with
+ * a prominent "查看计划" action at the bottom. Clicking the card (or the
+ * action) opens the right-side PlanDrawer with the full plan content.
+ *
+ * Lifecycle badge:
+ *   - drafting: "草拟中" (the model is still composing)
+ *   - hasApproval: "待审阅" (ExitPlanMode is pending the user's decision)
+ *   - ready: no badge (the plan is frozen history)
  *
  * Editing / approve / reject actions live in the PlanApprovalPrompt sheet above
- * the composer — this component is purely for reading the plan content in-line
- * in the conversation flow.
- *
- * Theme: neutral surface/edge tokens only (no accent) so it reads as a passive
- * snapshot of the plan, not an actionable approval surface.
+ * the composer - this component is purely the reading entry point.
  */
 export function PlanStreamBlock({
   plan,
   phase,
   hasApproval,
+  onOpenPlan,
 }: {
   plan: string;
   phase: PlanUpdateEvent["phase"];
@@ -38,51 +45,70 @@ export function PlanStreamBlock({
    *  PlanApprovalPrompt sheet is shown above the composer). Drives the badge
    *  label on this card so the user knows an action is awaiting them. */
   hasApproval?: boolean;
+  /** Called when the user clicks the card - opens the right-side PlanDrawer
+   *  with this plan's full markdown content. */
+  onOpenPlan?: (plan: string) => void;
 }) {
   const isDrafting = phase === "drafting";
-  // Default expand state by lifecycle:
-  //   drafting / 待审阅 → expanded (user is actively watching the plan form /
-  //     reviewing it for approval, so show the content up front).
-  //   ready → collapsed (the plan is frozen history; the header + char count
-  //     is enough at a glance, expand on demand to avoid flooding the stream).
-  const [expanded, setExpanded] = useState(isDrafting || !!hasApproval);
-
-  const label = hasApproval ? "待审阅" : isDrafting ? "草拟中" : "已就绪";
+  const label = hasApproval ? "待审阅" : isDrafting ? "草拟中" : null;
+  const title = extractPlanTitle(plan) || "计划";
+  const preview = truncate(plan, PLAN_PREVIEW_CHARS);
 
   return (
-    <div className="rounded-xl border border-edge bg-surface-muted/40 px-3 py-2 text-xs text-content-muted backdrop-blur">
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-2 text-left"
-      >
-        <IconClipboard size={14} className="shrink-0 text-content-subtle" />
-        <span className="font-semibold text-content-muted">计划</span>
-        {/* Status badge */}
-        <span
-          className={cn(
-            "rounded px-1.5 py-0.5 text-[10px] font-medium",
-            hasApproval
-              ? "bg-accent/15 text-accent"
-              : isDrafting
-                ? "bg-surface-hover text-content-subtle"
+    <div
+      className={cn(
+        "overflow-hidden rounded-xl border bg-surface-muted/40 backdrop-blur transition-colors",
+        // Accent-tinted border so the plan card is visually distinct from
+        // ordinary tool/text cards in the stream.
+        hasApproval
+          ? "border-accent/40"
+          : "border-edge hover:border-edge-input",
+      )}
+    >
+      {/* Header - icon + title + status badge. Accent icon signals "plan". */}
+      <div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5">
+        <IconRocket size={15} className="shrink-0 text-accent" />
+        <span className="truncate text-xs font-semibold text-content">{title}</span>
+        {label && (
+          <span
+            className={cn(
+              "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+              hasApproval
+                ? "bg-accent/15 text-accent"
                 : "bg-surface-hover text-content-subtle",
-          )}
-        >
-          {label}
-        </span>
-        {/* Char-count summary */}
-        <span className="text-content-subtle">{plan.length} 字</span>
-        <span className="ml-auto text-content-subtle">
-          {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
-        </span>
-      </button>
-      {expanded && (
-        <div className="mt-2 max-h-80 overflow-auto rounded-lg border border-edge bg-surface/60 p-3">
-          <div className="prose-plan text-[11px] leading-relaxed text-content">
-            <Markdown>{plan || "_(计划为空)_"}</Markdown>
+            )}
+          >
+            {label}
+          </span>
+        )}
+      </div>
+
+      {/* Content preview - truncated plan markdown. Read-only glimpse so the
+          user can tell what the plan is about without opening the drawer. */}
+      {preview && (
+        <div className="px-3 pb-2">
+          <div className="prose-plan max-h-32 overflow-hidden text-[11px] leading-relaxed text-content-muted">
+            <Markdown>{preview}</Markdown>
           </div>
         </div>
       )}
+
+      {/* Action footer - prominent "查看计划" button. Large font so it reads
+          as the primary call-to-action; clicking opens the PlanDrawer. */}
+      <button
+        type="button"
+        onClick={() => onOpenPlan?.(plan)}
+        title="在侧边栏中查看完整计划"
+        className={cn(
+          "flex w-full items-center justify-center gap-1.5 border-t px-3 py-2 text-sm font-medium transition-colors",
+          hasApproval
+            ? "border-accent/20 bg-accent/5 text-accent hover:bg-accent/10"
+            : "border-edge bg-surface-hover/50 text-content hover:bg-surface-hover",
+        )}
+      >
+        <IconRocket size={15} />
+        查看计划
+      </button>
     </div>
   );
 }

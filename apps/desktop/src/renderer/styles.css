@@ -167,6 +167,17 @@ body,
   }
 }
 
+/* Plan drawer right-side slide-in. Tailwind's arbitrary-animation syntax
+   `animate-[plan-drawer-in_160ms_ease-out]` references this name. */
+@keyframes plan-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
 /* ───────────── Chat side gutter (responsive) ─────────────
  * The message stream + composer share a horizontal gutter that scales with
  * the chat pane's own width (NOT the viewport - the pane shrinks when the

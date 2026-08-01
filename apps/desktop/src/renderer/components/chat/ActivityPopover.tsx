@@ -1,7 +1,9 @@
-import { useState } from "react";
-import type { TodoItem, PlanDraft } from "@renderer/stores/sessionStore.js";
+import type { TodoItem, Block } from "@renderer/stores/sessionStore.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
-import { Markdown } from "./Markdown.js";
+import { extractPlanTitle } from "./StatusCapsule.js";
+
+/** A `kind: "plan"` block - the frozen per-turn plan in the message stream. */
+type PlanBlock = Extract<Block, { kind: "plan" }>;
 
 /* ── Tasks section (extracted from the old TodosPopover) ────────────── */
 
@@ -27,15 +29,6 @@ export const SUBAGENT_STATUS_META: Record<SubagentSnapshot["status"], { label: s
   killed: { label: "已终止", cls: "text-danger" },
 };
 
-/** Plan section phase labels. The badge color escalates with how far along
- *  plan mode is — `drafting` is informational, `ready` means the model is
- *  blocking on the user's decision. */
-const PLAN_PHASE_META: Record<PlanDraft["phase"], { label: string; cls: string }> = {
-  drafting: { label: "✎ 草拟中", cls: "text-info" },
-  ready: { label: "⚡ 等待批准", cls: "text-warning" },
-  cleared: { label: "", cls: "" },
-};
-
 /** Compact "1.2k tokens · 5 tools · 12s" string. Exported for reuse by the
  *  capsule chip's tooltip / popover. */
 export function fmtUsage(snap: SubagentSnapshot): string {
@@ -44,12 +37,6 @@ export function fmtUsage(snap: SubagentSnapshot): string {
   if (typeof snap.toolUses === "number") parts.push(`${snap.toolUses} tools`);
   if (typeof snap.durationMs === "number") parts.push(`${Math.round(snap.durationMs / 1000)}s`);
   return parts.join(" · ");
-}
-
-/** Truncate a string to N characters with an ellipsis, preserving newlines. */
-function truncate(s: string, n: number): string {
-  if (s.length <= n) return s;
-  return s.slice(0, n).trimEnd() + "…";
 }
 
 /* ── Section primitives ─────────────────────────────────────────────── */
@@ -72,6 +59,59 @@ function SectionHeader({
       </span>
       {right && <span className="text-[10px] text-content-subtle">{right}</span>}
     </div>
+  );
+}
+
+/* ── Section: Plan list ────────────────────────────────────────────── */
+
+/**
+ * Plan section - a list of plan titles. The capsule pill shows only a count;
+ * this popover section lists each plan's derived title as a clickable row.
+ * Clicking a row calls `onPickPlan(plan)` which opens the right-side
+ * PlanDrawer with that plan's full markdown content. No status badges - the
+ * list is a pure index of the session's plans.
+ *
+ * Plans are listed newest-first (the most recent plan at the top) so the
+ * user sees the current/relevant plan without scrolling.
+ */
+function PlanListSection({
+  planBlocks,
+  onPickPlan,
+}: {
+  planBlocks: PlanBlock[];
+  onPickPlan: (plan: string) => void;
+}) {
+  // Newest first: the last plan block in the stream is the most recent turn's.
+  const ordered = [...planBlocks].reverse();
+  return (
+    <>
+      <SectionHeader
+        icon="📋"
+        title={`计划 · ${planBlocks.length} 个`}
+      />
+      <ul className="max-h-60 overflow-y-auto py-1">
+        {ordered.map((block, i) => {
+          const title = extractPlanTitle(block.plan) || `(计划 ${ordered.length - i})`;
+          return (
+            <li key={block.planId}>
+              <button
+                type="button"
+                onClick={() => onPickPlan(block.plan)}
+                title="点击查看完整计划内容"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-surface-muted"
+              >
+                <span className="shrink-0 text-[10px] tabular-nums text-content-subtle">
+                  {ordered.length - i}.
+                </span>
+                <span className="truncate text-[11px] text-content">
+                  {title}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }
 
@@ -172,61 +212,6 @@ function SubagentsSection({ agents }: { agents: SubagentSnapshot[] }) {
   );
 }
 
-/* ── Section: Plan ─────────────────────────────────────────────────── */
-
-/** Number of characters of plan text to show in the preview before "展开". */
-const PLAN_PREVIEW_CHARS = 480;
-
-function PlanSection({
-  plan,
-  phase,
-  onOpenFull,
-}: {
-  plan: PlanDraft["plan"];
-  phase: PlanDraft["phase"];
-  /** Callback to open the full plan in PlanApprovalPrompt. Currently the
-   *  approval modal is only shown by canUseTool on ExitPlanMode, so this
-   *  just toggles the inline expanded view in the popover. */
-  onOpenFull?: () => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const meta = PLAN_PHASE_META[phase];
-  const needsTruncation = plan.length > PLAN_PREVIEW_CHARS && !expanded;
-  return (
-    <>
-      <SectionHeader
-        icon="📋"
-        title="计划文档"
-        right={meta.label ? <span className={meta.cls}>{meta.label}</span> : null}
-      />
-      <div className="max-h-72 overflow-y-auto px-3 py-2">
-        {plan ? (
-          <div className="prose-plan text-[11px] leading-relaxed text-content-muted">
-            <Markdown>{needsTruncation ? truncate(plan, PLAN_PREVIEW_CHARS) : plan}</Markdown>
-          </div>
-        ) : (
-          <p className="text-[11px] italic text-content-subtle">
-            {phase === "drafting" ? "模型正在撰写计划…（提交后会自动填入）" : "暂无计划"}
-          </p>
-        )}
-      </div>
-      {(plan.length > PLAN_PREVIEW_CHARS || onOpenFull) && (
-        <div className="flex items-center justify-end gap-1 border-t border-white/5 px-3 py-1.5">
-          {plan.length > PLAN_PREVIEW_CHARS && (
-            <button
-              onClick={() => setExpanded((v) => !v)}
-              className="rounded px-2 py-0.5 text-[10px] text-content-muted transition-colors hover:bg-surface-muted hover:text-content"
-              title={expanded ? "收起" : "展开完整内容"}
-            >
-              {expanded ? "收起" : "展开"}
-            </button>
-          )}
-        </div>
-      )}
-    </>
-  );
-}
-
 /* ── Root: ActivityPopover ─────────────────────────────────────────── */
 
 /**
@@ -236,20 +221,25 @@ function PlanSection({
  * section), so the popover gracefully degrades to whatever the active session
  * is actually doing right now.
  *
+ * The Plan section is now a clickable title list (not the full content).
+ * Clicking a plan title opens the right-side PlanDrawer via `onPickPlan`.
+ *
  * Pure presentational: open/close + outer positioning is handled by the
  * caller (ChatPane). This component is the "expanded view of the
  * activity capsule".
  */
 export function ActivityPopover({
   todos,
-  plan,
+  planBlocks,
   subagents,
+  onPickPlan,
 }: {
   todos: TodoItem[];
-  plan: PlanDraft;
+  planBlocks: PlanBlock[];
   subagents: SubagentSnapshot[];
+  onPickPlan: (plan: string) => void;
 }) {
-  const showPlan = plan.phase !== "cleared" || plan.plan.length > 0;
+  const showPlan = planBlocks.length > 0;
   const showSubagents = subagents.length > 0;
   const showTasks = todos.length > 0;
 
@@ -260,7 +250,7 @@ export function ActivityPopover({
           (handled by `overflow-hidden` on the parent). */}
       {showPlan && (
         <div className="border-b border-white/5">
-          <PlanSection plan={plan.plan} phase={plan.phase} />
+          <PlanListSection planBlocks={planBlocks} onPickPlan={onPickPlan} />
         </div>
       )}
       {showSubagents && (

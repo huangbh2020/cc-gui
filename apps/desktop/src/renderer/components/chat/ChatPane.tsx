@@ -15,7 +15,7 @@ import {
   IconX,
   IconPencil,
 } from "@renderer/lib/icons.js";
-import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, EMPTY_CHAT_QUEUE, EMPTY_PROMPT_QUEUE, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta, type QueuedPrompt } from "@renderer/stores/sessionStore.js";
+import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_CHAT_QUEUE, EMPTY_PROMPT_QUEUE, type Block, type ChatMessage, type TodoItem, type TurnMeta, type QueuedPrompt } from "@renderer/stores/sessionStore.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import type { PermissionMode } from "@contracts/runtime";
@@ -45,6 +45,7 @@ import { ProjectBranchIndicator } from "./ProjectBranchIndicator.js";
 import { EmptyThreadWelcome } from "./EmptyThreadWelcome.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { StatusCapsule } from "./StatusCapsule.js";
+import { PlanDrawer } from "./PlanDrawer.js";
 import { MessageTimeline, type UserItemIndexMap } from "./MessageTimeline.js";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 
@@ -386,16 +387,18 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   const todos = useSessionStore((s) =>
     s.todosBySession[sessionId] ?? EMPTY_TODOS,
   );
-  // Plan-mode draft for this session. Always returns the same
-  // EMPTY_PLAN reference when no plan is active, so the selector is
-  // referentially stable across renders.
-  const plan: PlanDraft = useSessionStore((s) =>
-    s.planBySession[sessionId] ?? EMPTY_PLAN,
-  );
   // Subagent roster for this session.
   const subagents: SubagentSnapshot[] = useSessionStore((s) =>
     s.subagentsBySession[sessionId] ?? EMPTY_SUBAGENTS,
   );
+  // Plan drawer: the plan text currently selected for viewing in the
+  // right-side drawer (null = drawer closed). Clicking a plan title in the
+  // activity popover opens this.
+  const drawerPlan = useSessionStore(
+    (s) => s.planDrawerPlanBySession[sessionId] ?? null,
+  );
+  const openPlanDrawer = useSessionStore((s) => s.openPlanDrawer);
+  const closePlanDrawer = useSessionStore((s) => s.closePlanDrawer);
   // Project root absolute path for this session (used by the @ / add-context
   // file pickers). Resolved through the session's projectId → projects[].
   const projectPath = useSessionStore((s) => {
@@ -464,6 +467,17 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     }
     return m;
   }, [messages]);
+  // All plan blocks across this session's message history. Used by the
+  // StatusCapsule (count) and the ActivityPopover (title list). Frozen plan
+  // blocks survive turn.done, so this includes every approved plan in the
+  // session - not just the current one.
+  const planBlocks = useMemo(
+    () =>
+      messages
+        .flatMap((m) => m.blocks)
+        .filter((b): b is Extract<Block, { kind: "plan" }> => b.kind === "plan"),
+    [messages],
+  );
   // The textarea is blocked while a turn is running, a backgrounded subagent
   // is still in flight, or a tool approval is awaiting the user's decision —
   // the approval panel takes the place of the input area entirely so the user
@@ -945,6 +959,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 onStartEdit={(msg) => setEditingMessageId(msg.id)}
                 onSubmitEdit={handleEditSubmit}
                 onCancelEdit={() => setEditingMessageId(null)}
+                onOpenPlan={(p) => openPlanDrawer(sessionId, p)}
               />
             </div>
           </div>
@@ -976,6 +991,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               blocks={blocks}
               beforeMap={beforeMap}
               turnActive={item.isStreamingTail}
+              turnMeta={item.turnMeta}
             />
             {item.isStreamingTail && (
               <div className="mt-1.5 flex items-center gap-1.5">
@@ -1048,13 +1064,17 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           ABOVE the list (absolute) so it never takes layout space; only the
           pill itself is clickable, the rest of the overlay passes pointer
           events through to the scroll surface beneath. The popover drops
-          down from the pill inside this non-clipping wrapper. */}
-      {!empty && (todos.length > 0 || subagents.length > 0) && (
+          down from the pill inside this non-clipping wrapper. Renders when
+          there are todos, subagents, OR any plan blocks in the session
+          history (the plan shows as an icon + count in the pill). */}
+      {!empty && (todos.length > 0 || subagents.length > 0 || planBlocks.length > 0) && (
         <div className="pointer-events-none absolute right-8 top-2 z-30 flex justify-end">
           <StatusCapsule
             subagents={subagents}
             todos={todos}
-            plan={plan}
+            planCount={planBlocks.length}
+            planBlocks={planBlocks}
+            onPickPlan={(p) => openPlanDrawer(sessionId, p)}
           />
         </div>
       )}
@@ -1124,6 +1144,22 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               onDecide={(granted, always) =>
                 void decideApproval(headApproval.requestId, granted, always)
               }
+            />
+          )}
+          {/* Plan-approval card (ExitPlanMode) - the model drafted a plan in
+              plan mode and is awaiting the user's approve/reject decision.
+              Rendered inside the composer column so it sits directly above the
+              input box (mirrors ApprovalPrompt); yields to a pending tool
+              approval (which blocks everything). */}
+          {pendingPlanApproval && !headApproval && (
+            <PlanApprovalPrompt
+              plan={pendingPlanApproval.plan}
+              onApprove={(editedPlan) => {
+                void submitPlanApproval(pendingPlanApproval.requestId, true, editedPlan);
+              }}
+              onReject={(reason) => {
+                void submitPlanApproval(pendingPlanApproval.requestId, false, undefined, reason);
+              }}
             />
           )}
           <div
@@ -1368,21 +1404,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
         </div>
       </div>
 
-      {/* Plan-approval card (ExitPlanMode) — the model drafted a plan in
-          plan mode and is awaiting the user's approve/reject decision.
-          Renders above the AskUserQuestion sheet; both yield to a pending
-          tool approval (which blocks everything). */}
-      {pendingPlanApproval && !headApproval && (
-        <PlanApprovalPrompt
-          plan={pendingPlanApproval.plan}
-          onApprove={(editedPlan) => {
-            void submitPlanApproval(pendingPlanApproval.requestId, true, editedPlan);
-          }}
-          onReject={(reason) => {
-            void submitPlanApproval(pendingPlanApproval.requestId, false, undefined, reason);
-          }}
-        />
-      )}
       {/* AskUserQuestion bottom sheet — anchored to the bottom of the
           whole ChatPane (not just the input box) so it can grow upward
           beyond the composer height. Sits in a `relative` root and uses
@@ -1398,6 +1419,17 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
             void submitQuestion(answers);
           }}
           onDismiss={dismissQuestion}
+        />
+      )}
+
+      {/* Plan drawer - right-side slide-out showing the full plan content.
+          Opened when the user clicks a plan title in the activity popover.
+          Absolute-positioned inside the ChatPane root so it overlays the
+          right strip of the chat area (message stream + composer). */}
+      {drawerPlan && (
+        <PlanDrawer
+          plan={drawerPlan}
+          onClose={() => closePlanDrawer(sessionId)}
         />
       )}
     </div>
@@ -1430,6 +1462,7 @@ const MessageRow = memo(function MessageRow({
   onStartEdit,
   onSubmitEdit,
   onCancelEdit,
+  onOpenPlan,
 }: {
   msg: ChatMessage;
   isStreamingTail?: boolean;
@@ -1442,6 +1475,8 @@ const MessageRow = memo(function MessageRow({
   onStartEdit?: (msg: ChatMessage) => void;
   onSubmitEdit?: (msg: ChatMessage, newText: string) => void;
   onCancelEdit?: () => void;
+  /** Called when the user clicks an inline plan block - opens the PlanDrawer. */
+  onOpenPlan?: (plan: string) => void;
 }) {
   const isUser = msg.role === "user";
   const copyText = useMemo(() => blocksToText(msg.blocks), [msg.blocks]);
@@ -1499,7 +1534,7 @@ const MessageRow = memo(function MessageRow({
               : "text-content [font-size:var(--chat-font-size)]"
           }
         >
-          <MessageBlocks blocks={msg.blocks} beforeMap={beforeMap} isStreamingTail={isStreamingTail} />
+          <MessageBlocks blocks={msg.blocks} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} />
           {/* Streaming loader at the bottom of the content while this
               message is still receiving deltas. */}
           {isStreamingTail && (
