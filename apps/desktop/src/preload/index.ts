@@ -189,6 +189,10 @@ const api = {
   /** Open a native folder picker; returns the chosen path or null. */
   pickFolder: (): Promise<{ path: string | null }> =>
     ipcRenderer.invoke("dialog:pickFolder"),
+  /** Open a native multi-file picker (project-external files allowed).
+   *  Returns the selected absolute paths; empty when the user cancels. */
+  pickFiles: ((input) =>
+    ipcRenderer.invoke(IPC.DIALOG_PICK_FILES, input)) as RpcMap["dialog.pickFiles"],
 
   /** Probe whether the default provider is functional. */
   claudeHealthCheck: (): Promise<{

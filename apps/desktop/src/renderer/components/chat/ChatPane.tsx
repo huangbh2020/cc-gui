@@ -12,8 +12,10 @@ import {
   IconCheck,
   IconLoader2,
   IconPaperclip,
+  IconX,
+  IconPencil,
 } from "@renderer/lib/icons.js";
-import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, EMPTY_CHAT_QUEUE, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta } from "@renderer/stores/sessionStore.js";
+import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_PLAN, EMPTY_CHAT_QUEUE, EMPTY_PROMPT_QUEUE, type PlanDraft, type Block, type ChatMessage, type TodoItem, type TurnMeta, type QueuedPrompt } from "@renderer/stores/sessionStore.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import type { PermissionMode } from "@contracts/runtime";
@@ -39,6 +41,8 @@ import { PlanApprovalPrompt } from "./PlanApprovalPrompt.js";
 import { ContentTagChip } from "./ContentTagChip.js";
 import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
+import { ProjectBranchIndicator } from "./ProjectBranchIndicator.js";
+import { EmptyThreadWelcome } from "./EmptyThreadWelcome.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { StatusCapsule } from "./StatusCapsule.js";
 import { MessageTimeline, type UserItemIndexMap } from "./MessageTimeline.js";
@@ -375,6 +379,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   );
   const sendPrompt = useSessionStore((s) => s.sendPrompt);
   const interrupt = useSessionStore((s) => s.interrupt);
+  const editAndResendMessage = useSessionStore((s) => s.editAndResendMessage);
   const claudeInstalled = useSessionStore((s) => s.claudeInstalled);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   // Tasks capsule + usage (both keyed by this sessionId).
@@ -404,6 +409,22 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     }
     if (!pid) return null;
     return s.projects.find((p) => p.id === pid)?.path ?? null;
+  });
+  // Project display name (same resolution as projectPath, but returns the
+  // name). Shown in the empty-thread project/branch indicator above the
+  // composer. Falls back to the path basename when the project has no name.
+  const projectName = useSessionStore((s) => {
+    let pid: string | undefined;
+    for (const list of Object.values(s.sessionsByProject)) {
+      const found = list?.find((x) => x.id === sessionId);
+      if (found) {
+        pid = found.projectId;
+        break;
+      }
+    }
+    if (!pid) return "";
+    const p = s.projects.find((pr) => pr.id === pid);
+    return p?.name ?? "";
   });
   // Pending AskUserQuestion (per-session bucket — another tab's question
   // does not clobber this one).
@@ -448,9 +469,28 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // the approval panel takes the place of the input area entirely so the user
   // can't type a competing prompt.
   const inputBlocked = sessionBusy || !!headApproval;
+  // The TEXTAREA specifically: unlocked while a turn is running so the user
+  // can type ahead and enqueue the next prompt. Still hard-locked when an
+  // approval / AskUserQuestion is pending (that panel owns the input area).
+  const textareaLocked = !!headApproval || !!pendingQuestion;
+
+  // Per-session prompt queue (FIFO). Survives tab switches — it lives in the
+  // store, not component state, so draining from the turn-done handler can
+  // reach it without a component reference. Stable EMPTY_PROMPT_QUEUE ref so
+  // the selector never returns a fresh [] (would re-render forever).
+  const queue: QueuedPrompt[] = useSessionStore(
+    (s) => s.promptQueueBySession[sessionId] ?? EMPTY_PROMPT_QUEUE,
+  );
+  const enqueuePrompt = useSessionStore((s) => s.enqueuePrompt);
+  const removeQueuedPrompt = useSessionStore((s) => s.removeQueuedPrompt);
+  const clearPromptQueue = useSessionStore((s) => s.clearPromptQueue);
 
   const [value, setValue] = useState("");
   const [showJumpBottom, setShowJumpBottom] = useState(false);
+  // Inline-edit mode for a user message. When set, the MessageRow with this id
+  // swaps its bubble for an inline editor. Cleared on submit/cancel. Null when
+  // no message is being edited.
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const virtualListRef = useRef<LegendListRef>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /** Guards the one-shot "scroll to bottom on session open" effect. Reset to
@@ -775,11 +815,78 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     setAnchorRect(null);
   };
 
+  /** Queue the typed prompt while a turn is running, instead of sending it.
+   *  Mirrors handleSend's payload assembly (prompt + attachments + displayText)
+   *  so a drained queue item flows through the normal sendPrompt path and the
+   *  user message looks identical to a live send. No-op when not busy. */
+  const handleEnqueue = () => {
+    const text = value.trim();
+    if (!text && tags.length === 0) return;
+    // Only meaningful while busy — when idle, Enter/click routes to handleSend.
+    if (!sessionBusy) return;
+    const prompt = composePromptWithTags(text, tags);
+    if (!prompt) return;
+    const attachments = tags.map((t) => ({
+      preview: t.preview,
+      content: t.content,
+      attachmentKind: t.kind,
+      filePath: t.filePath,
+    }));
+    enqueuePrompt(sessionId, {
+      prompt,
+      displayText: text,
+      attachments: attachments.length > 0 ? attachments : undefined,
+    });
+    setValue("");
+    setTags([]);
+    setOpenTagId(null);
+    setAnchorRect(null);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      // While busy, Enter enqueues the prompt; when idle, it sends.
+      if (sessionBusy) handleEnqueue();
+      else handleSend();
     }
+  };
+
+  /** Submit an inline-edited user message. Reconstructs the full prompt from
+   *  the edited text + the original message's attachment blocks (preserved
+   *  as-is), then calls editAndResendMessage which truncates the session
+   *  history at the edited message and resends. */
+  const handleEditSubmit = async (msg: ChatMessage, newText: string) => {
+    const text = newText.trim();
+    if (!text) return;
+    setEditingMessageId(null);
+    // Reconstruct attachment tags from the original message's attachment
+    // blocks so composePromptWithTags can re-inline them into the prompt.
+    const attachmentBlocks = msg.blocks.filter((b) => b.kind === "attachment");
+    const tags: ContentTag[] = attachmentBlocks.map((b, i) => {
+      const ab = b as Extract<Block, { kind: "attachment" }>;
+      return {
+        id: `edit-tag-${i}`,
+        kind: ab.attachmentKind ?? "paste",
+        preview: ab.preview,
+        content: ab.content,
+        filePath: ab.filePath,
+      };
+    });
+    const prompt = composePromptWithTags(text, tags);
+    const attachments = tags.map((t) => ({
+      preview: t.preview,
+      content: t.content,
+      attachmentKind: t.kind,
+      filePath: t.filePath,
+    }));
+    void editAndResendMessage(
+      sessionId,
+      msg.id,
+      prompt,
+      attachments.length > 0 ? attachments : undefined,
+      attachments.length > 0 ? text : undefined,
+    );
   };
 
   // On opening a session, jump to the bottom so the latest exchange is in view
@@ -807,11 +914,24 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     };
   }, [empty]);
 
+  // The id of the last user message in this session. Only this message is
+  // editable - editing an earlier user message would require forking the
+  // conversation at a non-tail point, which the current truncation-based
+  // resend doesn't support cleanly (the SDK's resume keeps server-side
+  // history that we can't rewind to an arbitrary point).
+  const lastUserMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return messages[i].id;
+    }
+    return null;
+  }, [messages]);
+
   // Render a single item for LegendList's renderItem.
   const renderListItem = useCallback(
     ({ item }: { item: RenderItem }) => {
       if (item.kind === "single") {
         const m = item.msg;
+        const isUser = m.role === "user";
         return (
           <div className="px-[var(--chat-gutter)]">
             <div className="mx-auto max-w-5xl">
@@ -820,6 +940,11 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 isStreamingTail={item.isStreamingTail}
                 isTurnTail={item.isTurnTail}
                 beforeMap={beforeMap}
+                canEdit={isUser && !sessionBusy && m.id === lastUserMessageId}
+                isEditing={editingMessageId === m.id}
+                onStartEdit={(msg) => setEditingMessageId(msg.id)}
+                onSubmitEdit={handleEditSubmit}
+                onCancelEdit={() => setEditingMessageId(null)}
               />
             </div>
           </div>
@@ -847,7 +972,11 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
         <div key={item.msgs[0].id} className="px-[var(--chat-gutter)]">
           <div className="mx-auto max-w-5xl">
             {item.turnMeta && <TurnStatRow meta={item.turnMeta} />}
-            <ProceduralGroup blocks={blocks} beforeMap={beforeMap} />
+            <ProceduralGroup
+              blocks={blocks}
+              beforeMap={beforeMap}
+              turnActive={item.isStreamingTail}
+            />
             {item.isStreamingTail && (
               <div className="mt-1.5 flex items-center gap-1.5">
                 <IconLoader2 size={12} className="animate-spin text-accent" />
@@ -857,7 +986,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
         </div>
       );
     },
-    [beforeMap],
+    [beforeMap, sessionBusy, editingMessageId, lastUserMessageId, handleEditSubmit],
   );
 
   // Footer content rendered after all message items. Both the plan card and
@@ -898,7 +1027,12 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 return `cluster:${item.msgs[0].id}`;
               }}
               maintainScrollAtEnd
-              extraData={renderItems}
+              // extraData drives LegendList's "should re-render all visible
+              // items" check. renderItems alone isn't enough: toggling the
+              // inline editor (editingMessageId) doesn't change renderItems,
+              // so without including it here the list won't swap a row into
+              // its edit form until something else forces a re-render.
+              extraData={editingMessageId ? `${editingMessageId}|${renderItems.length}` : renderItems}
               estimatedItemSize={80}
               onScroll={handleVirtualScroll}
               drawDistance={400}
@@ -954,6 +1088,25 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           : "shrink-0 pb-3",
       )}>
         <div className={cn("w-full", empty ? "max-w-3xl" : "mx-auto max-w-5xl pt-2")}>
+          {/* Empty-thread indicator: project name + current git branch (with a
+              branch switcher). Only on a brand-new/empty thread; hidden once
+              the conversation has messages. Non-git projects show project name
+              only. Rendered above the composer, centered. */}
+          {empty && projectPath && (
+            <div className="mb-2 flex justify-center">
+              <ProjectBranchIndicator projectPath={projectPath} projectName={projectName} />
+            </div>
+          )}
+          {empty && (
+            <EmptyThreadWelcome
+              projectName={projectName}
+              disabled={inputBlocked}
+              onPickPrompt={(prompt) => {
+                setValue(prompt);
+                requestAnimationFrame(() => textareaRef.current?.focus());
+              }}
+            />
+          )}
           {headApproval && (
             <ApprovalPrompt
               key={headApproval.requestId}
@@ -1004,6 +1157,47 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               setTags((prev) => [...prev, makeFileTag(path)]);
             }}
           >
+            {queue.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1 border-b border-edge px-2 pt-2 pb-1.5">
+                <span className="mr-0.5 shrink-0 text-[10px] font-medium uppercase tracking-wide text-content-subtle">
+                  排队
+                </span>
+                {queue.map((item, idx) => (
+                  <span
+                    key={item.id}
+                    title={item.displayText || "已排队的消息"}
+                    className={cn(
+                      "inline-flex max-w-full items-center gap-1 rounded-md border border-accent/30 bg-accent/5 px-1.5 py-0.5 text-[11px] text-content",
+                    )}
+                  >
+                    <span className="shrink-0 text-[10px] text-content-subtle">{idx + 1}.</span>
+                    <span className="max-w-[160px] truncate">
+                      {item.displayText || "(仅附件)"}
+                    </span>
+                    {item.attachments && item.attachments.length > 0 && (
+                      <IconPaperclip size={11} className="shrink-0 opacity-60" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removeQueuedPrompt(sessionId, item.id)}
+                      title="从队列移除"
+                      aria-label="从队列移除"
+                      className="ml-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-accent/20 hover:text-content"
+                    >
+                      <IconX size={10} />
+                    </button>
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => clearPromptQueue(sessionId)}
+                  title="清空队列"
+                  className="shrink-0 rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-muted hover:text-content"
+                >
+                  清空
+                </button>
+              </div>
+            )}
             {tags.length > 0 && (
               <div className="flex flex-wrap gap-1 px-2 pt-2">
                 {tags.map((tag) => (
@@ -1042,11 +1236,13 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               onKeyDown={handleKeyDown}
               rows={2}
               placeholder={
-                inputBlocked
+                textareaLocked
                   ? "Claude is working…"
-                  : "发送消息…  (@ 引用文件 · / 命令)"
+                  : sessionBusy
+                    ? "排队输入…  (Enter 加入队列)"
+                    : "发送消息…  (@ 引用文件 · / 命令)"
               }
-              disabled={inputBlocked}
+              disabled={textareaLocked}
               className={cn(
                 "max-h-72 min-h-[52px] resize-none bg-transparent px-3 pt-2.5 text-sm leading-relaxed text-content outline-none",
                 "placeholder:text-content-subtle disabled:opacity-60",
@@ -1071,16 +1267,32 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 <ComposerToolbar />
               </div>
               {sessionBusy ? (
-                <button
-                  onClick={() => void interrupt()}
-                  title="停止生成"
-                  className={cn(
-                    "inline-flex items-center justify-center rounded-md bg-danger p-1.5 text-surface",
-                    "hover:brightness-110",
-                  )}
-                >
-                  <IconPlayerStop size={14} />
-                </button>
+                <div className="flex items-center gap-1">
+                  {/* Queue button: parks the typed prompt to fire after the
+                      current turn ends (or immediately if the user then stops). */}
+                  <button
+                    onClick={handleEnqueue}
+                    disabled={!value.trim() && tags.length === 0}
+                    title="加入队列(当前任务结束后自动发送)"
+                    aria-label="加入队列"
+                    className={cn(
+                      "inline-flex items-center justify-center rounded-md bg-accent p-1.5 text-surface transition-all",
+                      "hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle",
+                    )}
+                  >
+                    <IconSend2 size={14} />
+                  </button>
+                  <button
+                    onClick={() => void interrupt()}
+                    title="停止生成"
+                    className={cn(
+                      "inline-flex items-center justify-center rounded-md bg-danger p-1.5 text-surface",
+                      "hover:brightness-110",
+                    )}
+                  >
+                    <IconPlayerStop size={14} />
+                  </button>
+                </div>
               ) : (
                 <button
                   onClick={handleSend}
@@ -1193,17 +1405,44 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
 }
 
 /** One row in the stream, with role styling. The "You"/"Claude" labels
- *  were removed per design — alignment (user right, assistant left) and
+ *  were removed per design - alignment (user right, assistant left) and
  *  bubble styling carry the role signal. A copy button sits BELOW the
- *  message content — outside the user bubble's border so it doesn't read
+ *  message content - outside the user bubble's border so it doesn't read
  *  as part of the copied text and stays visually separate from the
  *  content area.
  *
  *  For assistant messages: the FIRST message of a turn shows a per-turn
  *  "开始 HH:MM:SS · 用时 12.3s" stat row ABOVE the content. The streaming
  *  tail (the last assistant message while a turn is running) shows a
- *  spinning loader at the bottom of the content. */
-const MessageRow = memo(function MessageRow({ msg, isStreamingTail, isTurnTail, beforeMap }: { msg: ChatMessage; isStreamingTail?: boolean; isTurnTail?: boolean; beforeMap?: BeforeContentMap }) {
+ *  spinning loader at the bottom of the content.
+ *
+ *  User messages also get an edit button (pencil icon) next to copy when
+ *  the session is idle. Clicking it swaps the bubble for an inline editor
+ *  (see UserMessageEditor); submitting the editor truncates the session's
+ *  history at this message and resends the edited prompt. */
+const MessageRow = memo(function MessageRow({
+  msg,
+  isStreamingTail,
+  isTurnTail,
+  beforeMap,
+  canEdit,
+  isEditing,
+  onStartEdit,
+  onSubmitEdit,
+  onCancelEdit,
+}: {
+  msg: ChatMessage;
+  isStreamingTail?: boolean;
+  isTurnTail?: boolean;
+  beforeMap?: BeforeContentMap;
+  /** Whether the edit affordance should be shown (user message + idle). */
+  canEdit?: boolean;
+  /** Whether THIS row is currently in inline-edit mode. */
+  isEditing?: boolean;
+  onStartEdit?: (msg: ChatMessage) => void;
+  onSubmitEdit?: (msg: ChatMessage, newText: string) => void;
+  onCancelEdit?: () => void;
+}) {
   const isUser = msg.role === "user";
   const copyText = useMemo(() => blocksToText(msg.blocks), [msg.blocks]);
   // Only show the copy button on messages with real text content - i.e. the
@@ -1221,6 +1460,28 @@ const MessageRow = memo(function MessageRow({ msg, isStreamingTail, isTurnTail, 
   const showCopy = isUser
     ? hasTextContent && !!copyText
     : hasTextContent && !!copyText && isTurnTail;
+  // The edit button is only for user messages, only when idle, and only on
+  // rows NOT currently being edited (the editor replaces the row).
+  const showEdit = isUser && canEdit && !isEditing;
+
+  // ── Inline edit mode ──
+  // When editing, the normal bubble is replaced by an editor with a textarea
+  // prefilled with the original typed text (attachment blocks are preserved
+  // as-is; only the text portion is editable). Enter submits, Escape cancels.
+  if (isUser && isEditing) {
+    return (
+      <div className="mt-5 mb-4 flex justify-end">
+        <div className="max-w-[85%] w-full">
+          <UserMessageEditor
+            msg={msg}
+            onSubmit={(newText) => onSubmitEdit?.(msg, newText)}
+            onCancel={() => onCancelEdit?.()}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={cn("group", isUser ? "mt-5 flex justify-end" : "mt-3")}>
       <div className={isUser ? "max-w-[85%]" : "w-full"}>
@@ -1247,11 +1508,32 @@ const MessageRow = memo(function MessageRow({ msg, isStreamingTail, isTurnTail, 
             </div>
           )}
         </div>
-        {/* Copy action BELOW the content bubble - outside its border.
+        {/* Action row BELOW the content bubble - outside its border.
             Icon-only, revealed on row hover. User messages right-align the
-            copy button (under the right-aligned bubble); assistant messages
-            left-align it. */}
-        {showCopy && <CopyRow text={copyText} align={isUser ? "end" : "start"} />}
+            buttons (under the right-aligned bubble); assistant messages
+            left-align. For user messages the copy + edit buttons sit
+            side-by-side; for assistant messages only copy is shown. */}
+        {(showCopy || showEdit) && (
+          <div
+            className={cn(
+              "mt-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100",
+              isUser ? "justify-end" : "justify-start",
+            )}
+          >
+            {showCopy && <CopyButton text={copyText} />}
+            {showEdit && (
+              <button
+                type="button"
+                onClick={() => onStartEdit?.(msg)}
+                title="编辑"
+                aria-label="编辑"
+                className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
+              >
+                <IconPencil size={12} />
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1281,7 +1563,7 @@ function blocksToText(blocks: Block[]): string {
   return out.join("\n\n").trim();
 }
 
-function CopyRow({ text, align = "start" }: { text: string; align?: "start" | "end" }) {
+function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     try {
@@ -1294,21 +1576,136 @@ function CopyRow({ text, align = "start" }: { text: string; align?: "start" | "e
     }
   };
   return (
-    <div
-      className={cn(
-        "mt-1 flex opacity-0 transition-opacity group-hover:opacity-100",
-        align === "end" ? "justify-end" : "justify-start",
-      )}
+    <button
+      type="button"
+      onClick={onCopy}
+      title="复制"
+      aria-label="复制"
+      className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
     >
-      <button
-        type="button"
-        onClick={onCopy}
-        title="复制"
-        aria-label="复制"
-        className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
-      >
-        {copied ? <IconCheck size={12} className="text-accent" /> : <IconCopy size={12} />}
-      </button>
+      {copied ? <IconCheck size={12} className="text-accent" /> : <IconCopy size={12} />}
+    </button>
+  );
+}
+
+/** Extract just the typed text from a user message's blocks (the `text`
+ *  block content). Attachment blocks are skipped - they're edited as
+ *  preserved attachments, not as editable text. Used to prefill the inline
+ *  editor with the user's original wording. */
+function userMessageText(blocks: Block[]): string {
+  for (const b of blocks) {
+    if (b.kind === "text") return b.text;
+  }
+  return "";
+}
+
+/** Inline editor that replaces a user message bubble when the user clicks
+ *  the edit pencil. Renders a textarea prefilled with the original typed
+ *  text (attachment blocks are shown as read-only chips above it, matching
+ *  the composer's chip-above-textarea layout). Enter submits the edit
+ *  (truncating the session history at this message and resending), Escape
+ *  cancels back to the read-only view. */
+function UserMessageEditor({
+  msg,
+  onSubmit,
+  onCancel,
+}: {
+  msg: ChatMessage;
+  onSubmit: (newText: string) => void;
+  onCancel: () => void;
+}) {
+  const initialText = useMemo(() => userMessageText(msg.blocks), [msg.blocks]);
+  const [text, setText] = useState(initialText);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const attachmentBlocks = msg.blocks.filter((b) => b.kind === "attachment");
+
+  // Focus + auto-resize on mount.
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.focus();
+    // Place the cursor at the end so the user can immediately append/correct.
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, []);
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setText(e.target.value);
+    const ta = e.target;
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const trimmed = text.trim();
+      if (trimmed) onSubmit(trimmed);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+    }
+  };
+
+  const canSubmit = text.trim().length > 0;
+
+  return (
+    <div className="rounded-lg border border-accent/40 bg-userBubble/10 px-3 py-2 [font-size:var(--chat-font-size)]">
+      {/* Attachment chips (read-only) - mirror the composer's chip-above-textarea
+          layout. Only shown if the original message had attachments. These are
+          non-interactive previews (the attachments are preserved as-is on
+          resend); editing only touches the text portion. */}
+      {attachmentBlocks.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {attachmentBlocks.map((b, i) =>
+            b.kind === "attachment" ? (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[11px] text-accent"
+                title={b.filePath ?? b.preview}
+              >
+                {b.attachmentKind === "file" ? (
+                  <IconPaperclip size={12} className="opacity-80" />
+                ) : null}
+                <span className="max-w-[12rem] truncate">{b.preview}</span>
+              </span>
+            ) : null,
+          )}
+        </div>
+      )}
+      <textarea
+        ref={textareaRef}
+        value={text}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        rows={1}
+        className="w-full resize-none border-0 bg-transparent text-content outline-none placeholder:text-content-subtle"
+        style={{ minHeight: "1.5em" }}
+      />
+      <div className="mt-2 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded px-2 py-1 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={() => canSubmit && onSubmit(text.trim())}
+          disabled={!canSubmit}
+          className={cn(
+            "inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] transition-colors",
+            canSubmit
+              ? "bg-accent text-white hover:bg-accent/90"
+              : "cursor-not-allowed bg-surface-hover text-content-subtle",
+          )}
+        >
+          <IconSend2 size={12} />
+          发送
+        </button>
+      </div>
     </div>
   );
 }

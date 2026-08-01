@@ -16,7 +16,7 @@
 import type { IpcMain } from "electron";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
-import simpleGit from "simple-git";
+import type simpleGitFn from "simple-git";
 import {
   IPC,
   GitDiscoverReposSchema,
@@ -49,6 +49,19 @@ import { ProjectRepo, SettingRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { log } from "@main/lib/logger.js";
+
+// Lazy-load simple-git so the CJS module stays out of the main-process startup
+// path. Git operations only happen when the user opens the git panel - well
+// after the window is visible. Mirrors the node-pty lazy-load pattern in
+// TerminalManager.ts.
+let simpleGitLoader: typeof simpleGitFn | null = null;
+async function loadSimpleGit(): Promise<typeof simpleGitFn> {
+  if (!simpleGitLoader) {
+    const mod = await import("simple-git");
+    simpleGitLoader = mod.default;
+  }
+  return simpleGitLoader;
+}
 
 /** Max recursion depth for repo discovery. Keeps the scan fast on deep trees
  *  while still finding nested monorepo packages. */
@@ -207,7 +220,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { status: { branch: "", ahead: 0, behind: 0, files: [] } };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       const status = await git.status();
       return { status: mapStatus(status) };
     } catch (err) {
@@ -223,7 +236,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       await git.add(input.filePaths);
       return { ok: true };
     } catch (err) {
@@ -240,7 +253,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       // `git reset HEAD -- <files>` unstages without touching working tree.
       await git.reset(input.filePaths.length > 0 ? ["--", ...input.filePaths] : []);
       return { ok: true };
@@ -258,7 +271,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       await git.commit(input.message);
       log.info(`git.commit succeeded in ${input.repoPath}`);
       return { ok: true };
@@ -276,7 +289,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       await git.push();
       log.info(`git.push succeeded in ${input.repoPath}`);
       return { ok: true };
@@ -294,7 +307,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       // `git.pull()` resolves a merge conflict by throwing, OR (for some merge
       // strategies) returns with the working tree left in a conflicted state.
       // We re-check `git.status().conflicted` so both paths are reported.
@@ -336,7 +349,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { patch: "" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       // --cached shows the staged diff (index vs HEAD); without it, the
       // working-tree diff (index vs working tree) is shown.
       const args = input.staged ? ["--cached", "--", input.filePath] : ["--", input.filePath];
@@ -355,7 +368,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       // Separate tracked (modified/staged/deleted) from untracked files:
       // tracked → git checkout -- <file> (restore to index)
       // untracked → git clean -f -- <file> (remove)
@@ -394,7 +407,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
     const limit = input.limit ?? 50;
     const skip = input.skip ?? 0;
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       // Custom format via raw so we control fields + --skip cleanly.
       // Record separator \x1e, field separator \x1f.
       // Request one extra row so we can tell whether another page exists.
@@ -426,7 +439,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return null;
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       const detail = await loadCommitDetail(git, input.commitHash);
       return detail;
     } catch (err) {
@@ -445,7 +458,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { before: "", after: "" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       const beforePath = input.oldPath || input.filePath;
       const after = await showBlob(git, input.commitHash, input.filePath);
       // Parent side: `${hash}^:path`. Root commits / added files yield "".
@@ -467,7 +480,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
     }
     try {
       // 1. Collect the staged diff (index vs HEAD).
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       const diff = await git.diff(["--cached"]);
       if (!diff.trim()) {
         return { ok: false, error: "没有已暂存的更改可生成提交信息" };
@@ -569,7 +582,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       // 1. Gather the current conflicted files. (simple-git exposes them via
       //    `status().conflicted`.)
       const status = await git.status();
@@ -740,13 +753,14 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { branches: { current: "", detached: false, local: [], remote: [], tags: [] } };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       // `for-each-ref` gives us refname / short hash / subject in one shot.
-      // Record separator \x1e, field separator \x1f. `*HEAD` symrefs under
-      // refs/remotes are excluded - they duplicate a real remote branch and
-      // would confuse checkout. `*{/*}` dereferences annotated tags to the
-      // commit they point at, so `commit`/`label` match the actual commit.
-      const fmt = "%(refname)%x1f%(objectname:short)%x1f%(contents:subject)%x1e";
+      // NOTE: `for-each-ref` uses `%NN` (two hex digits) for byte escapes - NOT
+      // the `%xNN` form that `git log --format` uses. So `%1f` = unit sep
+      // (field), `%0a` = LF (record). `%x1f` would be emitted literally and
+      // break parsing. `*HEAD` symrefs under refs/remotes are excluded - they
+      // duplicate a real remote branch and would confuse checkout.
+      const fmt = "%(refname)%1f%(objectname:short)%1f%(contents:subject)%0a";
       const rawRefs = await git.raw([
         "for-each-ref",
         `--format=${fmt}`,
@@ -769,7 +783,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       const remote: GitBranchInfo[] = [];
       const tags: GitBranchInfo[] = [];
 
-      for (const record of rawRefs.split("\x1e")) {
+      for (const record of rawRefs.split("\n")) {
         const line = record.trim();
         if (!line) continue;
         const [refname, commit, label] = line.split("\x1f");
@@ -828,7 +842,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
-      const git = simpleGit(input.repoPath);
+      const git = (await loadSimpleGit())(input.repoPath);
       if (input.newBranch) {
         // `git checkout -b <newBranch> <branch>` - create + switch.
         await git.checkoutBranch(input.newBranch, input.branch);

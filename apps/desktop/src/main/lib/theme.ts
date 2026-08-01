@@ -17,6 +17,7 @@ import { nativeTheme } from "electron";
 import type { ThemeName, EffectiveTheme } from "@contracts/theme";
 import { THEME_SETTING_KEY } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
+import { awaitDb } from "@main/store/db.js";
 import { sendToRenderer, updateTitleBarOverlay } from "@main/window.js";
 import { IPC } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
@@ -69,18 +70,24 @@ export function applyTheme(theme: ThemeName): { theme: ThemeName; effective: Eff
  * wire up the nativeTheme 'updated' listener so OS-side changes (in `system`
  * mode) propagate to the renderer. Idempotent.
  *
- * Must run after initDb() (reads settings) and after the window exists
- * (broadcast targets it).
+ * Async because it `await`s DB readiness before reading the persisted theme
+ * preference - the window is created before DB init finishes (startup
+ * decoupling), so the first frame uses the OS default theme and this call
+ * corrects it to the saved preference once the DB is ready. Fire-and-forget
+ * (`void initTheme()`) is safe; only a user preference that differs from the
+ * OS default causes a brief first-frame flash.
  */
-export function initTheme(): void {
+export async function initTheme(): Promise<void> {
   if (initialized) return;
   initialized = true;
+
+  await awaitDb();
   const pref = getThemePreference();
   nativeTheme.themeSource = pref;
   log.info(`theme initialized: ${pref} (effective ${effective()})`);
 
   // OS theme changed (only meaningful in 'system' mode, but the event fires
-  // regardless — cheap to re-broadcast). Also fires when WE set themeSource.
+  // regardless - cheap to re-broadcast). Also fires when WE set themeSource.
   nativeTheme.on("updated", () => {
     broadcast();
     updateTitleBarOverlay();

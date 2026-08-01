@@ -1,5 +1,4 @@
 import type { IpcMain } from "electron";
-import { dialog } from "electron";
 import {
   IPC,
   DEFAULT_PROVIDER_ID,
@@ -26,13 +25,6 @@ import { providerRegistry } from "@main/providers/registry.js";
 import { log } from "@main/lib/logger.js";
 
 export function registerClaudeHandlers(ipcMain: IpcMain): void {
-  // ── folder picker: lets the renderer ask for a project directory ──
-  ipcMain.handle("dialog:pickFolder", async () => {
-    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
-    if (result.canceled || result.filePaths.length === 0) return { path: null };
-    return { path: result.filePaths[0] };
-  });
-
   // ── health check: is the default provider's binary functional? ──
   ipcMain.handle("claude:healthCheck", async () => {
     const provider = providerRegistry.default;

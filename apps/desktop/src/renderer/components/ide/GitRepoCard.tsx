@@ -504,7 +504,7 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
               <Menu.Positioner side="bottom" align="start" sideOffset={4}>
                 <Menu.Popup
                   className={cn(
-                    "z-50 flex max-h-[360px] min-w-[260px] flex-col rounded-md border border-edge bg-surface py-1 shadow-2xl",
+                    "z-50 flex max-h-[360px] w-[300px] max-w-[320px] min-w-[260px] flex-col rounded-md border border-edge bg-surface py-1 shadow-2xl",
                     "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                     "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                     "transition-[transform,opacity] duration-100",

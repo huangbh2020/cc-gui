@@ -4,6 +4,16 @@
 # metadata files are uploaded alongside the installers so electron-updater can
 # check for updates from within the app.
 #
+# macOS is split into two build jobs on matching runners (macos-latest=arm64,
+# macos-13=x64) so the claude-agent-sdk platform subpackage and node-pty native
+# addon are installed + rebuilt for the correct arch. Building both archs from a
+# single arm64 runner produced x64 DMGs containing arm64 binaries, which
+# triggered a Rosetta prompt on Intel Macs.
+#
+# The two mac jobs each emit a single-arch latest-mac.yml; the publish job
+# merges them into one (x64 entry first, since electron-updater's findFile
+# falls back to files[0] when no url matches process.arch) before uploading.
+#
 # The app is NOT code-signed in this first pass (P6). macOS users must
 # right-click > Open on first launch; Windows shows a SmartScreen warning.
 name: Release
@@ -19,24 +29,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
+          # macos-latest is Apple Silicon (arm64); macos-13 is the Intel (x64)
+          # image GitHub still provides. Each job builds ONLY its runner's
+          # native arch (electron-builder.yml omits mac.target.*.arch, so it
+          # defaults to process.arch), which ensures native bits match.
           - os: macos-latest
             platform: mac
+            arch: arm64
+          - os: macos-13
+            platform: mac
+            arch: x64
           # Pin to windows-2022 (not -latest): windows-latest has migrated to the
           # 2025 image whose VS install layout breaks node-gyp@9's VisualStudio
           # finder. 2022 reliably ships VS 2022 + the C++ workload.
           - os: windows-2022
             platform: win
+            arch: x64
 
     runs-on: ${{ matrix.os }}
-    # The default GITHUB_TOKEN is read-only; grant write on contents so
-    # softprops/action-gh-release can create the release + upload assets.
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -78,9 +93,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # node-pty is a native addon - rebuild it for the runner's Electron ABI
-      # before packaging so the .node binary matches.
+      # before packaging so the .node binary matches. MCODE_ARCH tells the
+      # rebuild script which arch to target (matches the runner's native arch
+      # here, so install-app-deps and fix-node-pty-conpty both resolve the
+      # correct arch-specific binaries).
       - name: Rebuild native modules
         shell: bash
+        env:
+          MCODE_ARCH: ${{ matrix.arch }}
         run: pnpm --filter @mcode/desktop rebuild:native
 
       # Derive the release version from the git tag (e.g. "v0.1.4" -> "0.1.4")
@@ -121,20 +141,63 @@ jobs:
           # Raise it to 4GB so electron-vite build doesn't OOM.
           NODE_OPTIONS: --max-old-space-size=4096
 
+      # Upload per-arch artifacts for the publish job. Each matrix leg gets its
+      # own artifact name so they don't collide. The publish job merges the two
+      # mac latest-mac.yml files and uploads everything to the GitHub Release.
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest*.yml
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # The default GITHUB_TOKEN is read-only; grant write on contents so
+    # softprops/action-gh-release can create the release + upload assets.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download every matrix leg's artifact into artifacts/<name>/. Keeping
+      # them separate (merge-multiple: false) lets the merge script find each
+      # arch's latest-mac.yml by directory.
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      # Merge the arm64 + x64 latest-mac.yml into one (x64 entry first) and
+      # stage all dmg/zip/exe/blockmap/latest.yml into release-staging/. The
+      # script is dependency-free (node: built-ins only) since this job doesn't
+      # run pnpm install.
+      - name: Merge latest-mac.yml and stage assets
+        shell: bash
+        run: node .github/scripts/merge-mac-update-yml.cjs artifacts release-staging
+
       # Upload the artifacts to the GitHub Release that the tag created.
       # latest*.yml are critical - electron-updater fetches them to discover
       # new versions, so they MUST be published as release assets.
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          # Match installers + updater metadata. The `release/` dir is the
-          # electron-builder output (apps/desktop/release/).
+          # Match installers + updater metadata. release-staging/ is the merged
+          # output from the previous step.
           files: |
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*.zip
-            apps/desktop/release/*.exe
-            apps/desktop/release/*.blockmap
-            apps/desktop/release/latest*.yml
+            release-staging/*.dmg
+            release-staging/*.zip
+            release-staging/*.exe
+            release-staging/*.blockmap
+            release-staging/latest*.yml
           # Don't generate a body - the tag message / auto-generated notes
           # suffice; we only manage the binary assets.
           generate_release_notes: true

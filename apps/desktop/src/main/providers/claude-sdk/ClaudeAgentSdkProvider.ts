@@ -6,7 +6,6 @@
  * The SDK bundles its own claude binary, so ClaudePathResolver is no longer needed.
  */
 import { randomUUID } from "node:crypto";
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options, CanUseTool, OnUserDialog } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AgentProvider,
@@ -21,6 +20,20 @@ import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
 import { buildCustomEnv } from "./customEnv.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { resolveSdkBinaryPath } from "./sdkBinaryPath.js";
+
+// Lazy-load the Agent SDK so the (large) module and its bundled claude binary
+// stay out of the main-process startup path. The SDK is only needed once the
+// user sends their first message or a health check runs - both happen well
+// after the window is visible. Mirrors the node-pty lazy-load pattern in
+// TerminalManager.ts.
+let queryFn: typeof import("@anthropic-ai/claude-agent-sdk").query | null = null;
+async function loadQuery(): Promise<typeof import("@anthropic-ai/claude-agent-sdk").query> {
+  if (!queryFn) {
+    const sdk = await import("@anthropic-ai/claude-agent-sdk");
+    queryFn = sdk.query;
+  }
+  return queryFn;
+}
 
 /** Tools that mutate files on disk — auto-approved under `acceptEdits`
  *  mode without prompting the user. Mirrors Claude Code's own grouping. */
@@ -376,7 +389,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       };
     }
 
-    const q = query({ prompt: req.prompt, options });
+    const q = (await loadQuery())({ prompt: req.prompt, options });
 
     let finished = false;
     const done = (async () => {
@@ -415,7 +428,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // A quick probe: spawn a minimal query and capture the system/init message
       // to verify the SDK binary is functional.
       const binaryPath = resolveSdkBinaryPath();
-      const q = query({
+      const q = (await loadQuery())({
         prompt: "",
         options: {
           maxTurns: 0,

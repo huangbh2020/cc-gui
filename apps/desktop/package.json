@@ -12,7 +12,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "rebuild:native": "electron-builder install-app-deps && node build/fix-node-pty-conpty.cjs",
+    "rebuild:native": "node build/rebuild-native.cjs",
     "package": "electron-vite build && node -e \"require('fs').rmSync('../../packages/contracts/dist',{recursive:true,force:true})\" && node build/dereference-workspace-symlinks.cjs && electron-builder --publish never"
   },
   "dependencies": {

@@ -7,8 +7,9 @@ import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { initUpdater } from "@main/updater.js";
 import { is } from "@main/utils.js";
+import { logStartup } from "@main/lib/startupTimer.js";
 
-// Single-instance lock — only one GUI instance runs at a time.
+// Single-instance lock - only one GUI instance runs at a time.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -26,12 +27,16 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(async () => {
-  // Open SQLite before registering handlers — handlers may be invoked as soon
-  // as they're registered, and the DB must be ready. app.getPath("userData")
-  // is only valid after whenReady. sql.js loads asynchronously, hence await.
-  await initDb();
+  logStartup("whenReady entered");
 
-  // CSP only in production — in dev, Vite injects inline HMR scripts that a
+  // Kick off DB init in the background (sql.js loads ~6MB asm.js + reads the
+  // file + migrates). We DON'T await it - the window is created next so the
+  // renderer starts loading immediately. IPC handlers await `awaitDb()`
+  // internally (see ipc/index.ts), so any request that arrives before the DB
+  // is ready simply queues instead of failing.
+  void initDb();
+
+  // CSP only in production - in dev, Vite injects inline HMR scripts that a
   // strict CSP would block, leaving the page blank.
   if (is.prod) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -46,16 +51,25 @@ app.whenReady().then(async () => {
     });
   }
 
-  // Apply the persisted theme preference BEFORE creating the window, so the
-  // first frame's backgroundColor and the renderer's initial .dark class
-  // match — no flash of the wrong theme.
-  initTheme();
+  // Apply the persisted theme preference. Fire-and-forget: initTheme() awaits
+  // DB readiness internally, so the first frame uses the OS-default theme and
+  // is corrected to the saved preference once the DB is ready. Only a user
+  // preference that differs from the OS causes a brief first-frame flash.
+  void initTheme();
 
+  // Register IPC handlers (each awaits DB readiness before running).
   registerIpcHandlers();
+  logStartup("IPC handlers registered");
+
+  // Create the window immediately - don't wait for DB init to finish. The
+  // renderer starts loading its JS/HMR while sql.js parses in parallel.
   createMainWindow();
+  logStartup("createMainWindow returned");
 
   // Start the auto-updater (no-op in dev; only active in packaged builds).
-  initUpdater();
+  // Fire-and-forget: the first check is delayed 10s anyway, and the updater
+  // module is lazy-loaded, so this never blocks window creation.
+  void initUpdater();
 
   app.on("activate", () => {
     // macOS: re-create a window when the dock icon is clicked.

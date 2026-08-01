@@ -30,6 +30,7 @@ import { Markdown } from "./Markdown.js";
 import { DiffView } from "./DiffView.js";
 import { PlanStreamBlock } from "./PlanStreamBlock.js";
 import { TurnFilesCard } from "./TurnFilesCard.js";
+import { CurrentOpTicker } from "./CurrentOpTicker.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
 
 /** Map of absolute file path → its pre-turn content. Built from the
@@ -69,7 +70,7 @@ const MessageBlocks = memo(function MessageBlocks({
         seg.kind === "single" ? (
           <BlockView key={i} block={seg.block} defaultOpen={seg.defaultOpen} beforeMap={beforeMap} isStreamingTail={isStreamingTail} />
         ) : (
-          <ProceduralGroup key={i} blocks={seg.blocks} beforeMap={beforeMap} />
+          <ProceduralGroup key={i} blocks={seg.blocks} beforeMap={beforeMap} turnActive={isStreamingTail} />
         ),
       )}
     </div>
@@ -163,12 +164,17 @@ function StatusIcon({ status }: { status: "running" | "done" | "error" }) {
 export function ProceduralGroup({
   blocks,
   beforeMap,
+  turnActive = false,
 }: {
   blocks: ProceduralBlock[];
   /** Pre-turn file contents for Write-tool diffing. Optional — omitted in
    *  the single-message (non-cluster) render path where diffs aren't
    *  shown. Forwarded down to WriteToolCard. */
   beforeMap?: BeforeContentMap;
+  /** Whether this card's turn is still streaming (the card is the live tail
+   *  of the stream). Gates the "current operation" ticker: it only shows for
+   *  the card that is executing right now and clears once the turn ends. */
+  turnActive?: boolean;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -182,6 +188,14 @@ export function ProceduralGroup({
     : toolBlocks.some((b) => b.status === "error")
       ? "error"
       : "done";
+
+  // The newest tool currently executing inside this card (drives the ticker).
+  const runningTool = useMemo(() => {
+    for (let i = toolBlocks.length - 1; i >= 0; i--) {
+      if (toolBlocks[i].status === "running") return toolBlocks[i];
+    }
+    return null;
+  }, [toolBlocks]);
 
   // Tool-name tally in first-invocation order (Map preserves insertion).
   const counts = new Map<string, number>();
@@ -208,6 +222,7 @@ export function ProceduralGroup({
         <IconActivity size={14} className="shrink-0 text-content-muted" />
         <span className="font-medium text-content-muted">{label}</span>
         {breakdown && <span className="truncate text-content-subtle">{breakdown}</span>}
+        <CurrentOpTicker op={runningTool} turnActive={turnActive} />
         <Chevron open={open} />
       </button>
       {open && (
@@ -721,14 +736,17 @@ const TOOL_ICON_MAP: Record<string, ComponentType<{ size?: number; className?: s
 };
 
 /** The left-side glyph of an action card. Sized 13 to sit between the 12px
- *  status icon and the label without dominating the row. */
-function ToolIcon({ name, className }: { name: string; className?: string }) {
+ *  status icon and the label without dominating the row. Exported so the
+ *  current-operation ticker (CurrentOpTicker) can reuse the same
+ *  icon mapping instead of duplicating it. */
+export function ToolIcon({ name, className }: { name: string; className?: string }) {
   const Icon = TOOL_ICON_MAP[name] ?? IconTools;
   return <Icon size={13} className={cn("shrink-0", className)} />;
 }
 
-/** A one-line hint for common tools (Read/Edit/Bash etc.) shown on the card header. */
-function toolSummary(name: string, input: unknown): string {
+/** A one-line hint for common tools (Read/Edit/Bash etc.) shown on the card header.
+ *  Exported for reuse by the floating "current operation" card. */
+export function toolSummary(name: string, input: unknown): string {
   if (!input || typeof input !== "object") return "";
   const obj = input as Record<string, unknown>;
   switch (name) {

@@ -670,6 +670,16 @@ export const FileWriteSchema = z.object({
 });
 export type FileWriteInput = z.infer<typeof FileWriteSchema>;
 
+/** Native multi-file picker (project-external files allowed). Used by the
+ *  composer "添加上下文" button to attach files that live outside the active
+ *  project root — unlike the project-scoped `file.search`, this surfaces any
+ *  file on the user's machine via the OS open dialog. */
+export const DialogPickFilesSchema = z.object({
+  /** Optional dialog title; defaults to a localized "选择文件" on the main side. */
+  title: z.string().optional(),
+});
+export type DialogPickFilesInput = z.infer<typeof DialogPickFilesSchema>;
+
 /**
  * One line-level match from `file.grep`. `lineNumber` is 1-based. `lineText`
  * is the raw matched line (untrimmed, so column offsets are meaningful).
@@ -1239,6 +1249,9 @@ export interface RpcMap {
   /** Reveal a file or directory in the OS file manager, selecting it. Accepts
    *  any path that resolves inside a known project root (not just the root). */
   "shell.showItemInFolder": (input: ShowItemInFolderInput) => Promise<void>;
+  /** Native multi-file picker (project-external files allowed). Returns the
+   *  selected absolute paths; empty array when the user cancels. */
+  "dialog.pickFiles": (input: DialogPickFilesInput) => Promise<{ paths: string[] }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -1315,6 +1328,8 @@ export const IPC = {
   SHELL_OPEN_PATH: "shell:openPath",
   // Reveal a file/dir inside a project root in the OS file manager (selects it)
   SHELL_SHOW_ITEM_IN_FOLDER: "shell:showItemInFolder",
+  // Native multi-file picker (project-external files allowed) for the composer
+  DIALOG_PICK_FILES: "dialog:pickFiles",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",

@@ -28,10 +28,21 @@ import { app } from "electron";
 // electron-updater ships as CommonJS; under ESM output ("type": "module") a
 // named import (`import { autoUpdater }`) is not reliably supported by Node's
 // ESM/CJS interop - it throws "Named export 'autoUpdater' not found" at boot.
-// Import the default export (the module.exports object) and destructure, the
-// same pattern used for other CJS deps in this bundle (sql.js, simple-git).
-import electronUpdater from "electron-updater";
-const { autoUpdater } = electronUpdater;
+// We therefore import the default export and destructure `autoUpdater` from it.
+//
+// Lazy-loaded: electron-updater only works in packaged builds and is never
+// needed during startup (the first check is scheduled 10s after boot). Keeping
+// the CJS module out of the startup path shaves load time in both dev (where
+// it's a pure no-op) and prod. Mirrors the node-pty / SDK lazy-load pattern.
+import type { AppUpdater } from "electron-updater";
+let autoUpdaterRef: AppUpdater | null = null;
+async function loadAutoUpdater(): Promise<AppUpdater> {
+  if (!autoUpdaterRef) {
+    const mod = await import("electron-updater");
+    autoUpdaterRef = mod.autoUpdater;
+  }
+  return autoUpdaterRef;
+}
 import {
   IPC,
   UPDATE_STATE_SETTING_KEY,
@@ -59,14 +70,16 @@ let pendingVersion: string | null = null;
 let downloadingVersion: string | null = null;
 
 /** Wire autoUpdater event listeners and schedule periodic checks.
- *  Safe to call in dev - it short-circuits and does nothing. */
-export function initUpdater(): void {
+ *  Safe to call in dev - it short-circuits and does nothing.
+ *  Async because electron-updater is lazy-loaded on first use. */
+export async function initUpdater(): Promise<void> {
   if (!is.prod) {
     // electron-updater has no app-update.yml to read in dev; skip entirely.
     return;
   }
 
   try {
+    const autoUpdater = await loadAutoUpdater();
     // Don't auto-download - let the user opt in from the About panel.
     autoUpdater.autoDownload = false;
     // Install on quit if a download has completed (harmless if none pending).
@@ -161,6 +174,7 @@ export async function checkForUpdates(): Promise<CheckForUpdatesResult> {
   }
 
   try {
+    const autoUpdater = await loadAutoUpdater();
     const result = await autoUpdater.checkForUpdates();
     // If a newer version exists, `update-available` will have fired and set
     // pendingVersion. Otherwise the check resolves and we're up-to-date.
@@ -181,6 +195,7 @@ export async function checkForUpdates(): Promise<CheckForUpdatesResult> {
 export async function downloadUpdate(): Promise<void> {
   if (!is.prod || !initialized) return;
   try {
+    const autoUpdater = await loadAutoUpdater();
     // Record the version being downloaded so download-progress events can tag
     // it, and seed the persisted state so an early remount shows "downloading"
     // even before the first progress chunk arrives.
@@ -200,6 +215,7 @@ export async function downloadUpdate(): Promise<void> {
 export async function quitAndInstall(): Promise<void> {
   if (!is.prod || !initialized) return;
   try {
+    const autoUpdater = await loadAutoUpdater();
     // The install will swap the binary and restart; clear the persisted state
     // so the next launch (running the new version) doesn't show a stale banner.
     clearPersistedUpdateState();

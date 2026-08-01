@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
-import { IconFile, IconLoader2, IconPaperclip, IconSearch } from "@renderer/lib/icons.js";
+import { IconFile, IconLoader2, IconPaperclip, IconSearch, IconUpload } from "@renderer/lib/icons.js";
 import type { FileSearchEntry } from "@contracts/ipc";
 
 export type FileMentionPickerMode = "mention" | "attach";
@@ -48,6 +48,7 @@ export function FileMentionPicker({
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   // attach mode owns a local search input (no textarea to drive it).
   const [localQuery, setLocalQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const reqIdRef = useRef(0);
@@ -135,6 +136,23 @@ export function FileMentionPicker({
     if (picked.length > 0) onPick(picked);
   }, [files, selected, exclude, activeIdx, onPick]);
 
+  /** Open the native OS file picker so the user can attach files from OUTSIDE
+   *  the project root (unlike `file.search`, which main scopes to known
+   *  projects). Selected paths are mapped to `FileSearchEntry`-shaped objects
+   *  and forwarded via `onPick` — the same callback the in-project attach flow
+   *  uses — so downstream tag creation / dedup / chip rendering is unchanged.
+   *  `relativePath` is set to the full path (there's no project root to relativize
+   *  against); the chip only shows `name` anyway. */
+  const handlePickExternal = useCallback(async () => {
+    const { paths } = await api.pickFiles({});
+    if (paths.length === 0) return; // user canceled
+    const mapped: FileSearchEntry[] = paths.map((p) => {
+      const segs = p.split(/[/\\]/);
+      return { name: segs[segs.length - 1] || p, path: p, relativePath: p };
+    });
+    onPick(mapped);
+  }, [onPick]);
+
   // Keyboard handling is owned by the parent textarea (so focus stays there),
   // but we expose an imperative-style handler via a window event is overkill —
   // parent calls nothing; instead parent wires keydown and we listen via
@@ -178,6 +196,20 @@ export function FileMentionPicker({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, files, activeIdx, mode, confirmMention, confirmAttach, onClose]);
 
+  // Click outside the picker to close. Mirrors the ModelDropdown / TagPopover
+  // pattern (document mousedown + ref.contains). Escape is already handled by
+  // the capturing keydown listener above, so this only covers pointer
+  // dismissal. Runs while open; cleaned up on close/unmount.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (rootRef.current && !rootRef.current.contains(t)) onClose();
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open, onClose]);
+
   if (!open || !anchorRect) return null;
 
   const top = Math.max(8, anchorRect.top - 8);
@@ -186,6 +218,7 @@ export function FileMentionPicker({
 
   return (
     <div
+      ref={rootRef}
       className={cn(
         "fixed z-[70] flex max-h-64 flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl",
       )}
@@ -228,6 +261,22 @@ export function FileMentionPicker({
             引用文件{effectiveQuery ? ` · ${effectiveQuery}` : ""}
           </span>
         </div>
+      )}
+
+      {mode === "attach" && (
+        <button
+          type="button"
+          onClick={handlePickExternal}
+          className={cn(
+            "mx-1.5 mt-1.5 flex items-center gap-1.5 rounded-md border border-dashed border-edge px-2 py-1.5 text-left text-[12px] text-content-muted",
+            "transition-colors hover:border-accent/60 hover:bg-accent/10 hover:text-accent",
+          )}
+          title="打开系统文件选择对话框(可选择项目外的文件)"
+        >
+          <IconUpload size={14} className="shrink-0" />
+          <span className="flex-1">从系统选择文件…</span>
+          <span className="text-[10px] text-content-subtle">项目外</span>
+        </button>
       )}
 
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-1">

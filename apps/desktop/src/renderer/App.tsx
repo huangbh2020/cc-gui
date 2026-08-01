@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef } from "react";
 import { ThreePaneLayout } from "./components/layout/ThreePaneLayout.js";
 import { Divider } from "./components/layout/Divider.js";
 import { Titlebar } from "./components/layout/Titlebar.js";
@@ -14,8 +14,17 @@ import { useSessionStore } from "./stores/sessionStore.js";
 import { useTheme } from "./lib/theme.js";
 import { useChatAppearance, useRightPanelAppearance } from "./lib/appearance.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
-import { FileEditor } from "./components/ide/FileEditor.js";
-import { GitDiffDialog } from "./components/ide/GitDiffDialog.js";
+
+// Lazy-load the Monaco-backed editor and git-diff dialog so the large
+// monaco-editor library (and its web workers) stay out of the initial renderer
+// chunk. Both are only needed once the user opens a file or a diff dialog -
+// well after first paint. Vite splits them into separate chunks automatically.
+const FileEditor = lazy(() =>
+  import("./components/ide/FileEditor.js").then((m) => ({ default: m.FileEditor })),
+);
+const GitDiffDialog = lazy(() =>
+  import("./components/ide/GitDiffDialog.js").then((m) => ({ default: m.GitDiffDialog })),
+);
 
 export function App() {
   // Subscribe to the claude event stream for the app's whole lifetime.
@@ -150,8 +159,11 @@ export function App() {
           </div>
           {/* Git diff dialog (the "dialog" open-mode). Portaled to <body>;
               renders nothing when closed or empty. Mounted at the workspace
-              level so it overlays the editor while staying app-scoped. */}
-          <GitDiffDialog />
+              level so it overlays the editor while staying app-scoped.
+              Lazy-loaded with monaco since it reuses the Monaco DiffPane. */}
+          <Suspense fallback={null}>
+            <GitDiffDialog />
+          </Suspense>
         </>
       )}
     </div>
@@ -264,7 +276,15 @@ function EditorColumn({ filePath }: { filePath: string }) {
       {editorMode === "tabs" && <OpenTabsBar />}
       <div className="min-h-0 flex-1">
         {projectPath ? (
-          <FileEditor key={filePath} filePath={filePath} projectPath={projectPath} />
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-content-subtle">
+                加载编辑器…
+              </div>
+            }
+          >
+            <FileEditor key={filePath} filePath={filePath} projectPath={projectPath} />
+          </Suspense>
         ) : (
           <div className="flex h-full items-center justify-center text-[11px] text-content-subtle">
             无法解析项目路径

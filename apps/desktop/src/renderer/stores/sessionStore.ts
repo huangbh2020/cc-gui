@@ -138,6 +138,31 @@ export interface TurnUsageRecord {
   model?: string;
 }
 
+/** One queued prompt: a fully-prepared turn payload held back while the
+ *  session is busy. When the session goes fully idle the head of the queue
+ *  is drained and replayed through the normal `sendPrompt` path (so the user
+ *  message, attachments, and turn lifecycle are identical to a live send).
+ *
+ *  `prompt` is the composed text (typed text + inlined @path / paste blocks)
+ *  the SDK receives; `displayText` is just the typed text shown in the user
+ *  bubble so attachment content isn't duplicated; `attachments` mirror the
+ *  composer's tags so the sent message keeps its chip cards. */
+export interface QueuedPrompt {
+  id: string;
+  prompt: string;
+  displayText: string;
+  attachments?: PromptAttachment[];
+}
+
+/** Attachment payload shared by sendPrompt and the queue (kept loose here so
+ *  the queue type doesn't depend on the store's private attachment shape). */
+export interface PromptAttachment {
+  preview: string;
+  content: string;
+  attachmentKind?: "paste" | "file";
+  filePath?: string;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
@@ -376,6 +401,14 @@ export interface SessionState {
    *  NOT persisted - it's a one-shot hand-off channel, not session data. */
   chatFileQueueBySession: Record<string, string[]>;
 
+  /** Per-session FIFO prompt queue. Populated when the user "排队" a prompt
+   *  while the session is busy; auto-drained (head sent) when the session
+   *  goes fully idle (no running turn AND no running background subagent).
+   *  Keyed by sessionId so the queue survives tab switches — draining lives
+   *  in the store's event handlers, where there's no component to hold it.
+   *  NOT persisted: ephemeral run-ahead buffer, not session history. */
+  promptQueueBySession: Record<string, QueuedPrompt[]>;
+
   /* ── IDE right-panel state ──
    *  Editor state (open files, active file, view mode, expanded tree dirs)
    *  is PER-PROJECT: switching to project B shows B's open files, and
@@ -465,8 +498,17 @@ export interface SessionState {
    *  the visibility toggle. */
   ideFocusNonce: number;
 
+  /** True once `init()` has started - guards against React StrictMode's
+   *  double-effect in dev firing init twice. */
+  _initStarted: boolean;
+
   // actions
   init: () => Promise<void>;
+  /** Deferred (non-critical) hydration kicked off by `init()` after the
+   *  first-paint essentials are done. Loads health-check, custom models,
+   *  appearance extras, and IDE/git panel prefs - none of which are needed
+   *  for the first visible frame. */
+  initDeferred: () => Promise<void>;
   addProjectFromFolder: () => Promise<string | null>;
   selectProject: (projectId: string) => Promise<void>;
   toggleProjectExpanded: (projectId: string) => void;
@@ -513,6 +555,21 @@ export interface SessionState {
      *  text (without the inlined attachment content) so the card + text
      *  don't duplicate the same payload. The full `prompt` (with
      *  attachments inlined) is still what gets sent to the SDK. */
+    displayText?: string,
+  ) => Promise<void>;
+  /** Edit a previously-sent user message in place and resend it. Truncates
+   *  the session's message history at the target message (removing it and
+   *  everything after it - including the AI's reply), persists the
+   *  truncated history, then sends the edited prompt as a fresh user
+   *  message. The session must NOT be running when this is called.
+   *
+   *  Takes an explicit `sessionId` (not activeSessionId) so it works
+   *  correctly across multiple open tabs. */
+  editAndResendMessage: (
+    sessionId: string,
+    messageId: string,
+    newPrompt: string,
+    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }[],
     displayText?: string,
   ) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -601,6 +658,22 @@ export interface SessionState {
    *  if no active session or queue is empty. */
   drainChatFileQueue: () => string[];
 
+  /** Append a prepared prompt to a session's FIFO queue. Called by the
+   *  composer's "排队" action while the session is busy. Generates the id;
+   *  the caller passes prompt/displayText/attachments. The head is drained
+   *  automatically when the session next goes fully idle. */
+  enqueuePrompt: (sessionId: string, item: Omit<QueuedPrompt, "id">) => void;
+  /** Remove a single queued prompt by id (the ✕ on a queue chip). */
+  removeQueuedPrompt: (sessionId: string, id: string) => void;
+  /** Drop the entire queue for a session (the "清空" button). */
+  clearPromptQueue: (sessionId: string) => void;
+  /** If `sessionId` is fully idle (no running turn + no running background
+   *  subagent) and its queue is non-empty, send the head prompt via
+   *  `sendPrompt` and drop it from the queue. No-op otherwise. Called from
+   *  the `turn.done` / `error` / sendTurn-failure paths so a queued prompt
+   *  fires the moment the previous turn truly ends. Safe to call any time. */
+  drainPromptQueueIfIdle: (sessionId: string) => void;
+
   /* ── IDE right-panel actions ── */
   /** Switch the active right-panel tab. Persists to settings. */
   setRightPanelTab: (tab: RightPanelTab) => void;
@@ -625,6 +698,9 @@ export interface SessionState {
   closeFileInIde: (filePath: string) => void;
   /** Set the active file (must already be open). */
   setIdeActiveFile: (filePath: string) => void;
+  /** Move an open file within the editor's tab strip (drag-to-reorder).
+   *  No-op for out-of-range / same index. Persists. */
+  reorderIdeFile: (from: number, to: number) => void;
   /** Set a file's view mode (edit/diff). */
   setIdeFileViewMode: (filePath: string, mode: FileViewMode) => void;
   /** Switch the editor open-mode (tabs vs replace). Persists. When switching
@@ -723,6 +799,8 @@ export const EMPTY_TODOS: TodoItem[] = [];
 export const EMPTY_TURN_FILES: TurnFileEntry[] = [];
 /** Stable empty chat-file queue reference (selector must return a stable array). */
 export const EMPTY_CHAT_QUEUE: string[] = [];
+/** Stable empty prompt-queue reference (selector must return a stable array). */
+export const EMPTY_PROMPT_QUEUE: QueuedPrompt[] = [];
 const EMPTY_CUSTOM_MODELS: CustomModelPublic[] = [];
 const EMPTY_SESSIONS: Session[] = [];
 export const EMPTY_SUBAGENTS: SubagentSnapshot[] = [];
@@ -1632,6 +1710,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   pendingPlanApprovalBySession: {},
   turnFilesBySession: {},
   chatFileQueueBySession: {},
+  promptQueueBySession: {},
   // IDE right-panel. Editor state is per-project (keyed by projectId);
   // init() hydrates from the settings table. rightPanelTab / ideEditorMode
   // are global user prefs.
@@ -1655,8 +1734,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   collapsedGitRepos: {} as Record<string, boolean>,
   ideFocusNonce: 0,
 
+  /** True once `init()` has started, to guard against React StrictMode's
+   *  double-effect in dev (which would otherwise fire init twice). */
+  _initStarted: false,
+
   init: async () => {
-    // IDE hydration staging: parsed from settings above, applied after the
+    // StrictMode guard: dev runs effects twice. The second call would re-fetch
+    // everything and (worse) race with the first. Bail out silently.
+    if (get()._initStarted) return;
+    set({ _initStarted: true });
+
+    // IDE hydration staging: parsed from deferred settings, applied after the
     // project list loads so we can drop paths that belong to no project.
     let ideHydrationPending: {
       open: Record<string, string[]>;
@@ -1664,21 +1752,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       dirs: Record<string, string[]>;
     } | null = null;
 
-    // Per-thread config (model / effort / permissionMode / customModelId) is
-    // hydrated by `selectSession` from the session row, not from a global
-    // default. Initial slot values are placeholders for the brief moment
-    // before the first `selectSession` call resolves; they get overwritten
-    // immediately by `syncConfigFromSession`. Keeping `effort: "high"` as the
-    // pre-hydration default preserves the existing "new sessions get the most
-    // thinking" behavior for the corner case where there's no first session.
-    const health = await api.claudeHealthCheck();
-    set({ claudeInstalled: health.installed });
-    // Load custom-model configs early so the model dropdown can offer them.
-    void get().reloadCustomModels();
+    // ── First-paint essentials ──
+    // Only what the user sees on the very first frame: the center-pane layout
+    // mode, the chat font size (avoids a font flash), and the project + session
+    // list. Everything else (health check, appearance extras, IDE/git prefs) is
+    // deferred to `initDeferred()` after this resolves.
 
-    // Hydrate displayMode from the settings table (default = "single"). Done
-    // before the project/session load so the first render with the right
-    // center-pane layout; falls back to "single" if the read fails.
+    // displayMode determines single vs tabs layout - needed before first render
+    // of the center pane so the right structure mounts.
     try {
       const { value } = await api.setting.get({ key: DISPLAY_MODE_SETTING_KEY });
       if (value === "single" || value === "tabs") {
@@ -1688,238 +1769,66 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.error("setting.get(displayMode) failed:", err);
     }
 
-    // Hydrate the appearance settings (chat font size, right-panel font
-    // size, user-message bg color, and global accent color). All are
-    // optional - missing/invalid values leave the store defaults in place.
-    // lib/appearance.ts picks these up and writes the corresponding CSS vars
-    // on <html> so the first paint uses the right values (no flash of the
-    // default font size / color).
-    try {
-      const [fontRes, rpFontRes, colorRes, accentRes] = await Promise.all([
-        api.setting.get({ key: UI_CHAT_FONT_SIZE_SETTING_KEY }),
-        api.setting.get({ key: UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY }),
-        api.setting.get({ key: UI_USER_MSG_COLOR_SETTING_KEY }),
-        api.setting.get({ key: UI_ACCENT_COLOR_SETTING_KEY }),
-      ]);
-      if (fontRes.value != null) {
-        const px = Number(fontRes.value);
-        if (Number.isFinite(px)) set({ chatFontSize: clampFontSize(px) });
-      }
-      if (rpFontRes.value != null) {
-        const px = Number(rpFontRes.value);
-        if (Number.isFinite(px)) set({ rightPanelFontSize: clampRightPanelFontSize(px) });
-      }
-      // Accept only well-formed "R G B" triplets; anything else (incl.
-      // empty string) is treated as "use theme default" → null.
-      if (colorRes.value && RGB_TRIPLET_RE.test(colorRes.value)) {
-        set({ userMessageColor: colorRes.value });
-      }
-      if (accentRes.value && RGB_TRIPLET_RE.test(accentRes.value)) {
-        set({ accentColor: accentRes.value });
-      }
-    } catch (err) {
-      console.error("setting.get(appearance) failed:", err);
+    // Fetch the project list and chat font size in parallel - both are needed
+    // for the first frame (session tree + chat text size).
+    const [projectListRes, fontRes] = await Promise.allSettled([
+      api.project.list(),
+      api.setting.get({ key: UI_CHAT_FONT_SIZE_SETTING_KEY }),
+    ]);
+
+    // Apply chat font size (best-effort - missing/invalid leaves the default).
+    if (fontRes.status === "fulfilled" && fontRes.value.value != null) {
+      const px = Number(fontRes.value.value);
+      if (Number.isFinite(px)) set({ chatFontSize: clampFontSize(px) });
     }
 
-    // Hydrate draggable pane widths (one JSON blob). Each field is clamped
-    // individually so a single corrupt value can't nuke the whole layout.
-    try {
-      const paneRes = await api.setting.get({ key: UI_PANE_WIDTHS_SETTING_KEY });
-      if (paneRes.value) {
-        const parsed = JSON.parse(paneRes.value) as Partial<{
-          left: number; right: number; bottomTerminal: number; editor: number;
-        }>;
-        const patch: Partial<SessionState> = {};
-        if (parsed && typeof parsed === "object") {
-          if (Number.isFinite(parsed.left)) patch.leftWidth = clampLeftWidth(parsed.left!);
-          if (Number.isFinite(parsed.right)) patch.rightWidth = clampRightWidth(parsed.right!);
-          if (Number.isFinite(parsed.bottomTerminal)) {
-            patch.bottomTerminalHeight = clampBottomTerminalHeight(parsed.bottomTerminal!);
-          }
-          if (Number.isFinite(parsed.editor)) patch.editorWidthPct = clampEditorWidthPct(parsed.editor!);
-          if (Object.keys(patch).length > 0) set(patch);
-        }
-      }
-    } catch (err) {
-      console.error("setting.get(paneWidths) failed:", err);
+    if (projectListRes.status !== "fulfilled") {
+      // project.list failed - can't proceed with session loading. Show empty
+      // state rather than crashing into a blank screen.
+      console.error("project.list failed:", projectListRes.reason);
+      // Kick off deferred work even on failure (health check etc. still useful).
+      queueMicrotask(() => void get().initDeferred());
+      return;
     }
-
-    // Hydrate IDE right-panel prefs (active tab, open files, active file,
-    // expanded tree dirs). All are optional JSON-in-settings; missing/invalid
-    // values leave the defaults. Paths that don't belong to any persisted
-    // project are dropped on load (stale tabs from a removed project).
-    try {
-      const [tabRes, openRes, activeRes, dirsRes, modeRes, diffModeRes, commitModelRes, commitPromptRes, commandsByProjectRes, conflictModelRes] = await Promise.all([
-        api.setting.get({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY }),
-        api.setting.get({ key: UI_IDE_OPEN_FILES_SETTING_KEY }),
-        api.setting.get({ key: UI_IDE_ACTIVE_FILE_SETTING_KEY }),
-        api.setting.get({ key: UI_IDE_EXPANDED_DIRS_SETTING_KEY }),
-        api.setting.get({ key: UI_IDE_EDITOR_MODE_SETTING_KEY }),
-        api.setting.get({ key: UI_GIT_DIFF_OPEN_MODE_SETTING_KEY }),
-        api.setting.get({ key: UI_COMMIT_GEN_MODEL_SETTING_KEY }),
-        api.setting.get({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY }),
-        api.setting.get({ key: UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY }),
-        api.setting.get({ key: UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY }),
-      ]);
-      // Terminal moved to the bottom bar, so "terminal" is no longer a valid
-      // right-panel tab - a stale persisted value falls through to the default
-      // ("files"). The schema in contracts/ipc.ts mirrors this. "browser" was
-      // a P5 placeholder tab since removed, so a stale persisted value also
-      // falls through to the default.
-      if (tabRes.value === "files" || tabRes.value === "git") {
-        set({ rightPanelTab: tabRes.value });
-      }
-      if (modeRes.value === "tabs" || modeRes.value === "replace") {
-        set({ ideEditorMode: modeRes.value });
-      }
-      // Git-diff open-mode preference (center vs dialog). Stale/invalid values
-      // fall through to the default ("center").
-      if (diffModeRes.value === "center" || diffModeRes.value === "dialog") {
-        set({ gitDiffOpenMode: diffModeRes.value });
-      }
-      // Commit-message generation settings.
-      set({ commitGenModel: commitModelRes.value || null });
-      if (commitPromptRes.value) {
-        set({ commitGenPrompt: commitPromptRes.value });
-      }
-      // AI conflict-resolution model (from the local conflict-resolution feature).
-      set({ conflictResolveModel: conflictModelRes.value || null });
-      // Per-project terminal quick-commands: JSON-encoded
-      // Record<string, CustomCommand[]> keyed by projectId. Parsed below
-      // (after `parseBucket` is defined) so each project's array can be
-      // shape-checked.
-      // IDE editor state is persisted as per-project JSON objects (keyed by
-      // projectId). Parse them now; path validation happens after projects
-      // load (below). Legacy flat-array values (pre-per-project) are ignored
-      // - a benign one-time loss of "last open files".
-      const parseBucket = <T>(raw: string | null): Record<string, T> => {
-        if (!raw) return {};
-        try {
-          const obj = JSON.parse(raw);
-          if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj as Record<string, T>;
-        } catch {
-          /* malformed JSON - leave empty */
-        }
-        return {};
-      };
-      const parsedOpen = parseBucket<string[]>(openRes.value);
-      const parsedActive = parseBucket<string | null>(activeRes.value);
-      const parsedDirs = parseBucket<string[]>(dirsRes.value);
-      // Defer applying until we know the project roots - stash on a closure
-      // var the project-load block reads below.
-      ideHydrationPending = { open: parsedOpen, active: parsedActive, dirs: parsedDirs };
-      // Per-project commands: parse the outer map, then defensively
-      // shape-check each inner CustomCommand[] (drop malformed items).
-      {
-        const rawMap = parseBucket<unknown>(commandsByProjectRes.value);
-        const validated: Record<string, CustomCommand[]> = {};
-        for (const [pid, rawList] of Object.entries(rawMap)) {
-          if (!Array.isArray(rawList)) continue;
-          const valid = rawList.filter(
-            (c): c is CustomCommand =>
-              !!c &&
-              typeof c === "object" &&
-              typeof c.id === "string" &&
-              typeof c.name === "string" &&
-              typeof c.command === "string",
-          );
-          validated[pid] = valid;
-        }
-        set({ customCommandsByProject: validated });
-      }
-    } catch (err) {
-      console.error("setting.get(ide) failed:", err);
-    }
-
-    // Hydrate collapsed git repo card states from the settings table. Stored
-    // as a JSON-encoded Record<string, boolean> mapping repo paths to their
-    // collapsed state. Falls back to empty on error.
-    try {
-      const { value } = await api.setting.get({ key: UI_GIT_COLLAPSED_REPOS_SETTING_KEY });
-      if (value) {
-        const parsed = JSON.parse(value);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          set({ collapsedGitRepos: parsed as Record<string, boolean> });
-        }
-      }
-    } catch (err) {
-      console.error("setting.get(gitCollapsedRepos) failed:", err);
-    }
-
-    const { projects } = await api.project.list();
+    const { projects } = projectListRes.value;
     set({ projects });
 
-    // Apply deferred IDE hydration now that we know the project roots.
-    // For each per-project bucket, drop paths that don't sit inside that
-    // project's root (stale tabs from a moved/removed folder, or paths from a
-    // different machine). Also drop buckets whose projectId no longer exists.
-    if (ideHydrationPending) {
-      const projectById = new Map(projects.map((p) => [p.id, p]));
-      const filterProjectPaths = (pid: string, paths: string[]) => {
-        const proj = projectById.get(pid);
-        if (!proj) return []; // project gone — drop all its paths
-        return paths.filter((p) => isPathWithinRoot(proj.path, p));
-      };
-      const openByProject: Record<string, string[]> = {};
-      const activeByProject: Record<string, string | null> = {};
-      const dirsByProject: Record<string, string[]> = {};
-      for (const pid of Object.keys(ideHydrationPending.open)) {
-        const filtered = filterProjectPaths(pid, ideHydrationPending.open[pid] ?? []);
-        if (filtered.length > 0) openByProject[pid] = filtered;
-      }
-      for (const pid of Object.keys(ideHydrationPending.active)) {
-        const proj = projectById.get(pid);
-        const active = ideHydrationPending.active[pid];
-        if (proj && active && isPathWithinRoot(proj.path, active)) {
-          // Only keep active if it's still in the (filtered) open list.
-          const open = openByProject[pid] ?? [];
-          activeByProject[pid] = open.includes(active) ? active : (open[0] ?? null);
-        }
-      }
-      for (const pid of Object.keys(ideHydrationPending.dirs)) {
-        const filtered = filterProjectPaths(pid, ideHydrationPending.dirs[pid] ?? []);
-        if (filtered.length > 0) dirsByProject[pid] = filtered;
-      }
-      set({
-        ideOpenFilesByProject: openByProject,
-        ideActiveFileByProject: activeByProject,
-        ideExpandedDirsByProject: dirsByProject,
-      });
-      ideHydrationPending = null;
+    if (projects.length === 0) {
+      queueMicrotask(() => void get().initDeferred());
+      return;
     }
-
-    if (projects.length === 0) return;
 
     // Eagerly load the FIRST page of active sessions for every project so
     // the tree renders without a round-trip per expand. The archived bin is
     // also pre-fetched (grouped by project) so the bottom section is ready.
-    // Both are local SQLite reads, so this stays instant.
     const byProject: Record<string, Session[]> = {};
     const hasMoreByProject: Record<string, boolean> = {};
     const totalByProject: Record<string, number> = {};
     const archivedByProject: Record<string, Session[]> = {};
-    await Promise.all(
-      projects.map(async (p) => {
-        const active = await api.project.sessions({
-          projectId: p.id,
-          limit: SESSION_PAGE_SIZE,
-          offset: 0,
-          archived: false,
-        });
-        byProject[p.id] = active.sessions;
-        hasMoreByProject[p.id] = active.hasMore;
-        totalByProject[p.id] = active.total;
-        // Archived threads power the bottom "已归档" bin — fetch all (no
-        // pagination there). The handler unpaginates when archived:true.
-        const archived = await api.project.sessions({
-          projectId: p.id,
-          archived: true,
-        });
-        if (archived.sessions.length > 0) {
-          archivedByProject[p.id] = archived.sessions;
-        }
-      }),
-    );
+    try {
+      await Promise.all(
+        projects.map(async (p) => {
+          const active = await api.project.sessions({
+            projectId: p.id,
+            limit: SESSION_PAGE_SIZE,
+            offset: 0,
+            archived: false,
+          });
+          byProject[p.id] = active.sessions;
+          hasMoreByProject[p.id] = active.hasMore;
+          totalByProject[p.id] = active.total;
+          const archived = await api.project.sessions({
+            projectId: p.id,
+            archived: true,
+          });
+          if (archived.sessions.length > 0) {
+            archivedByProject[p.id] = archived.sessions;
+          }
+        }),
+      );
+    } catch (err) {
+      console.error("project.sessions failed:", err);
+    }
 
     // Pick the first non-archived project (fall back to the first project) and
     // its latest non-archived session as the landing target.
@@ -1943,7 +1852,185 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       openTabs: firstSession ? [firstSession.id] : [],
     });
     if (firstSession) {
-      await get().selectSession(firstSession.id);
+      try {
+        await get().selectSession(firstSession.id);
+      } catch (err) {
+        console.error("selectSession failed:", err);
+      }
+    }
+
+    // Kick off deferred (non-critical) hydration after first paint.
+    queueMicrotask(() => void get().initDeferred());
+  },
+
+  initDeferred: async () => {
+    // Health check: spawn the claude binary to verify it works. This is the
+    // single slowest IPC in init (~seconds), so it's fully fire-and-forget -
+    // claudeInstalled stays null (UI shows a loading state) until it resolves.
+    void api.claudeHealthCheck().then(
+      (health) => set({ claudeInstalled: health.installed }),
+      (err) => {
+        console.error("healthCheck failed:", err);
+        set({ claudeInstalled: false });
+      },
+    );
+
+    // Custom-model configs for the model dropdown.
+    void get().reloadCustomModels();
+
+    // Appearance extras (right-panel font size, user-message bg, accent color).
+    // chatFontSize was already loaded in init() - only the rest here.
+    try {
+      const [, rpFontRes, colorRes, accentRes] = await Promise.all([
+        Promise.resolve(),
+        api.setting.get({ key: UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY }),
+        api.setting.get({ key: UI_USER_MSG_COLOR_SETTING_KEY }),
+        api.setting.get({ key: UI_ACCENT_COLOR_SETTING_KEY }),
+      ]);
+      if (rpFontRes.value != null) {
+        const px = Number(rpFontRes.value);
+        if (Number.isFinite(px)) set({ rightPanelFontSize: clampRightPanelFontSize(px) });
+      }
+      if (colorRes.value && RGB_TRIPLET_RE.test(colorRes.value)) {
+        set({ userMessageColor: colorRes.value });
+      }
+      if (accentRes.value && RGB_TRIPLET_RE.test(accentRes.value)) {
+        set({ accentColor: accentRes.value });
+      }
+    } catch (err) {
+      console.error("setting.get(appearance deferred) failed:", err);
+    }
+
+    // Draggable pane widths (one JSON blob).
+    try {
+      const paneRes = await api.setting.get({ key: UI_PANE_WIDTHS_SETTING_KEY });
+      if (paneRes.value) {
+        const parsed = JSON.parse(paneRes.value) as Partial<{
+          left: number; right: number; bottomTerminal: number; editor: number;
+        }>;
+        const patch: Partial<SessionState> = {};
+        if (parsed && typeof parsed === "object") {
+          if (Number.isFinite(parsed.left)) patch.leftWidth = clampLeftWidth(parsed.left!);
+          if (Number.isFinite(parsed.right)) patch.rightWidth = clampRightWidth(parsed.right!);
+          if (Number.isFinite(parsed.bottomTerminal)) {
+            patch.bottomTerminalHeight = clampBottomTerminalHeight(parsed.bottomTerminal!);
+          }
+          if (Number.isFinite(parsed.editor)) patch.editorWidthPct = clampEditorWidthPct(parsed.editor!);
+          if (Object.keys(patch).length > 0) set(patch);
+        }
+      }
+    } catch (err) {
+      console.error("setting.get(paneWidths) failed:", err);
+    }
+
+    // IDE right-panel prefs (active tab, open files, active file, expanded tree
+    // dirs, editor mode, diff mode, commit-gen model/prompt, custom commands,
+    // conflict-resolve model). All optional JSON-in-settings.
+    try {
+      const [tabRes, openRes, activeRes, dirsRes, modeRes, diffModeRes, commitModelRes, commitPromptRes, commandsByProjectRes, conflictModelRes] = await Promise.all([
+        api.setting.get({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY }),
+        api.setting.get({ key: UI_IDE_OPEN_FILES_SETTING_KEY }),
+        api.setting.get({ key: UI_IDE_ACTIVE_FILE_SETTING_KEY }),
+        api.setting.get({ key: UI_IDE_EXPANDED_DIRS_SETTING_KEY }),
+        api.setting.get({ key: UI_IDE_EDITOR_MODE_SETTING_KEY }),
+        api.setting.get({ key: UI_GIT_DIFF_OPEN_MODE_SETTING_KEY }),
+        api.setting.get({ key: UI_COMMIT_GEN_MODEL_SETTING_KEY }),
+        api.setting.get({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY }),
+        api.setting.get({ key: UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY }),
+        api.setting.get({ key: UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY }),
+      ]);
+      if (tabRes.value === "files" || tabRes.value === "git") {
+        set({ rightPanelTab: tabRes.value });
+      }
+      if (modeRes.value === "tabs" || modeRes.value === "replace") {
+        set({ ideEditorMode: modeRes.value });
+      }
+      if (diffModeRes.value === "center" || diffModeRes.value === "dialog") {
+        set({ gitDiffOpenMode: diffModeRes.value });
+      }
+      set({ commitGenModel: commitModelRes.value || null });
+      if (commitPromptRes.value) {
+        set({ commitGenPrompt: commitPromptRes.value });
+      }
+      set({ conflictResolveModel: conflictModelRes.value || null });
+      const parseBucket = <T>(raw: string | null): Record<string, T> => {
+        if (!raw) return {};
+        try {
+          const obj = JSON.parse(raw);
+          if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj as Record<string, T>;
+        } catch {
+          /* malformed JSON - leave empty */
+        }
+        return {};
+      };
+      const parsedOpen = parseBucket<string[]>(openRes.value);
+      const parsedActive = parseBucket<string | null>(activeRes.value);
+      const parsedDirs = parseBucket<string[]>(dirsRes.value);
+      // Apply IDE file/dir state, dropping paths that belong to no project.
+      const projects = get().projects;
+      const projectById = new Map(projects.map((p) => [p.id, p]));
+      const filterProjectPaths = (pid: string, paths: string[]) => {
+        const proj = projectById.get(pid);
+        if (!proj) return [];
+        return paths.filter((p) => isPathWithinRoot(proj.path, p));
+      };
+      const openByProject: Record<string, string[]> = {};
+      const activeByProject: Record<string, string | null> = {};
+      const dirsByProject: Record<string, string[]> = {};
+      for (const pid of Object.keys(parsedOpen)) {
+        const filtered = filterProjectPaths(pid, parsedOpen[pid] ?? []);
+        if (filtered.length > 0) openByProject[pid] = filtered;
+      }
+      for (const pid of Object.keys(parsedActive)) {
+        const proj = projectById.get(pid);
+        const active = parsedActive[pid];
+        if (proj && active && isPathWithinRoot(proj.path, active)) {
+          const open = openByProject[pid] ?? [];
+          activeByProject[pid] = open.includes(active) ? active : (open[0] ?? null);
+        }
+      }
+      for (const pid of Object.keys(parsedDirs)) {
+        const filtered = filterProjectPaths(pid, parsedDirs[pid] ?? []);
+        if (filtered.length > 0) dirsByProject[pid] = filtered;
+      }
+      set({
+        ideOpenFilesByProject: openByProject,
+        ideActiveFileByProject: activeByProject,
+        ideExpandedDirsByProject: dirsByProject,
+      });
+      // Per-project terminal quick-commands.
+      {
+        const rawMap = parseBucket<unknown>(commandsByProjectRes.value);
+        const validated: Record<string, CustomCommand[]> = {};
+        for (const [pid, rawList] of Object.entries(rawMap)) {
+          if (!Array.isArray(rawList)) continue;
+          const valid = rawList.filter(
+            (c): c is CustomCommand =>
+              !!c &&
+              typeof c === "object" &&
+              typeof c.id === "string" &&
+              typeof c.name === "string" &&
+              typeof c.command === "string",
+          );
+          validated[pid] = valid;
+        }
+        set({ customCommandsByProject: validated });
+      }
+    } catch (err) {
+      console.error("setting.get(ide deferred) failed:", err);
+    }
+
+    // Collapsed git repo card states.
+    try {
+      const { value } = await api.setting.get({ key: UI_GIT_COLLAPSED_REPOS_SETTING_KEY });
+      if (value) {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          set({ collapsedGitRepos: parsed as Record<string, boolean> });
+        }
+      }
+    } catch (err) {
+      console.error("setting.get(gitCollapsedRepos) failed:", err);
     }
   },
 
@@ -2631,8 +2718,105 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	        delete runningTurnStartedAt[sessionId];
 	        return { runningBySession, runningTurnStartedAt };
 	      });
+	      // IPC rejected → no terminal event will arrive to clear the turn, so
+	      // also try draining the queue here (the session is now idle).
+	      get().drainPromptQueueIfIdle(sessionId);
 	      return;
 	    }
+    set((s) => {
+      const pid = updated.projectId;
+      const prevList = s.sessionsByProject[pid] ?? [];
+      const nextList = prevList.map((sess) => (sess.id === updated.id ? updated : sess));
+      return {
+        sessionsByProject: { ...s.sessionsByProject, [pid]: nextList },
+        sessions: pid === s.activeProjectId ? nextList : s.sessions,
+      };
+    });
+  },
+
+  editAndResendMessage: async (sessionId, messageId, newPrompt, attachments, displayText) => {
+    if (!sessionId || !newPrompt.trim()) return;
+    // The session must be idle - editing while a turn is running would
+    // race the truncation against live event ingestion.
+    if (get().runningBySession[sessionId]) return;
+
+    const current = get().messagesBySession[sessionId] ?? [];
+    const idx = current.findIndex((m) => m.id === messageId);
+    if (idx === -1) return;
+
+    // 1. Truncate: keep only messages BEFORE the edited one. The edited
+    //    message itself and everything after it (the AI's reply, any
+    //    follow-up exchanges) are discarded.
+    const truncated = current.slice(0, idx);
+
+    // 2. Build the new user message from the edited prompt. Mirrors
+    //    sendPrompt's block construction: attachment blocks first, then a
+    //    single text block holding displayText (or the raw prompt when
+    //    there are no attachments).
+    const blocks: Block[] = [];
+    if (attachments) {
+      for (const a of attachments) {
+        blocks.push({
+          kind: "attachment",
+          preview: a.preview,
+          content: a.content,
+          attachmentKind: a.attachmentKind,
+          filePath: a.filePath,
+        });
+      }
+    }
+    blocks.push({ kind: "text", text: displayText ?? newPrompt });
+    const userMsg: ChatMessage = {
+      id: `u_${Date.now()}`,
+      sessionId,
+      role: "user",
+      blocks,
+      createdAt: Date.now(),
+    };
+
+    // 3. Apply the truncation + new message + running flag atomically.
+    //    Also clear the per-turn file snapshot for this session: the old
+    //    turn's "本轮修改" card belongs to the truncated-away history and
+    //    must not survive the edit.
+    set((s) => ({
+      messagesBySession: {
+        ...s.messagesBySession,
+        [sessionId]: [...truncated, userMsg],
+      },
+      runningBySession: { ...s.runningBySession, [sessionId]: true },
+      runningTurnStartedAt: { ...s.runningTurnStartedAt, [sessionId]: Date.now() },
+      turnFilesBySession: { ...s.turnFilesBySession, [sessionId]: [] },
+    }));
+
+    // 4. Persist the truncated history immediately so a crash mid-turn
+    //    doesn't leave the DB with the old (pre-edit) messages. The DB
+    //    layer does a full-snapshot replace.
+    void api.session.saveMessages({ sessionId, messages: toRecords(sessionId, [...truncated, userMsg]) });
+
+    // 5. Fire the turn; events stream back via ingestEvent. Same per-turn
+    //    override pattern as sendPrompt.
+    const { model, customModelId, effort, permissionMode } = get();
+    let updated;
+    try {
+      ({ session: updated } = await api.claude.sendTurn({
+        sessionId,
+        prompt: newPrompt,
+        model,
+        effort,
+        permissionMode,
+        customModelId,
+      }));
+    } catch (err) {
+      console.error("editAndResendMessage: sendTurn IPC failed:", err);
+      set((s) => {
+        const runningBySession = { ...s.runningBySession, [sessionId]: false };
+        const runningTurnStartedAt = { ...s.runningTurnStartedAt };
+        delete runningTurnStartedAt[sessionId];
+        return { runningBySession, runningTurnStartedAt };
+      });
+      get().drainPromptQueueIfIdle(sessionId);
+      return;
+    }
     set((s) => {
       const pid = updated.projectId;
       const prevList = s.sessionsByProject[pid] ?? [];
@@ -3073,6 +3257,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (snapshot) {
         void api.session.saveMessages({ sessionId: sid, messages: toRecords(sid, snapshot) });
       }
+      // The session may have just gone fully idle — if the user queued a
+      // prompt while busy, fire the head now. drainPromptQueueIfIdle is a
+      // no-op when still busy (e.g. backgrounded subagents still running) or
+      // when the queue is empty.
+      get().drainPromptQueueIfIdle(sid);
     }
   },
 
@@ -3425,6 +3614,67 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     return queued;
   },
 
+  enqueuePrompt: (sessionId, item) => {
+    const queued: QueuedPrompt = { ...item, id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` };
+    set((s) => {
+      const prev = s.promptQueueBySession[sessionId] ?? [];
+      return {
+        promptQueueBySession: {
+          ...s.promptQueueBySession,
+          [sessionId]: [...prev, queued],
+        },
+      };
+    });
+  },
+
+  removeQueuedPrompt: (sessionId, id) => {
+    set((s) => {
+      const prev = s.promptQueueBySession[sessionId];
+      if (!prev || prev.length === 0) return {};
+      const next = prev.filter((q) => q.id !== id);
+      return {
+        promptQueueBySession: {
+          ...s.promptQueueBySession,
+          [sessionId]: next,
+        },
+      };
+    });
+  },
+
+  clearPromptQueue: (sessionId) => {
+    set((s) => {
+      if (!s.promptQueueBySession[sessionId]) return {};
+      const { [sessionId]: _drop, ...rest } = s.promptQueueBySession;
+      return { promptQueueBySession: rest };
+    });
+  },
+
+  drainPromptQueueIfIdle: (sessionId) => {
+    const s = get();
+    // Only drain when fully idle: no running turn AND no running background
+    // subagent (a backgrounded task keeps the session logically busy even
+    // after the parent turn's stream closed).
+    if (s.runningBySession[sessionId]) return;
+    const agents = s.subagentsBySession[sessionId] ?? [];
+    if (agents.some((a) => a.status === "running")) return;
+    const q = s.promptQueueBySession[sessionId];
+    if (!q || q.length === 0) return;
+    const head = q[0];
+    // Drop the head from the queue BEFORE sending so the user sees it leave
+    // immediately, and so a failed send doesn't loop on the same item.
+    set((st) => ({
+      promptQueueBySession: {
+        ...st.promptQueueBySession,
+        [sessionId]: st.promptQueueBySession[sessionId]?.slice(1) ?? [],
+      },
+    }));
+    // Reuse the normal send path: it appends the user message, flips busy,
+    // and fires sendTurn. If that turn later ends with another queued item,
+    // its turn.done handler will call drainPromptQueueIfIdle again — so the
+    // whole queue drains one item per turn, in order.
+    void s.sendPrompt(head.prompt, head.attachments, head.displayText);
+  },
+
   /* ─────────────────── IDE right-panel actions ─────────────────── */
 
   setRightPanelTab: (tab) => {
@@ -3539,6 +3789,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!pid) return;
     set((s) => ({
       ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: filePath },
+    }));
+    persistIdeBuckets(get());
+  },
+
+  /** Move an open file within the active project's editor tab strip.
+   *  Mirrors `reorderTab` but scoped to ideOpenFilesByProject. */
+  reorderIdeFile: (from, to) => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    const open = get().ideOpenFilesByProject[pid] ?? [];
+    if (
+      from === to ||
+      from < 0 ||
+      from >= open.length ||
+      to < 0 ||
+      to >= open.length
+    ) {
+      return;
+    }
+    const next = [...open];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    set((s) => ({
+      ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: next },
     }));
     persistIdeBuckets(get());
   },

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { is } from "@main/utils.js";
 import { getEffectiveTheme } from "@main/lib/theme.js";
 import { log } from "@main/lib/logger.js";
+import { logStartup } from "@main/lib/startupTimer.js";
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -78,7 +79,10 @@ export function createMainWindow(): BrowserWindow {
     },
   });
 
-  mainWindow.on("ready-to-show", () => mainWindow?.show());
+  mainWindow.on("ready-to-show", () => {
+    logStartup("ready-to-show");
+    mainWindow?.show();
+  });
   // Null out the reference once the window is gone so the optional chains in
   // sendToRenderer / updateTitleBarOverlay / getMainWindow short-circuit
   // instead of operating on a destroyed BrowserWindow. Without this, async

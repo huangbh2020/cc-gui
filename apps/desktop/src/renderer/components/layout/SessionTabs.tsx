@@ -15,16 +15,11 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
-import {
-  IconChevronLeft,
-  IconChevronRight,
-  IconDotsVertical,
-  IconX,
-} from "@renderer/lib/icons.js";
+import { IconX } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Session } from "@contracts/session";
+import { TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
 
 /** Tab strip rendered along the top of the center pane in `tabs` display
  *  mode. Each open tab shows the session's title, a tiny running indicator
@@ -137,7 +132,7 @@ export function SessionTabs() {
     <div className="flex shrink-0 items-end gap-0.5 border-b border-edge bg-surface/40 px-2 pt-1.5">
       {/* Left chevron — only when there's content scrolled off the left edge. */}
       {canScrollLeft && (
-        <ChevronButton
+        <TabBarChevronButton
           dir="left"
           onClick={() => scrollByPage(-1)}
           title="Scroll tabs left"
@@ -199,7 +194,7 @@ export function SessionTabs() {
 
       {/* Right chevron — only when there's content scrolled off the right edge. */}
       {canScrollRight && (
-        <ChevronButton
+        <TabBarChevronButton
           dir="right"
           onClick={() => scrollByPage(1)}
           title="Scroll tabs right"
@@ -209,36 +204,23 @@ export function SessionTabs() {
       {/* Overflow menu — lists every tab for quick jumping. Only shown when
           the strip actually overflows (otherwise it's pure noise). */}
       {overflowing && (
-        <OverflowMenu
-          tabs={tabs}
-          activeId={activeId}
-          sessionsByProject={sessionsByProject}
-          runningBySession={runningBySession}
+        <TabBarOverflowMenu
+          heading="Open tabs"
+          items={tabs.map((id) => {
+            const sess = findSession(sessionsByProject, id);
+            return {
+              key: id,
+              label: sess?.title ?? "(unknown)",
+              active: id === activeId,
+              dotClass: runningBySession[id]
+                ? "bg-accent animate-pulse"
+                : "bg-content-subtle/50",
+            };
+          })}
           onSelect={(id) => void selectSession(id)}
         />
       )}
     </div>
-  );
-}
-
-interface ChevronButtonProps {
-  dir: "left" | "right";
-  onClick: () => void;
-  title: string;
-}
-
-function ChevronButton({ dir, onClick, title }: ChevronButtonProps) {
-  const Icon = dir === "left" ? IconChevronLeft : IconChevronRight;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content"
-    >
-      <Icon size={14} />
-    </button>
   );
 }
 
@@ -355,76 +337,6 @@ function SortableTab({
         <IconX size={11} />
       </button>
     </div>
-  );
-}
-
-interface OverflowMenuProps {
-  tabs: string[];
-  activeId: string | null;
-  sessionsByProject: Record<string, Session[]>;
-  runningBySession: Record<string, boolean>;
-  onSelect: (id: string) => void;
-}
-
-function OverflowMenu({
-  tabs,
-  activeId,
-  sessionsByProject,
-  runningBySession,
-  onSelect,
-}: OverflowMenuProps) {
-  return (
-    <Menu.Root>
-      <Menu.Trigger
-        className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content"
-        title="Show all tabs"
-        aria-label="Show all tabs"
-      >
-        <IconDotsVertical size={14} />
-      </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner side="top" align="end">
-          <Menu.Popup
-            className={cn(
-              "z-50 max-h-[min(60vh,360px)] min-w-[200px] origin-bottom-right overflow-y-auto rounded-md border border-edge bg-surface py-1 shadow-2xl",
-              "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
-              "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
-              "transition-[transform,opacity] duration-100",
-            )}
-          >
-            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-content-subtle">
-              Open tabs
-            </div>
-            {tabs.map((id) => {
-              const sess = findSession(sessionsByProject, id);
-              const title = sess?.title ?? "(unknown)";
-              const isActive = id === activeId;
-              const running = !!runningBySession[id];
-              return (
-                <Menu.Item
-                  key={id}
-                  onClick={() => onSelect(id)}
-                  className={cn(
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] outline-none select-none",
-                    "data-[highlighted]:bg-surface-muted",
-                    isActive ? "text-accent" : "text-content-muted",
-                  )}
-                >
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
-                      running ? "bg-accent animate-pulse" : "bg-content-subtle/50",
-                    )}
-                  />
-                  <span className="truncate">{title}</span>
-                </Menu.Item>
-              );
-            })}
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
-    </Menu.Root>
   );
 }
 

@@ -20,26 +20,52 @@ import { log } from "@main/lib/logger.js";
 let SQL: SqlJsStatic | null = null;
 let db: Database | null = null;
 let dbPath: string | null = null;
-/** True once persist() is already scheduled — collapses rapid writes into one flush. */
+/** True once persist() is already scheduled - collapses rapid writes into one flush. */
 let persistPending = false;
 
-/** Initialize (or reuse) the singleton database. Must be awaited after
- * `app.whenReady()`. Loads the existing file if present, else creates empty. */
-export async function initDb(): Promise<Database> {
-  if (db) return db;
-  SQL = await initSqlJs();
-  dbPath = join(app.getPath("userData"), "claude-gui.db");
+/**
+ * Resolves once `initDb()` has finished loading sql.js + opening the file +
+ * migrating. IPC handlers `await` this before touching the DB so the window
+ * can be created before DB init completes (startup decoupling). Null until
+ * `initDb()` is first called; `awaitDb()` then returns a resolved promise.
+ */
+let dbReadyPromise: Promise<void> | null = null;
 
-  if (existsSync(dbPath)) {
-    db = new SQL.Database(new Uint8Array(readFileSync(dbPath)));
-    log.info(`sqlite opened from existing file: ${dbPath}`);
-  } else {
-    db = new SQL.Database();
-    log.info(`sqlite created new database: ${dbPath}`);
-  }
-  db.run("PRAGMA foreign_keys = ON");
-  migrate(db);
-  return db;
+/** Wait for the DB to be ready. Safe to call before `initDb()` - returns a
+ *  resolved promise in that case (callers must still handle the "not yet
+ *  initialized" path via `getDb()`'s throw). */
+export function awaitDb(): Promise<void> {
+  return dbReadyPromise ?? Promise.resolve();
+}
+
+/** Initialize (or reuse) the singleton database. Must be called after
+ * `app.whenReady()` (uses `app.getPath`). Loads the existing file if present,
+ * else creates empty.
+ *
+ * Returns a Promise<Database> for callers that need the handle, but also
+ * populates `dbReadyPromise` so IPC handlers can `await awaitDb()` without
+ * holding the handle. Safe to fire-and-forget (`void initDb()`) to start DB
+ * init in the background while the window loads. */
+export function initDb(): Promise<Database> {
+  if (db) return Promise.resolve(db);
+  if (dbReadyPromise) return dbReadyPromise.then(() => db!);
+
+  dbReadyPromise = (async () => {
+    SQL = await initSqlJs();
+    dbPath = join(app.getPath("userData"), "claude-gui.db");
+
+    if (existsSync(dbPath)) {
+      db = new SQL.Database(new Uint8Array(readFileSync(dbPath)));
+      log.info(`sqlite opened from existing file: ${dbPath}`);
+    } else {
+      db = new SQL.Database();
+      log.info(`sqlite created new database: ${dbPath}`);
+    }
+    db.run("PRAGMA foreign_keys = ON");
+    migrate(db);
+  })();
+
+  return dbReadyPromise.then(() => db!);
 }
 
 /** Get the initialized connection. Throws if initDb() hasn't resolved yet. */
