@@ -6,6 +6,8 @@ import {
   IconX,
   IconQuestionMark,
   IconSend2,
+  IconChevronLeft,
+  IconChevronRight,
 } from "@renderer/lib/icons.js";
 import type { AskUserQuestionItem } from "@contracts/runtime";
 import type { UserInputAnswers } from "@contracts/provider";
@@ -22,24 +24,25 @@ import type { UserInputAnswers } from "@contracts/provider";
  * corners and drop shadow read as a floating card rather than a flush bar.
  *
  * Layout: a single rounded, bordered, elevated card with three stacked
- * regions — a fixed header (question count + dismiss), a scrollable body,
- * and a fixed footer (progress + submit). Every question renders as its
- * own block in the body (header + question text + options + free-text
- * input), stacked vertically with dividers — there is no stepper/tab
- * navigation; all questions are answered in one pass. The body scrolls
- * when content overflows the `max-h` cap, keeping the submit button always
- * reachable.
+ * regions — a fixed header (title + step indicator + dismiss), a body that
+ * renders ONE question at a time, and a fixed footer (progress + stepper
+ * navigation + submit). Instead of stacking every question at once, the card
+ * walks through them one-by-one:
+ *   - answering a question auto-advances to the next (option click on a
+ *     choice question; Enter / 下一题 for a typed answer);
+ *   - 上一题 / 下一题 navigate freely — answers already given are kept, so
+ *     the user can jump back and revise before submitting;
+ *   - the last question shows 提交回答, enabled once every question is
+ *     answered. Submit returns the answers as a `UserInputAnswers` map keyed
+ *     by question text (matches the SDK's convention); the caller forwards
+ *     it to `claude:respondQuestion`, which resolves the provider's pending
+ *     user-input Deferred — the SAME turn then continues.
  *
  * Styling uses the `accent` (emerald) token for all interactive/emphasis
  * states — selected options, the header accent, focus — plus neutral
  * surface/edge tokens for the card frame. This matches the composer's own
  * `focus-within:border-accent` treatment and works in both light and dark
  * themes. No violet/purple is used.
- *
- * On submit the answers are returned as a `UserInputAnswers` map keyed by
- * question text (matches the SDK's convention). The caller forwards this to
- * `claude:respondQuestion`, which resolves the provider's pending
- * user-input Deferred — the SAME turn then continues.
  */
 export function QuestionPrompt({
   questions,
@@ -54,10 +57,21 @@ export function QuestionPrompt({
   const [answers, setAnswers] = useState<Array<{ selected: string[]; text: string }>>(
     questions.map(() => ({ selected: [], text: "" })),
   );
+  // Stepper position — one question shown at a time.
+  const [step, setStep] = useState(0);
+
+  const isAnswered = (i: number) =>
+    answers[i].selected.length > 0 || answers[i].text.trim().length > 0;
+  const answeredCount = questions.filter((_, i) => isAnswered(i)).length;
+  const allAnswered = answeredCount === questions.length;
+  const isLast = step === questions.length - 1;
 
   /** Toggle an option on question `qi`. Single-select replaces the pick
-   *  (toggling the active option clears it); multi-select adds/removes. */
+   *  (toggling the active option clears it); multi-select adds/removes.
+   *  Auto-advances to the next question when the answer transitions from
+   *  unanswered → answered (the first pick counts as "answered"). */
   const toggle = (qi: number, label: string) => {
+    const wasAnswered = isAnswered(qi);
     setAnswers((prev) =>
       prev.map((item, i) => {
         if (i !== qi) return item;
@@ -72,14 +86,14 @@ export function QuestionPrompt({
         return { ...item, selected: item.selected[0] === label ? [] : [label] };
       }),
     );
+    if (!wasAnswered && qi === step && !isLast) {
+      setStep((s) => s + 1);
+    }
   };
 
   const setFreeText = (qi: number, text: string) => {
     setAnswers((prev) => prev.map((item, i) => (i === qi ? { ...item, text } : item)));
   };
-
-  const answeredCount = answers.filter((x) => x.selected.length > 0 || x.text.trim()).length;
-  const allAnswered = answeredCount === questions.length;
 
   const submit = () => {
     // Compose the SDK-shaped answers map: keyed by question text, value is
@@ -97,8 +111,9 @@ export function QuestionPrompt({
     onSubmit(out);
   };
 
-  // Enter submits when all answered (Shift+Enter adds a newline in the
-  // free-text input). Esc dismisses.
+  // Esc dismisses. Enter in the free-text input advances to the next question
+  // (non-last) or submits on the last one once everything is answered.
+  // Shift+Enter is left alone (never used here — single-line Input).
   const submittingRef = useRef(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -106,19 +121,28 @@ export function QuestionPrompt({
         e.preventDefault();
         e.stopPropagation();
         onDismiss();
-      } else if (e.key === "Enter" && !e.shiftKey && allAnswered && !submittingRef.current) {
+      } else if (e.key === "Enter" && !e.shiftKey && !submittingRef.current) {
         const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === "TEXTAREA" || tag === "INPUT") {
+        if (tag !== "TEXTAREA" && tag !== "INPUT") return;
+        if (isLast) {
+          if (allAnswered) {
+            e.preventDefault();
+            submittingRef.current = true;
+            submit();
+          }
+        } else {
           e.preventDefault();
-          submittingRef.current = true;
-          submit();
+          setStep((s) => Math.min(s + 1, questions.length - 1));
         }
       }
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allAnswered, answers, onDismiss]);
+  }, [allAnswered, answers, isLast, onDismiss]);
+
+  const q = questions[step];
+  const a = answers[step];
 
   return (
     // Outer wrapper mirrors the composer's horizontal sizing so the card is
@@ -142,115 +166,163 @@ export function QuestionPrompt({
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-edge px-4 py-2.5">
           <div className="flex min-w-0 items-center gap-1.5">
             <IconQuestionMark size={14} className="shrink-0 text-accent" />
-            <span className="font-semibold text-accent">
+            <span className="truncate font-semibold text-accent">
               {questions.length === 1 ? "Claude 有一个问题需要回答" : `Claude 有 ${questions.length} 个问题需要回答`}
             </span>
+            {questions.length > 1 && (
+              <span className="shrink-0 rounded bg-surface-muted px-1.5 py-0.5 text-[10px] tabular-nums text-content-muted">
+                第 {step + 1}/{questions.length} 题
+              </span>
+            )}
           </div>
+          {/* Step dots: answered (dim) / current (accent) / upcoming (edge). */}
+          {questions.length > 1 && (
+            <div className="flex shrink-0 items-center gap-1" aria-hidden>
+              {questions.map((_, i) => (
+                <span
+                  key={i}
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full transition-colors",
+                    i === step ? "bg-accent" : isAnswered(i) ? "bg-accent/40" : "bg-edge",
+                  )}
+                />
+              ))}
+            </div>
+          )}
           <button
             type="button"
             onClick={onDismiss}
             title="忽略这次提问"
             aria-label="忽略这次提问"
-            className="rounded p-0.5 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            className="shrink-0 rounded p-0.5 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
           >
             <IconX size={14} />
           </button>
         </div>
 
-        {/* Scrollable body — every question renders as its own block,
-            stacked vertically with dividers. No stepper/tab navigation;
-            all questions are answered in one pass. The body scrolls when
-            content overflows the max-h cap, keeping the footer reachable. */}
-        <div className="flex-1 overflow-y-auto">
-          {questions.map((q, qi) => {
-            const a = answers[qi];
-            return (
-              <div
-                key={qi}
-                className={cn("px-4 py-3", qi > 0 && "border-t border-edge")}
-              >
-                {/* Question header + text */}
-                <div className="mb-2 leading-relaxed text-content">
-                  <span className="mr-1 font-semibold text-accent">{q.header}:</span>
-                  {q.question}
-                  {q.multiSelect && (
-                    <span className="ml-1.5 rounded bg-surface-muted px-1.5 py-0.5 text-[10px] text-content-muted">
-                      可多选
+        {/* Body — only the current question renders; the rest is reached via
+            the footer stepper (or auto-advance on answering). */}
+        <div className="overflow-y-auto">
+          <div className="px-4 py-3">
+            {/* Question header + text */}
+            <div className="mb-2 leading-relaxed text-content">
+              <span className="mr-1 font-semibold text-accent">{q.header}:</span>
+              {q.question}
+              {q.multiSelect && (
+                <span className="ml-1.5 rounded bg-surface-muted px-1.5 py-0.5 text-[10px] text-content-muted">
+                  可多选
+                </span>
+              )}
+            </div>
+
+            {/* Options */}
+            <div className="space-y-1.5">
+              {q.options.map((opt, oi) => {
+                const selected = a.selected.includes(opt.label);
+                return (
+                  <button
+                    key={oi}
+                    type="button"
+                    onClick={() => toggle(step, opt.label)}
+                    className={cn(
+                      "flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-1.5 text-left transition-colors",
+                      selected
+                        ? "border-accent bg-accent/10"
+                        : "border-edge bg-surface hover:border-accent/60 hover:bg-accent/5",
+                    )}
+                    title={opt.description}
+                  >
+                    <span
+                      className={cn(
+                        "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border transition-colors",
+                        q.multiSelect ? "rounded-sm" : "rounded-full",
+                        selected
+                          ? "border-accent bg-accent text-surface"
+                          : "border-edge text-transparent",
+                      )}
+                    >
+                      <IconCheck size={10} />
                     </span>
-                  )}
-                </div>
-
-                {/* Options */}
-                <div className="space-y-1.5">
-                  {q.options.map((opt, oi) => {
-                    const selected = a.selected.includes(opt.label);
-                    return (
-                      <button
-                        key={oi}
-                        type="button"
-                        onClick={() => toggle(qi, opt.label)}
-                        className={cn(
-                          "flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-1.5 text-left transition-colors",
-                          selected
-                            ? "border-accent bg-accent/10"
-                            : "border-edge bg-surface hover:border-accent/60 hover:bg-accent/5",
-                        )}
-                        title={opt.description}
-                      >
-                        <span
-                          className={cn(
-                            "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border transition-colors",
-                            q.multiSelect ? "rounded-sm" : "rounded-full",
-                            selected
-                              ? "border-accent bg-accent text-surface"
-                              : "border-edge text-transparent",
-                          )}
-                        >
-                          <IconCheck size={10} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[13px] font-medium text-content">
+                        {opt.label}
+                      </span>
+                      {opt.description && (
+                        <span className="mt-0.5 block text-[10px] leading-snug text-content-subtle">
+                          {opt.description}
                         </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[13px] font-medium text-content">
-                            {opt.label}
-                          </span>
-                          {opt.description && (
-                            <span className="mt-0.5 block text-[10px] leading-snug text-content-subtle">
-                              {opt.description}
-                            </span>
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
 
-                {/* Free-text input */}
-                <Input
-                  type="text"
-                  value={a.text}
-                  onChange={(e) => setFreeText(qi, e.target.value)}
-                  placeholder="或输入自定义回答…"
-                  className="mt-2 font-sans"
-                />
-              </div>
-            );
-          })}
+            {/* Free-text input */}
+            <Input
+              type="text"
+              value={a.text}
+              onChange={(e) => setFreeText(step, e.target.value)}
+              placeholder="或输入自定义回答…"
+              className="mt-2 font-sans"
+            />
+          </div>
         </div>
 
-        {/* Footer — fixed at bottom, always visible */}
+        {/* Footer — fixed at bottom: progress + stepper nav / submit */}
         <div className="flex shrink-0 items-center justify-between gap-2 border-t border-edge bg-surface-muted/40 px-4 py-2.5">
           <span className="text-[10px] tabular-nums text-content-subtle">
             {answeredCount} / {questions.length} 已回答
           </span>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={submit}
-            disabled={!allAnswered}
-            title={allAnswered ? "提交回答 (Enter)" : "请先回答所有问题"}
-          >
-            <IconSend2 size={12} />
-            提交回答
-          </Button>
+          <div className="flex items-center gap-1.5">
+            {questions.length > 1 ? (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setStep((s) => Math.max(0, s - 1))}
+                  disabled={step === 0}
+                  title="上一题，可修改答案"
+                >
+                  <IconChevronLeft size={12} />
+                  上一题
+                </Button>
+                {isLast ? (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={submit}
+                    disabled={!allAnswered}
+                    title={allAnswered ? "提交回答 (Enter)" : "请先回答所有问题"}
+                  >
+                    <IconSend2 size={12} />
+                    提交回答
+                  </Button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setStep((s) => Math.min(questions.length - 1, s + 1))}
+                    title="下一题"
+                  >
+                    下一题
+                    <IconChevronRight size={12} />
+                  </Button>
+                )}
+              </>
+            ) : (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={submit}
+                disabled={!allAnswered}
+                title={allAnswered ? "提交回答 (Enter)" : "请先回答所有问题"}
+              >
+                <IconSend2 size={12} />
+                提交回答
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </div>

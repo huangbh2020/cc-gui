@@ -1112,6 +1112,9 @@ const LIVE_PLAN_ID = "current";
 /** Upsert (or remove) the live plan block on the current turn's trailing
  *  assistant message. Used while the turn is streaming:
  *  - phase "cleared" → remove any live plan block (plan mode exited / denied).
+ *  - empty plan text → same as cleared: the EnterPlanMode placeholder has no
+ *    content yet, and a blank plan card is noise — only once real plan text
+ *    exists does the card appear (see the guard below).
  *  - otherwise → insert-or-replace the live plan block with the given text /
  *    phase / hasApproval.
  *
@@ -1134,6 +1137,15 @@ function upsertLivePlanBlock(
   if (phase === "cleared") {
     // Remove any live plan block from the current turn's trailing assistant
     // message. Frozen blocks (on closed turns) are untouched.
+    return removeLivePlanBlock(messages);
+  }
+  // No real plan content yet — EnterPlanMode emits a placeholder `plan: ""`
+  // in phase "drafting", and an empty plan card (0 字 / "计划为空") is noise.
+  // The plan panel only appears once the model has actually produced plan
+  // text: the final payload arrives on ExitPlanMode ("ready") and the
+  // approval_request re-syncs it. So treat an empty draft like "cleared":
+  // drop any live block instead of rendering a blank card.
+  if (plan.trim().length === 0) {
     return removeLivePlanBlock(messages);
   }
   const block: Block = {
@@ -2835,12 +2847,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Clear only the interrupted thread's flag. The `turn.done` (with reason
     // "interrupted") event from main will also clear it; doing it here too
     // is a defensive in case the event races with the user click.
+    //
+    // Also demote any still-running subagents (typically backgrounded tasks
+    // whose lifecycle outlived the parent turn's stream) to "killed": the
+    // user asked to STOP, so the composer must unlock even if the CLI hasn't
+    // fully torn those tasks down yet. Without this, `hasRunningSubagents`
+    // keeps the input box stuck in the running/stop state after the main
+    // agent already stopped. Real task_updated events (if any still arrive)
+    // supersede via the roster's REPLACE semantics.
     set((s) => {
       const runningTurnStartedAt = { ...s.runningTurnStartedAt };
       delete runningTurnStartedAt[sessionId];
+      const curAgents = s.subagentsBySession[sessionId] ?? [];
+      const subagentsBySession = curAgents.some((a) => a.status === "running")
+        ? {
+            ...s.subagentsBySession,
+            [sessionId]: curAgents.map((a) =>
+              a.status === "running" ? { ...a, status: "killed" as const } : a,
+            ),
+          }
+        : s.subagentsBySession;
       return {
         runningBySession: { ...s.runningBySession, [sessionId]: false },
         runningTurnStartedAt,
+        subagentsBySession,
       };
     });
   },
@@ -2866,8 +2896,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // message stream — it stays put per-turn (different turns → different
     // plan blocks in history), unlike the old footer card which was a single
     // session-global slot that got overwritten each turn.
-    //   phase "drafting" → live card with 草拟中 badge, content streams in.
-    //   phase "ready"    → card freezes as 已就绪 after ExitPlanMode approval.
+    //   phase "drafting" → no card yet: the drafting placeholder arrives with
+    //     empty text (EnterPlanMode), and an empty plan card is noise. The
+    //     inline block only appears once real plan text exists (ready).
+    //   phase "ready"    → live card with 已就绪 badge after ExitPlanMode.
     //   phase "cleared"  → remove the live block (plan mode exited / denied).
     if (e.type === "plan.update") {
       set((s) => {

@@ -4,7 +4,6 @@ import {
   IconChevronDown,
   IconCheck,
   IconX,
-  IconLoader2,
   IconAlertTriangle,
   IconTools,
   IconClipboard,
@@ -142,14 +141,13 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
-/** Status icon for tool calls: running→spinner, error→X, done→nothing.
- *  Success is the common case and doesn't need a green checkmark cluttering
- *  every row; only surface a glyph when something is actually happening
- *  (running) or went wrong (error). */
+/** Status icon for tool calls: error→X, running/done→nothing. Running and
+ *  done are the common states and don't need a glyph — when the status is
+ *  empty the card's own tool icon occupies this slot, and the stream's
+ *  single loading indicator already lives at the bottom (isStreamingTail
+ *  spinner). Per-card spinners would only add noise, so only surface a glyph
+ *  when something actually went wrong. */
 function StatusIcon({ status }: { status: "running" | "done" | "error" }) {
-  if (status === "running") {
-    return <IconLoader2 size={12} className="animate-spin text-warning" />;
-  }
   if (status === "error") {
     return <IconX size={12} className="text-danger" />;
   }

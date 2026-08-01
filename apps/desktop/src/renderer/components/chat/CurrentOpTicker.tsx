@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconCheck,
-  IconLoader2,
   IconX,
 } from "@renderer/lib/icons.js";
 import {
@@ -46,7 +45,9 @@ const ROLL_EASING = "cubic-bezier(0.4, 0, 0.2, 1)";
 
 /** One ticker row: status glyph + tool icon + name + one-line summary.
  *  Rendered as spans because the ticker lives inside a <button> header row
- *  (phrasing content only). */
+ *  (phrasing content only). The running state carries no spinner — the
+ *  stream's single loading indicator lives at the bottom (isStreamingTail),
+ *  so the ticker only marks errors (✗) and completions (✓) per row. */
 function TickerRow({ op, running }: { op: ToolUseBlock; running: boolean }) {
   const status = running ? "running" : op.status;
   return (
@@ -54,9 +55,6 @@ function TickerRow({ op, running }: { op: ToolUseBlock; running: boolean }) {
       className="flex h-5 items-center gap-1.5 whitespace-nowrap"
       title={typeof op.input === "object" ? JSON.stringify(op.input) : String(op.input)}
     >
-      {status === "running" && (
-        <IconLoader2 size={12} className="shrink-0 animate-spin text-warning" />
-      )}
       {status === "error" && <IconX size={12} className="shrink-0 text-danger" />}
       {status === "done" && <IconCheck size={12} className="shrink-0 text-content-subtle" />}
       <ToolIcon name={op.toolName} className="shrink-0 text-content-muted" />
