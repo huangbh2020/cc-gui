@@ -88,6 +88,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       this.capabilities.supportsAskUserQuestion,
       req.cwd,
       snapshot,
+      ac.signal,
     );
 
     const options: Options = {
@@ -399,18 +400,31 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         }
         await adapter.flushFinal();
       } catch (err) {
-        ctx.log.error(`claude SDK error: ${(err as Error).message}`);
-        ctx.emit({
-          type: "error",
-          sessionId: req.sessionId,
-          message: (err as Error).message,
-          code: "SDK_ERROR",
-        });
-        ctx.emit({
-          type: "turn.done",
-          sessionId: req.sessionId,
-          reason: "error",
-        });
+        // A user-initiated stop (ac.abort()) makes the SDK's async iterator
+        // throw an AbortError. That's NOT an error condition - run the normal
+        // end-of-turn finalization so flushFinal() can mark still-running
+        // subagents as "killed" (reflecting the user's stop intent), emit the
+        // final subagent.update (which RuntimeManager persists to the DB so
+        // the killed state survives a session reopen), and emit the closing
+        // turn.done with reason "interrupted". Skipping flushFinal here would
+        // leave the persisted roster at its stale mid-stream "running" value,
+        // so re-entering the thread would resurrect "运行中" subagents.
+        if (ac.signal.aborted) {
+          await adapter.flushFinal();
+        } else {
+          ctx.log.error(`claude SDK error: ${(err as Error).message}`);
+          ctx.emit({
+            type: "error",
+            sessionId: req.sessionId,
+            message: (err as Error).message,
+            code: "SDK_ERROR",
+          });
+          ctx.emit({
+            type: "turn.done",
+            sessionId: req.sessionId,
+            reason: "error",
+          });
+        }
       } finally {
         finished = true;
       }

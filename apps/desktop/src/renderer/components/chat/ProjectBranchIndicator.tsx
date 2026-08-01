@@ -37,11 +37,16 @@ export interface ProjectBranchIndicatorProps {
   projectPath: string;
   /** Display name of the project (projects[].name). */
   projectName: string;
+  /** Compact mode: renders ONLY the branch pill (no folder icon / project
+   *  name). Used in the toolbar where space is tight and the thread title
+   *  already identifies the session. Defaults to false (full indicator). */
+  compact?: boolean;
 }
 
 export function ProjectBranchIndicator({
   projectPath,
   projectName,
+  compact = false,
 }: ProjectBranchIndicatorProps) {
   // Primary repo (best match for project root). null = not a git project.
   const [repo, setRepo] = useState<GitRepo | null>(null);
@@ -155,10 +160,14 @@ export function ProjectBranchIndicator({
 
   return (
     <div className="flex items-center gap-1.5 text-[12px] text-content-muted">
-      <IconFolder size={13} className="shrink-0 opacity-70" />
-      <span className="max-w-[240px] truncate font-medium text-content" title={projectPath}>
-        {projectName}
-      </span>
+      {!compact && (
+        <>
+          <IconFolder size={13} className="shrink-0 opacity-70" />
+          <span className="max-w-[240px] truncate font-medium text-content" title={projectPath}>
+            {projectName}
+          </span>
+        </>
+      )}
 
       {repo && (
         <Menu.Root onOpenChange={(open) => open && void loadBranches()}>
@@ -174,7 +183,7 @@ export function ProjectBranchIndicator({
             <IconChevronDown size={10} className="shrink-0 opacity-60" />
           </Menu.Trigger>
           <Menu.Portal>
-            <Menu.Positioner side="top" align="start" sideOffset={6}>
+            <Menu.Positioner side={compact ? "bottom" : "top"} align="start" sideOffset={6}>
               <Menu.Popup
                 className={cn(
                   "z-50 flex max-h-[320px] w-[300px] max-w-[320px] min-w-[240px] flex-col rounded-md border border-edge bg-surface py-1 shadow-2xl",

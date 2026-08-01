@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { isMac } from "@renderer/lib/platform.js";
 import {
@@ -5,8 +6,10 @@ import {
   IconLayoutSidebarLeftExpand,
   IconLayoutSidebarRightExpand,
   IconTerminal2,
+  IconCode,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchIndicator.js";
 
 type Mode = "workspace" | "settings";
 
@@ -131,6 +134,13 @@ export function Titlebar({
         ) : (
           <>
             <ActiveThreadTitle />
+            {/* Git branch indicator - compact pill (no project name), click to
+                switch branches. Only renders when a project is active and is a
+                git repo. Sits right of the thread title. */}
+            <ToolbarBranchIndicator />
+            {/* Editor column toggle - shows/hides the center-pane editor column
+                without closing the open file. Sits right of the branch pill. */}
+            <EditorColumnToggle />
             <div className="flex-1" />
             {/* Bottom terminal toggle — sits just left of the right-panel
                 toggle. Active state highlighted with the accent token. */}
@@ -177,7 +187,7 @@ export function Titlebar({
  *  open (leaves an empty drag region). */
 function ActiveThreadTitle() {
   // Resolve the active session's title from the flat session list. Returns
-  // null when there's no active session — caller hides the chip entirely.
+  // null when there's no active session - caller hides the chip entirely.
   const title = useSessionStore((s) => {
     if (!s.activeSessionId) return null;
     const sess = s.sessions.find((x) => x.id === s.activeSessionId);
@@ -191,5 +201,112 @@ function ActiveThreadTitle() {
     >
       {title}
     </div>
+  );
+}
+
+/** Compact git-branch pill for the toolbar. Renders only the branch switcher
+ *  (no folder icon / project name) via ProjectBranchIndicator's compact mode.
+ *  Hidden when no project is active. The interactive pill opts out of the
+ *  titlebar's drag region so clicks work. */
+function ToolbarBranchIndicator() {
+  const activeProjectId = useSessionStore((s) => s.activeProjectId);
+  const projects = useSessionStore((s) => s.projects);
+  const { projectPath, projectName } = useMemo(() => {
+    if (!activeProjectId) return { projectPath: "", projectName: "" };
+    const p = projects.find((x) => x.id === activeProjectId);
+    return { projectPath: p?.path ?? "", projectName: p?.name ?? "" };
+  }, [activeProjectId, projects]);
+  if (!projectPath) return null;
+  return (
+    <div
+      style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+      className="shrink-0"
+    >
+      <ProjectBranchIndicator
+        projectPath={projectPath}
+        projectName={projectName}
+        compact
+      />
+    </div>
+  );
+}
+
+/** Stable empty array so the openFiles selector never returns a fresh []
+ *  (Zustand Object.is rule - a new [] every render causes an infinite loop). */
+const EMPTY_OPEN_FILES: string[] = [];
+
+/** Editor column toggle button. Shows/hides the center-pane editor column.
+ *  The editor is visible when a file tab is active OR a plan tab is open.
+ *  Clicking when visible hides it (clears the active file AND deactivates the
+ *  plan tab so neither renders); clicking when hidden re-opens the first file
+ *  from the open-files list (or does nothing if none are open). */
+function EditorColumnToggle() {
+  const activeProjectId = useSessionStore((s) => s.activeProjectId);
+  const activeFile = useSessionStore((s) =>
+    activeProjectId ? s.ideActiveFileByProject[activeProjectId] ?? null : null,
+  );
+  const openFiles = useSessionStore((s) =>
+    activeProjectId ? s.ideOpenFilesByProject[activeProjectId] ?? EMPTY_OPEN_FILES : EMPTY_OPEN_FILES,
+  );
+  const clearIdeActiveFile = useSessionStore((s) => s.clearIdeActiveFile);
+  const setIdeActiveFile = useSessionStore((s) => s.setIdeActiveFile);
+
+  // Plan tab state: the editor column is also visible when the plan tab is
+  // the active tab (same condition CenterPane uses).
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const planTabActive = useSessionStore(
+    (s) => (activeSessionId ? s.planTabActiveBySession[activeSessionId] ?? false : false),
+  );
+  const planTabOpen = useSessionStore(
+    (s) => (activeSessionId ? s.planDrawerPlanBySession[activeSessionId] != null : false),
+  );
+  const setPlanTabActive = useSessionStore((s) => s.setPlanTabActive);
+
+  // Match CenterPane's visibility logic: visible when a file is active OR the
+  // plan tab is active. (planTabOpen alone - plan exists but is not the active
+  // tab - does NOT make the editor visible, matching CenterPane.)
+  const editorVisible = !!activeFile || planTabActive;
+  // Whether there's something to restore when the editor is hidden: either an
+  // open file OR a plan tab that can be re-activated.
+  const canRestore = openFiles.length > 0 || planTabOpen;
+
+  const handleClick = () => {
+    if (editorVisible) {
+      // Hide the editor: clear the active file AND deactivate the plan tab so
+      // neither the FileEditor nor PlanViewer renders.
+      clearIdeActiveFile();
+      if (activeSessionId && planTabActive) {
+        setPlanTabActive(activeSessionId, false);
+      }
+    } else if (openFiles.length > 0) {
+      // Re-open the first file in the open list.
+      setIdeActiveFile(openFiles[0]);
+    } else if (activeSessionId && planTabOpen) {
+      // No files open but a plan tab exists - re-activate it.
+      setPlanTabActive(activeSessionId, true);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={!editorVisible && !canRestore}
+      className={cn(
+        "flex items-center justify-center rounded p-1.5 transition-colors",
+        editorVisible
+          ? "bg-surface-hover text-accent"
+          : "text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-40 disabled:hover:bg-transparent",
+      )}
+      title={
+        editorVisible
+          ? "隐藏编辑器"
+          : canRestore
+            ? "显示编辑器"
+            : "无打开的文件"
+      }
+      style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+    >
+      <IconCode size={16} className="shrink-0" />
+    </button>
   );
 }

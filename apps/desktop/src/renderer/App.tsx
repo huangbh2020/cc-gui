@@ -14,6 +14,7 @@ import { useSessionStore } from "./stores/sessionStore.js";
 import { useTheme } from "./lib/theme.js";
 import { useChatAppearance, useRightPanelAppearance } from "./lib/appearance.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
+import { PlanViewer } from "./components/chat/PlanViewer.js";
 
 // Lazy-load the Monaco-backed editor and git-diff dialog so the large
 // monaco-editor library (and its web workers) stay out of the initial renderer
@@ -180,12 +181,24 @@ export function App() {
  *  docs/tech-stack.md). The editor column hosts the Monaco FileEditor + its
  *  tab bar, and is only rendered when `ideActiveFile` is non-null. */
 function CenterPane() {
-  // The active file is scoped to the active project — switching projects
+  // The active file is scoped to the active project - switching projects
   // swaps to that project's open files (or hides the editor if none).
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const activeFile = useSessionStore((s) =>
     activeProjectId ? s.ideActiveFileByProject[activeProjectId] ?? null : null,
   );
+  // Plan tab: the editor column is visible when a file tab is active OR the
+  // plan tab is active. EditorColumn decides whether to render PlanViewer
+  // (plan tab active) or FileEditor (file tab active) based on planTabActive.
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const planTabActive = useSessionStore(
+    (s) => (activeSessionId ? s.planTabActiveBySession[activeSessionId] ?? false : false),
+  );
+
+  // The editor column is visible when EITHER a file is active OR the plan tab
+  // is active. (The plan tab's mere existence in the bar doesn't force the
+  // editor visible - only when it's the active tab.)
+  const editorVisible = !!activeFile || planTabActive;
 
   // Draggable chat|editor split. The editor column's share is a persisted
   // percentage; the chat column gets the remainder. The Divider reports a px
@@ -208,25 +221,28 @@ function CenterPane() {
 
   return (
     <div ref={splitRef} className="flex h-full min-h-0">
-      {/* Chat column — flex-basis is the remainder of the editor share so the
+      {/* Chat column - flex-basis is the remainder of the editor share so the
           two columns split the center pane proportionally. When no file is
-          open it takes the full width (flex-1). */}
+          open and no plan is viewed it takes the full width (flex-1). */}
       <div
         className="flex min-w-0 flex-col"
-        style={activeFile ? { flexGrow: 0, flexBasis: `${100 - editorWidthPct}%` } : { flexGrow: 1, flexBasis: "0%" }}
+        style={editorVisible ? { flexGrow: 0, flexBasis: `${100 - editorWidthPct}%` } : { flexGrow: 1, flexBasis: "0%" }}
       >
         <ChatColumn />
       </div>
-      {/* Divider between chat and editor — only when a file is open. */}
-      {activeFile && (
+      {/* Divider between chat and editor - only when the editor column is
+          visible (a file or plan is active). */}
+      {editorVisible && (
         <Divider
           orientation="vertical"
           onResize={handleEditorResize}
           onDoubleClick={resetEditorWidthPct}
         />
       )}
-      {/* Editor column — only when a file is active. Grows to its share. */}
-      {activeFile && (
+      {/* Editor column - visible when a file or plan tab is open. Always
+          rendered through EditorColumn (which includes the tab bar + either
+          FileEditor or PlanViewer based on which tab is active). */}
+      {editorVisible && (
         <div
           className="flex min-w-0 flex-col border-l border-edge bg-surface"
           style={{ flexGrow: 0, flexBasis: `${editorWidthPct}%` }}
@@ -258,13 +274,33 @@ function ChatColumn() {
   return <ChatPane key={activeSessionId ?? "empty"} sessionId={activeSessionId} />;
 }
 
-/** The editor half: OpenTabsBar (only in tabs mode) + the active FileEditor.
- *  Resolves the project path from the active project so FileEditor can show
- *  relative paths in its toolbar. */
-function EditorColumn({ filePath }: { filePath: string }) {
+/** The editor half: OpenTabsBar (only in tabs mode) + the active tab's
+ *  content. Resolves the project path from the active project so FileEditor
+ *  can show relative paths in its toolbar. When the plan tab is active,
+ *  renders PlanViewer instead of FileEditor. */
+function EditorColumn({ filePath }: { filePath: string | null }) {
   const editorMode = useSessionStore((s) => s.ideEditorMode);
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const projects = useSessionStore((s) => s.projects);
+
+  // Plan tab state: when planTabActive is true and there's plan text, render
+  // PlanViewer instead of FileEditor.
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const planText = useSessionStore(
+    (s) => (activeSessionId ? s.planDrawerPlanBySession[activeSessionId] ?? null : null),
+  );
+  const planTabActive = useSessionStore(
+    (s) => (activeSessionId ? s.planTabActiveBySession[activeSessionId] ?? false : false),
+  );
+  // Whether an ExitPlanMode approval is pending for this session - passed to
+  // PlanViewer so its save action knows to stage the draft for the approval
+  // sheet (vs. just updating the local view for a historical plan).
+  const planApprovalPending = useSessionStore(
+    (s) => (activeSessionId ? !!s.pendingPlanApprovalBySession[activeSessionId] : false),
+  );
+  const closePlanDrawer = useSessionStore((s) => s.closePlanDrawer);
+
+  const showPlan = planTabActive && !!planText;
 
   const projectPath = useMemo(() => {
     if (!activeProjectId) return null;
@@ -275,7 +311,14 @@ function EditorColumn({ filePath }: { filePath: string }) {
     <>
       {editorMode === "tabs" && <OpenTabsBar />}
       <div className="min-h-0 flex-1">
-        {projectPath ? (
+        {showPlan ? (
+          <PlanViewer
+            plan={planText!}
+            sessionId={activeSessionId!}
+            isApprovalPending={planApprovalPending}
+            onClose={() => activeSessionId && closePlanDrawer(activeSessionId)}
+          />
+        ) : filePath && projectPath ? (
           <Suspense
             fallback={
               <div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-content-subtle">

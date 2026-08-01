@@ -9,7 +9,7 @@ import {
   IconClipboard,
   IconFile,
   IconCopy,
-  IconActivity,
+  IconLoader2,
   // Tool-kind icons (left glyph of each action card).
   IconBulb,
   IconTerminal,
@@ -24,6 +24,7 @@ import {
   IconWorldSearch,
   IconHelpCircle,
 } from "@renderer/lib/icons.js";
+import { useNow } from "@renderer/hooks/useNow.js";
 import type { Block, TurnMeta } from "@renderer/stores/sessionStore.js";
 import { Markdown } from "./Markdown.js";
 import { DiffView } from "./DiffView.js";
@@ -41,10 +42,15 @@ export type BeforeContentMap = Map<string, string>;
 
 /** Render the content blocks of a message.
  *
- *  Purely procedural content (thinking + tool calls, no prose) is collapsed
- *  into a single boxed `ProceduralGroup` so the message stream stays calm
- *  — one summary line instead of N cards. Text and error blocks render
- *  inline as before. */
+ *  In the turn-level aggregation model (ChatPane's `groupMessagesForRender`),
+ *  a turn is split into a `TurnPanel` (all thinking + tool calls) and one or
+ *  more "text messages" carrying only display blocks (text / plan /
+ *  turn-files / error / attachment). MessageBlocks renders those display
+ *  messages; the procedural surface is owned by TurnPanel.
+ *
+ *  A residual `groupBlocks` defense is kept: if a stray thinking/tool_use
+ *  block ever reaches this path (legacy data, future invariant drift), it
+ *  still collapses into a TurnPanel instead of polluting the prose stream. */
 const MessageBlocks = memo(function MessageBlocks({
   blocks,
   beforeMap,
@@ -55,7 +61,7 @@ const MessageBlocks = memo(function MessageBlocks({
   /** Pre-turn file contents for Write-tool diffing. Forwarded down to any
    * procedural group rendered inside this message (the single-message
    * path - the cluster path in ChatPane passes beforeMap directly to
-   * ProceduralGroup). */
+   * TurnPanel). */
   beforeMap?: BeforeContentMap;
   /** When true, this message is the last one in the stream and is still
    * receiving content deltas. Instructs text blocks to skip expensive
@@ -74,7 +80,7 @@ const MessageBlocks = memo(function MessageBlocks({
         seg.kind === "single" ? (
           <BlockView key={i} block={seg.block} defaultOpen={seg.defaultOpen} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} />
         ) : (
-          <ProceduralGroup key={i} blocks={seg.blocks} beforeMap={beforeMap} turnActive={isStreamingTail} />
+          <TurnPanel key={i} blocks={seg.blocks} beforeMap={beforeMap} turnActive={isStreamingTail} onOpenPlan={onOpenPlan} />
         ),
       )}
     </div>
@@ -92,21 +98,23 @@ type Segment =
   | { kind: "single"; block: Block; defaultOpen?: boolean }
   | { kind: "procedural"; blocks: ProceduralBlock[] };
 
-/** Edit tool calls render INLINE in the stream (collapsed by default),
- *  bypassing the "思考 + N 个操作" procedural-group collapse. Keeping them
- *  flat makes the actual file changes scannable as a one-line summary
- *  (+N -M) without burying the prose stream under diff bodies. */
-function isInlineEditBlock(b: Block): boolean {
-  return b.kind === "tool_use" && b.toolName === "Edit";
+/** File-mutating tool calls (Edit / Write) render INLINE in the stream
+ *  (collapsed by default), bypassing the "思考 + N 个操作" procedural-group
+ *  collapse. Keeping them flat makes the actual file changes scannable as a
+ *  one-line summary (+N -M) without burying the prose stream under diff
+ *  bodies. Write gets the same treatment so a new/overwritten file is its
+ *  own visible card rather than buried inside a group. */
+function isInlineFileBlock(b: Block): boolean {
+  return b.kind === "tool_use" && (b.toolName === "Edit" || b.toolName === "Write");
 }
 
 /** Linear scan: collect consecutive thinking / tool_use blocks into a run.
  *  Any text or error block flushes the run (and renders as its own segment).
- *  Edit tool calls are pulled OUT of the run and emitted as their own
- *  single segment (collapsed) so their diff is available inline but doesn't
- *  dominate the stream. Even a single non-Edit tool_use with no surrounding
- *  text becomes a procedural group - that's the whole point: keep the prose
- *  stream clean. */
+ *  Edit / Write tool calls are pulled OUT of the run and emitted as their
+ *  own single segment (collapsed) so their diff / content is available inline
+ *  but doesn't dominate the stream. Even a single non-file tool_use with no
+ *  surrounding text becomes a procedural group — that's the whole point:
+ *  keep the prose stream clean. */
 function groupBlocks(blocks: Block[]): Segment[] {
   const out: Segment[] = [];
   let run: ProceduralBlock[] = [];
@@ -117,9 +125,9 @@ function groupBlocks(blocks: Block[]): Segment[] {
     }
   };
   for (const b of blocks) {
-    if (isInlineEditBlock(b)) {
-      // An inline Edit breaks the procedural run: flush whatever has
-      // accumulated, then emit the Edit as a standalone collapsed segment.
+    if (isInlineFileBlock(b)) {
+      // An inline Edit/Write breaks the procedural run: flush whatever has
+      // accumulated, then emit the file tool as a standalone collapsed segment.
       flush();
       out.push({ kind: "single", block: b, defaultOpen: false });
     } else if (b.kind === "thinking" || b.kind === "tool_use") {
@@ -159,79 +167,42 @@ function StatusIcon({ status }: { status: "running" | "done" | "error" }) {
   return null;
 }
 
-/** Collapsible box for a run of procedural blocks (thinking + tool calls).
- *  Collapsed: one summary line — aggregate status icon + a compact
- *  "N 个操作 · Bash ×2 · Read ×1" breakdown. Expanded: each child renders
- *  in its normal form (thinking as Collapsible, tool calls as ToolCard),
- *  all starting collapsed — the user drills in further only if they want. */
-export function ProceduralGroup({
+/** A compact collapsible card for a run of consecutive procedural blocks
+ *  (thinking + non-file tool calls) INSIDE an expanded TurnPanel. Mirrors the
+ *  original pre-turn-aggregation "思考 + N 个操作" group: one summary line
+ *  when collapsed, each child (thinking / tool card) folded underneath when
+ *  expanded. File-mutating tools (Edit / Write) never land here — they're
+ *  pulled out by groupBlocks to render as their own inline cards. */
+function ProceduralRunCard({
   blocks,
   beforeMap,
-  turnActive = false,
-  turnMeta,
+  defaultOpen = false,
 }: {
   blocks: ProceduralBlock[];
-  /** Pre-turn file contents for Write-tool diffing. Optional - omitted in
-   *  the single-message (non-cluster) render path where diffs aren't
-   *  shown. Forwarded down to WriteToolCard. */
   beforeMap?: BeforeContentMap;
-  /** Whether this card's turn is still streaming (the card is the live tail
-   *  of the stream). Gates the "current operation" ticker: it only shows for
-   *  the card that is executing right now and clears once the turn ends. */
-  turnActive?: boolean;
-  /** The turn's timing metadata. When `endedAt` is set the turn has
-   *  completed - the group collapses to a compact "✓ 完成 N 步操作"
-   *  summary so the final text reply becomes the visual focus. Omitted on
-   *  the single-message render path (no turn context available). */
-  turnMeta?: TurnMeta;
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const completed = turnMeta?.endedAt !== undefined;
-
-  // When the turn completes, collapse the group so the process recedes and
-  // the final text reply takes focus. The user can still re-expand by
-  // clicking - this only fires on the false->true transition.
-  useEffect(() => {
-    if (completed) setOpen(false);
-  }, [completed]);
-
+  const [open, setOpen] = useState(defaultOpen);
   const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
   const thinkingCount = blocks.filter((b) => b.kind === "thinking").length;
 
-  // Aggregate status: any running → running; else any error → error; else done.
-  // Thinking blocks have no status of their own, so only tools drive this.
   const aggregateStatus: "running" | "done" | "error" = toolBlocks.some((b) => b.status === "running")
     ? "running"
     : toolBlocks.some((b) => b.status === "error")
       ? "error"
       : "done";
 
-  // The newest tool currently executing inside this card (drives the ticker).
-  const runningTool = useMemo(() => {
-    for (let i = toolBlocks.length - 1; i >= 0; i--) {
-      if (toolBlocks[i].status === "running") return toolBlocks[i];
-    }
-    return null;
-  }, [toolBlocks]);
-
-  // Tool-name tally in first-invocation order (Map preserves insertion).
+  // Tool-name tally in first-invocation order.
   const counts = new Map<string, number>();
   for (const b of toolBlocks) counts.set(b.toolName, (counts.get(b.toolName) ?? 0) + 1);
   const breakdown = [...counts.entries()].map(([n, c]) => `${n} ×${c}`).join(" · ");
 
-  // Summary label. While streaming: "思考 + N 个操作" / "N 个操作" / "思考".
-  // Once the turn completes: "完成 N 步操作" / "思考完成" - the process
-  // recedes so the final text reply reads as the focus of the turn.
-  let label: string;
-  if (completed) {
-    label = toolBlocks.length > 0 ? `完成 ${toolBlocks.length} 步操作` : "思考完成";
-  } else if (thinkingCount > 0 && toolBlocks.length > 0) {
-    label = `思考 + ${toolBlocks.length} 个操作`;
-  } else if (toolBlocks.length > 0) {
-    label = `${toolBlocks.length} 个操作`;
-  } else {
-    label = "思考";
-  }
+  const label =
+    thinkingCount > 0 && toolBlocks.length > 0
+      ? `思考 + ${toolBlocks.length} 个操作`
+      : toolBlocks.length > 0
+        ? `${toolBlocks.length} 个操作`
+        : "思考";
 
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
@@ -239,22 +210,176 @@ export function ProceduralGroup({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/40"
       >
-        {completed && aggregateStatus !== "error" ? (
+        {aggregateStatus === "done" ? (
           <IconCheck size={12} className="shrink-0 text-accent" />
         ) : (
           <StatusIcon status={aggregateStatus} />
         )}
-        <IconActivity size={14} className="shrink-0 text-content-muted" />
         <span className="font-medium text-content-muted">{label}</span>
         {breakdown && <span className="truncate text-content-subtle">{breakdown}</span>}
-        {!completed && <CurrentOpTicker op={runningTool} turnActive={turnActive} />}
+        <Chevron open={open} />
+      </button>
+      {open && (
+        <div className="space-y-1.5 py-1 pl-4">
+          {blocks.map((b, i) => (
+            <BlockView key={i} block={b} beforeMap={beforeMap} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Render the body of an expanded TurnPanel: run groupBlocks over the panel's
+ *  blocks and emit each segment — procedural runs collapse into a
+ *  ProceduralRunCard, file tools (Edit/Write) and text render as standalone
+ *  inline blocks. This restores the pre-aggregation grouping behavior inside
+ *  the panel.
+ *
+ *  `live`: while the turn is still streaming, procedural run cards start
+ *  EXPANDED so the user can watch the model work (the whole point of keeping
+ *  the panel open before the final reply). Once the turn settles they collapse
+ *  to their one-line summary so the history reads compactly. */
+function PanelBody({
+  blocks,
+  beforeMap,
+  onOpenPlan,
+  live = false,
+}: {
+  blocks: Block[];
+  beforeMap?: BeforeContentMap;
+  onOpenPlan?: (plan: string) => void;
+  live?: boolean;
+}) {
+  const segments = groupBlocks(blocks);
+  return (
+    <div className="space-y-1.5">
+      {segments.map((seg, i) =>
+        seg.kind === "single" ? (
+          <BlockView
+            key={i}
+            block={seg.block}
+            defaultOpen={seg.defaultOpen}
+            beforeMap={beforeMap}
+            onOpenPlan={onOpenPlan}
+          />
+        ) : (
+          <ProceduralRunCard key={i} blocks={seg.blocks} beforeMap={beforeMap} defaultOpen={live} />
+        ),
+      )}
+    </div>
+  );
+}
+
+/** Collapsible panel that hides a whole turn's process data (thinking +
+ *  tool calls + any text the model emitted between tool calls, like "let me
+ *  read this file first") behind a one-line "开始 HH:MM:SS · 用时 NN.Ns"
+ *  header. This is the boundary between "model process" and "model output
+ *  for the user": everything up to and including the last tool call lives
+ *  inside this panel, while only the final reply text (after the last tool)
+ *  renders outside it and stays visible.
+ *
+ *  - `turnActive`: the turn is still streaming and the model hasn't moved to
+ *    its final reply yet (the live tail is still a procedural block). While
+ *    active the panel auto-expands so the user can watch the model work; the
+ *    header shows a spinner and a live-ticking duration.
+ *  - Once `turnActive` turns false (the model started its final reply, or the
+ *    turn ended), the panel auto-collapses so the process recedes and the
+ *    user's focus moves to the reply. The user can still re-expand by clicking.
+ *  - `turnMeta.endedAt` frozen → header shows a checkmark and a frozen
+ *    duration. An error anywhere in the turn shows an X instead. */
+export function TurnPanel({
+  blocks,
+  beforeMap,
+  turnActive = false,
+  turnMeta,
+  onOpenPlan,
+}: {
+  /** The turn's process blocks in order: thinking, tool calls, and any text
+   *  the model produced between tools. Text blocks are rendered inline inside
+   *  the expanded panel (as process narration), NOT as the user-facing reply. */
+  blocks: Block[];
+  /** Pre-turn file contents for Write-tool diffing. Forwarded down to
+   *  WriteToolCard so diffs render inside the expanded panel. */
+  beforeMap?: BeforeContentMap;
+  /** Whether this turn is still streaming and hasn't reached its final reply
+   *  yet — the panel auto-expands to show live progress. Clears once the model
+   *  starts its final text reply (or the turn ends), collapsing the process. */
+  turnActive?: boolean;
+  /** The turn's timing metadata. `startedAt` feeds the header clock and the
+   *  duration baseline; `endedAt` undefined means the turn is still running
+   *  (duration ticks live via useNow). */
+  turnMeta?: TurnMeta;
+  /** Forwarded to BlockView for plan blocks (opens the PlanDrawer). */
+  onOpenPlan?: (plan: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const completed = turnMeta?.endedAt !== undefined;
+
+  // Auto-collapse the moment the panel stops being "active" — i.e. once a
+  // text reply has appeared (turnActive flips to false) OR the turn formally
+  // ended. The user can still re-expand by clicking. This fires on the
+  // true→false transition of `turnActive`, and on undefined→defined of
+  // endedAt (handled together since either means "process is done").
+  useEffect(() => {
+    if (!turnActive) setOpen(false);
+  }, [turnActive]);
+
+  const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
+
+  // Aggregate status: any running → running; else any error → error; else done.
+  const aggregateStatus: "running" | "done" | "error" = toolBlocks.some((b) => b.status === "running")
+    ? "running"
+    : toolBlocks.some((b) => b.status === "error")
+      ? "error"
+      : "done";
+
+  // The newest tool currently executing inside this panel (drives the ticker).
+  const runningTool = useMemo(() => {
+    for (let i = toolBlocks.length - 1; i >= 0; i--) {
+      if (toolBlocks[i].status === "running") return toolBlocks[i];
+    }
+    return null;
+  }, [toolBlocks]);
+
+  // Live duration via the app-wide 1s clock. Frozen turns compute a static
+  // value (endedAt - startedAt) and the useNow subscription is harmless
+  // (returns the same value every tick). This mirrors TurnStatRow's approach.
+  const now = useNow();
+  const startedAt = turnMeta?.startedAt ?? now;
+  const duration = Math.max(0, (turnMeta?.endedAt ?? now) - startedAt);
+  const live = turnMeta?.endedAt === undefined;
+
+  return (
+    <div className="[font-size:var(--chat-fs-sm)]">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 border-b border-edge py-1.5 text-left text-[13px] text-content-subtle hover:bg-surface-muted/40"
+      >
+        {completed && aggregateStatus !== "error" ? (
+          <IconCheck size={12} className="shrink-0 text-accent" />
+        ) : aggregateStatus === "error" ? (
+          <IconX size={12} className="shrink-0 text-danger" />
+        ) : live ? (
+          <IconLoader2 size={12} className="shrink-0 animate-spin text-accent" />
+        ) : null}
+        <span>开始</span>
+        <span className="tabular-nums text-content-muted">{fmtClock(startedAt)}</span>
+        <span className="text-content-subtle">·</span>
+        <span>用时</span>
+        <span className="tabular-nums text-content-muted">{fmtDuration(duration)}</span>
         <Chevron open={open} />
       </button>
       {open && (
         <div className="space-y-1.5 py-2 pl-5">
-          {blocks.map((b, i) => (
-            <BlockView key={i} block={b} beforeMap={beforeMap} />
-          ))}
+          {/* While streaming, surface the current operation as a live ticker
+              above the grouped body so the user sees what's happening now. */}
+          {live && runningTool && (
+            <div className="flex items-center gap-1.5 border-b border-edge pb-1 text-[11px] text-content-subtle">
+              <CurrentOpTicker op={runningTool} turnActive={turnActive} />
+            </div>
+          )}
+          <PanelBody blocks={blocks} beforeMap={beforeMap} onOpenPlan={onOpenPlan} live={live} />
         </div>
       )}
     </div>
@@ -491,11 +616,10 @@ function ToolCard({
   return <GenericToolCard block={block} defaultOpen={defaultOpen} />;
 }
 
-/** Edit tool card: line-level diff view. When rendered inline in the stream
- *  (the default path - Edit blocks bypass the procedural-group collapse),
- *  `defaultOpen` is true so the diff shows immediately; inside an expanded
- *  ProceduralGroup it defaults to collapsed. The header stays clickable so the
- *  user can still fold an individual edit out of the way. */
+/** Edit tool card: line-level diff view. Inside an expanded TurnPanel it
+ *  defaults to collapsed (`defaultOpen` false); the user clicks to inspect
+ *  the diff. The header stays clickable so an individual edit can still be
+ *  folded away. */
 function EditToolCard({
   filePath,
   oldString,
@@ -724,6 +848,30 @@ function Collapsible({
 function summarize(text: string): string {
   const t = text.trim();
   return t.length > 60 ? t.slice(0, 60) + "…" : t;
+}
+
+/** Format a wall-clock ms timestamp as HH:MM:SS (local time). Mirrors the
+ *  same-named helper in ChatPane — duplicated here so TurnPanel is
+ *  self-contained (ChatPane will stop rendering TurnStatRow above the
+ *  panel, so the formatting ownership moves into the panel header). */
+function fmtClock(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/** Format a duration (ms) compactly: <1s → "<1s", <60s → "12.3s",
+ *  <60m → "1m 23s", else → "1h 05m". Mirrors ChatPane's helper. */
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return "<1s";
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m < 60) return `${m}m ${String(s).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${h}h ${String(mm).padStart(2, "0")}m`;
 }
 
 /** Resolve a left-glyph icon for a tool-use block by its name. Unknown names

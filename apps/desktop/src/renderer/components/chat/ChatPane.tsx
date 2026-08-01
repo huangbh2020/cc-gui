@@ -33,7 +33,7 @@ import {
   executeSlashCommand,
   type SlashCommandContext,
 } from "@renderer/lib/slashCommands.js";
-import { MessageBlocks, ProceduralGroup, type ProceduralBlock, type BeforeContentMap } from "./MessageBlocks.js";
+import { MessageBlocks, TurnPanel, type ProceduralBlock, type BeforeContentMap } from "./MessageBlocks.js";
 import { ComposerToolbar } from "./ComposerToolbar.js";
 import { QuestionPrompt } from "./QuestionPrompt.js";
 import { ApprovalPrompt } from "./ApprovalPrompt.js";
@@ -45,7 +45,6 @@ import { ProjectBranchIndicator } from "./ProjectBranchIndicator.js";
 import { EmptyThreadWelcome } from "./EmptyThreadWelcome.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { StatusCapsule } from "./StatusCapsule.js";
-import { PlanDrawer } from "./PlanDrawer.js";
 import { MessageTimeline, type UserItemIndexMap } from "./MessageTimeline.js";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 
@@ -138,23 +137,19 @@ function TurnStatRow({ meta }: { meta: TurnMeta }) {
   );
 }
 
-/** A "purely procedural" assistant message is one whose blocks are all
- *  thinking and/or tool_use — no text reply, no error. The SDK splits a
- *  single multi-step turn into many such messages (one per content-block
- *  group); without merging they'd each render as a separate "思考 + N 个操作"
- *  card stacked down the stream. We group consecutive ones into a single
- *  cluster so a whole turn reads as one compact card. */
-function isProceduralMessage(m: ChatMessage): boolean {
-  if (m.role !== "assistant") return false;
-  if (m.blocks.length === 0) return false;
-  return m.blocks.every((b) => b.kind === "thinking" || b.kind === "tool_use");
+/** Whether a block is "procedural" (model process: thinking / tool calls) —
+ *  the surface that gets hidden inside a TurnPanel — vs "display" (text /
+ *  plan / turn-files / error / attachment) which stays visible to the user.
+ *  This is the single source of truth for the process/output split. */
+function isProceduralBlock(b: Block): b is ProceduralBlock {
+  return b.kind === "thinking" || b.kind === "tool_use";
 }
 
-/** Render item after grouping: either a standalone message (user prompts,
- *  assistant text replies, error bubbles) or a cluster of consecutive
- *  procedural messages that belong to the same turn. The precomputed
- *  isStreamingTail / isTurnTail flags carry the original per-message
- *  semantics into the grouped dimension:
+/** Render item after turn-level grouping. A `turnGroup` bundles a whole
+ *  turn: its process blocks (hidden behind a TurnPanel header) plus any
+ *  reply text that should stay visible below the panel. The precomputed
+ *  isStreamingTail / isTurnTail flags carry per-message semantics into the
+ *  grouped dimension:
  *  - isStreamingTail: this item is the live streaming end of the running turn.
  *  - isTurnTail: this item is the LAST assistant item of a COMPLETED turn
  *    (the turn ended, and the next item is a user message or the stream end).
@@ -168,8 +163,17 @@ type RenderItem =
       isTurnTail: boolean;
     }
   | {
-      kind: "proceduralCluster";
-      msgs: ChatMessage[];
+      kind: "turnGroup";
+      /** The turn's process surface, in order: thinking, tool calls, AND any
+       *  text the model emitted between tools (e.g. "let me read this first").
+       *  Everything up to and including the LAST tool call goes here. Fed to
+       *  TurnPanel (hidden behind the header). Empty for pure-text turns. */
+      panelBlocks: Block[];
+      /** Messages carrying the turn's DISPLAY blocks — only what comes AFTER
+       *  the last tool call (the final reply text, plus plan / turn-files /
+       *  error / attachment). Rendered below the panel, always visible.
+       *  Empty for pure-tool turns (plan mode, interrupts). */
+      textMsgs: ChatMessage[];
       turnMeta?: TurnMeta;
       isStreamingTail: boolean;
       isTurnTail: boolean;
@@ -183,20 +187,6 @@ type RenderItem =
       kind: "pendingTurn";
       turnMeta: TurnMeta;
     };
-
-/** Flatten a cluster's messages into a single procedural-block stream for
- *  ProceduralGroup. All members are guaranteed procedural by
- *  isProceduralMessage, so a flat concat yields one contiguous
- *  thinking+tool sequence. */
-function flattenCluster(msgs: ChatMessage[]): ProceduralBlock[] {
-  const out: ProceduralBlock[] = [];
-  for (const m of msgs) {
-    for (const b of m.blocks) {
-      if (b.kind === "thinking" || b.kind === "tool_use") out.push(b);
-    }
-  }
-  return out;
-}
 
 /** Whether the assistant message at index `i` is the tail of a COMPLETED turn:
  *  the turn is not still running (either because a later user message started
@@ -220,9 +210,16 @@ function isCompletedTurnTail(
   return next?.role === "user";
 }
 
-/** Group the raw message stream into render items, merging consecutive
- *  purely-procedural assistant messages into a single cluster. Pure
- *  function over the message list - no store mutation. */
+/** Group the raw message stream into render items at the TURN level. Every
+ *  assistant message belonging to one turn (from the turn-opener carrying
+ *  `turnMeta` up to the next turn-opener or a user message) is merged into a
+ *  single `turnGroup`: all thinking/tool_use blocks fold into the TurnPanel
+ *  (process, hidden by default), while text/plan/turn-files reply blocks stay
+ *  visible below it.
+ *
+ *  Turn boundaries follow the same heuristic the store uses: a message that
+ *  carries a fresh `turnMeta` (the opener) starts a new turn. Pure function
+ *  over the message list — no store mutation. */
 function groupMessagesForRender(
   messages: ChatMessage[],
   isRunning: boolean,
@@ -232,39 +229,139 @@ function groupMessagesForRender(
   runningTurnStartedAt?: number,
 ): RenderItem[] {
   const items: RenderItem[] = [];
-  let run: ChatMessage[] = [];
+
+  // Per-turn accumulator: the turn's blocks in arrival order, each tagged
+  // with its source message. We keep the full timeline (procedural + text)
+  // and only decide the process/reply split at flush time — once we know
+  // where the LAST tool call landed. Everything up to and including that
+  // last tool (and any text woven between tools) is process → panel;
+  // anything after it is the final reply → visible below the panel.
+  type TimedBlock = { block: Block; msg: ChatMessage };
+  let turnBlocks: TimedBlock[] = [];
+  let turnMeta: TurnMeta | undefined;
+  /** Index (into `messages`) of the last raw message added to the open turn
+   *  — used to derive isStreamingTail / isTurnTail. */
+  let lastTurnMsgIndex = -1;
+  let hasOpenTurn = false;
 
   const flush = () => {
-    if (run.length === 0) return;
-    // The cluster's tail/last flags follow its LAST member - that's the
-    // message that was at the end of the raw stream.
-    const lastInRun = run[run.length - 1];
-    const tailIndex = messages.indexOf(lastInRun);
+    if (!hasOpenTurn) return;
+    const lastMsg = messages[lastTurnMsgIndex];
     const isStreamingTail =
-      isRunning && lastInRun.role === "assistant" && tailIndex === messages.length - 1;
+      isRunning && !!lastMsg && lastMsg.role === "assistant" && lastTurnMsgIndex === messages.length - 1;
     const isTurnTail =
-      lastInRun.role === "assistant" && isCompletedTurnTail(messages, tailIndex, isRunning);
-    // turnMeta: take the first member that carries one (the turn-opener).
-    const turnMeta = run.find((m) => m.turnMeta)?.turnMeta;
+      !!lastMsg && lastMsg.role === "assistant" && isCompletedTurnTail(messages, lastTurnMsgIndex, isRunning);
+
+    // Find the index of the LAST procedural block (thinking / tool_use) in
+    // the turn's timeline. Everything at or before it is "process" —
+    // including any text the model wove between tool calls ("let me read
+    // this first", "tests passed, now…"). Only blocks AFTER the last tool
+    // call count as the user-facing reply.
+    let lastProcIdx = -1;
+    for (let j = 0; j < turnBlocks.length; j++) {
+      if (isProceduralBlock(turnBlocks[j].block)) lastProcIdx = j;
+    }
+
+    let panelBlocks: Block[] = [];
+    const textMsgs: ChatMessage[] = [];
+
+    // While the turn is still the live streaming tail, we want the process
+    // panel to stay OPEN and show what the model is doing. Two cases:
+    //  (a) The model hasn't reached its final reply yet — the live tail is a
+    //      procedural block, or only process narration has arrived. We can't
+    //      know whether more tools are coming, so keep EVERYTHING inside the
+    //      panel (so process text doesn't flicker out and back in). No reply
+    //      is shown yet.
+    //  (b) The model has already moved past its last tool call into reply
+    //      text (there are blocks AFTER lastProcIdx). That trailing text IS
+    //      the final reply streaming in — split it out so it shows below the
+    //      (now collapsing) panel, exactly as the user requested: the process
+    //      folds away the moment the reply starts.
+    const replyStarted = lastProcIdx >= 0 && lastProcIdx < turnBlocks.length - 1;
+    const holdAllInPanel = isStreamingTail && !replyStarted;
+
+    if (holdAllInPanel) {
+      panelBlocks = turnBlocks.map((t) => t.block);
+    } else if (lastProcIdx >= 0) {
+      // Process surface: blocks [0 .. lastProcIdx] (procedural + woven text).
+      panelBlocks = turnBlocks.slice(0, lastProcIdx + 1).map((t) => t.block);
+      // Reply surface: blocks after the last tool, regrouped by source message
+      // so each textMsg renders with its original message identity (id, role).
+      const replyByMsg = new Map<ChatMessage, Block[]>();
+      for (let j = lastProcIdx + 1; j < turnBlocks.length; j++) {
+        const { block, msg } = turnBlocks[j];
+        const arr = replyByMsg.get(msg);
+        if (arr) arr.push(block);
+        else replyByMsg.set(msg, [block]);
+      }
+      for (const [msg, blocks] of replyByMsg) {
+        textMsgs.push({ ...msg, blocks });
+      }
+    } else {
+      // No tool calls at all (pure-text turn) — nothing to hide. The whole
+      // turn is the reply; no panel is shown.
+      const replyByMsg = new Map<ChatMessage, Block[]>();
+      for (const { block, msg } of turnBlocks) {
+        const arr = replyByMsg.get(msg);
+        if (arr) arr.push(block);
+        else replyByMsg.set(msg, [block]);
+      }
+      for (const [msg, blocks] of replyByMsg) {
+        textMsgs.push({ ...msg, blocks });
+      }
+    }
+
     items.push({
-      kind: "proceduralCluster",
-      msgs: run,
+      kind: "turnGroup",
+      panelBlocks,
+      textMsgs,
       turnMeta,
       isStreamingTail,
       isTurnTail,
     });
-    run = [];
+    turnBlocks = [];
+    turnMeta = undefined;
+    lastTurnMsgIndex = -1;
+    hasOpenTurn = false;
   };
 
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
-    const isStreamingTail = isRunning && m.role === "assistant" && i === messages.length - 1;
-    const isTurnTail = m.role === "assistant" && isCompletedTurnTail(messages, i, isRunning);
 
-    if (isProceduralMessage(m)) {
-      run.push(m);
-    } else {
+    if (m.role === "user") {
+      // A user prompt ends any open turn and emits as its own single item.
       flush();
+      items.push({ kind: "single", msg: m, isStreamingTail: false, isTurnTail: false });
+      continue;
+    }
+
+    // Assistant message. A turn-opener is the FIRST assistant message of a
+    // turn — the only one that carries a turnMeta (the store stamps it at
+    // turn creation, both for live turns and completed ones). Its presence
+    // alone marks a new turn boundary; we don't check endedAt because a
+    // completed (historical) turn's opener also has endedAt set, and it must
+    // still group its turn's messages into one panel. Flush any open turn
+    // first.
+    const isOpener = !!m.turnMeta;
+    if (isOpener) {
+      flush();
+      hasOpenTurn = true;
+      turnMeta = m.turnMeta;
+    }
+
+    if (hasOpenTurn) {
+      lastTurnMsgIndex = i;
+      // Collect the full block timeline (procedural + display), preserving
+      // order and source message. The process/reply split happens at flush.
+      for (const b of m.blocks) {
+        turnBlocks.push({ block: b, msg: m });
+      }
+    } else {
+      // Assistant message with no open turn (e.g. legacy / orphaned data
+      // without turnMeta). Render as a standalone single item so it isn't
+      // lost — its own MessageBlocks will still fold any procedural run.
+      const isStreamingTail = isRunning && i === messages.length - 1;
+      const isTurnTail = isCompletedTurnTail(messages, i, isRunning);
       items.push({ kind: "single", msg: m, isStreamingTail, isTurnTail });
     }
   }
@@ -275,14 +372,12 @@ function groupMessagesForRender(
   // the user immediate "开始 · 用时" + spinner feedback right after send,
   // instead of a blank gap until the first token lands. The moment a real
   // assistant message is created (with its own turnMeta), the open-turn
-  // check below becomes false and this row stops rendering - the real
-  // TurnStatRow takes over with the same startedAt (the isNewTurn sites
-  // fall back to runningTurnStartedAt), so timing is continuous.
+  // check above consumes it into a turnGroup and this row stops rendering.
   if (isRunning && runningTurnStartedAt != null) {
-    const hasOpenTurn = messages.some(
+    const openTurnExists = messages.some(
       (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
     );
-    if (!hasOpenTurn) {
+    if (!openTurnExists) {
       items.push({
         kind: "pendingTurn",
         turnMeta: { startedAt: runningTurnStartedAt },
@@ -391,14 +486,11 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   const subagents: SubagentSnapshot[] = useSessionStore((s) =>
     s.subagentsBySession[sessionId] ?? EMPTY_SUBAGENTS,
   );
-  // Plan drawer: the plan text currently selected for viewing in the
-  // right-side drawer (null = drawer closed). Clicking a plan title in the
-  // activity popover opens this.
-  const drawerPlan = useSessionStore(
-    (s) => s.planDrawerPlanBySession[sessionId] ?? null,
-  );
+  // Plan view: clicking a plan card/title calls openPlanDrawer, which stores
+  // the plan text in planDrawerPlanBySession. CenterPane reads that and shows
+  // the PlanViewer in the editor column (not a drawer here). Closing is
+  // handled by the PlanViewer's close button in CenterPane.
   const openPlanDrawer = useSessionStore((s) => s.openPlanDrawer);
-  const closePlanDrawer = useSessionStore((s) => s.closePlanDrawer);
   // Project root absolute path for this session (used by the @ / add-context
   // file pickers). Resolved through the session's projectId → projects[].
   const projectPath = useSessionStore((s) => {
@@ -982,18 +1074,47 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           </div>
         );
       }
-      const blocks = flattenCluster(item.msgs);
+      // item.kind === "turnGroup"
+      const hasProcess = item.panelBlocks.length > 0;
+      // turnActive: the turn is still streaming AND the model hasn't started
+      // its final reply yet (no post-tool text). While active the TurnPanel
+      // auto-expands to show live progress — including any narration text the
+      // model weaves between tool calls. The moment the final reply text
+      // arrives (textMsgs becomes non-empty) the process recedes (panel
+      // auto-collapses) so the user's focus moves to the reply.
+      const turnActive = item.isStreamingTail && item.textMsgs.length === 0;
+      const onOpenPlan = (p: string) => openPlanDrawer(sessionId, p);
       return (
-        <div key={item.msgs[0].id} className="px-[var(--chat-gutter)]">
+        <div
+          key={item.textMsgs[0]?.id ?? `turn-${item.turnMeta?.startedAt ?? ""}`}
+          className="px-[var(--chat-gutter)]"
+        >
           <div className="mx-auto max-w-5xl">
-            {item.turnMeta && <TurnStatRow meta={item.turnMeta} />}
-            <ProceduralGroup
-              blocks={blocks}
-              beforeMap={beforeMap}
-              turnActive={item.isStreamingTail}
-              turnMeta={item.turnMeta}
-            />
-            {item.isStreamingTail && (
+            {hasProcess && (
+              <TurnPanel
+                blocks={item.panelBlocks}
+                beforeMap={beforeMap}
+                turnActive={turnActive}
+                turnMeta={item.turnMeta}
+                onOpenPlan={onOpenPlan}
+              />
+            )}
+            {/* Text replies (and plan / turn-files / error blocks) stay
+                visible below the panel. hideTurnStat suppresses the
+                per-message stat row since the TurnPanel header already
+                shows the turn's 开始/用时 — avoiding a duplicate timing line. */}
+            {item.textMsgs.map((msg, idx) => (
+              <MessageRow
+                key={msg.id}
+                msg={msg}
+                isStreamingTail={item.isStreamingTail && idx === item.textMsgs.length - 1}
+                isTurnTail={item.isTurnTail}
+                beforeMap={beforeMap}
+                hideTurnStat
+                onOpenPlan={onOpenPlan}
+              />
+            ))}
+            {turnActive && (
               <div className="mt-1.5 flex items-center gap-1.5">
                 <IconLoader2 size={12} className="animate-spin text-accent" />
               </div>
@@ -1002,7 +1123,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
         </div>
       );
     },
-    [beforeMap, sessionBusy, editingMessageId, lastUserMessageId, handleEditSubmit],
+    [beforeMap, sessionBusy, editingMessageId, lastUserMessageId, handleEditSubmit, sessionId],
   );
 
   // Footer content rendered after all message items. Both the plan card and
@@ -1040,7 +1161,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               keyExtractor={(item) => {
                 if (item.kind === "single") return item.msg.id;
                 if (item.kind === "pendingTurn") return "pending-turn";
-                return `cluster:${item.msgs[0].id}`;
+                return `turn:${item.textMsgs[0]?.id ?? item.turnMeta?.startedAt ?? ""}`;
               }}
               maintainScrollAtEnd
               // extraData drives LegendList's "should re-render all visible
@@ -1153,7 +1274,15 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               approval (which blocks everything). */}
           {pendingPlanApproval && !headApproval && (
             <PlanApprovalPrompt
+              sessionId={sessionId}
               plan={pendingPlanApproval.plan}
+              onEditPlan={() => {
+                // Open the plan tab in the editor column for Monaco editing.
+                // Seed it with the staged draft (if any prior edits exist) so
+                // re-opening the editor preserves in-progress edits.
+                const draft = useSessionStore.getState().planApprovalDraftBySession[sessionId];
+                openPlanDrawer(sessionId, draft ?? pendingPlanApproval.plan);
+              }}
               onApprove={(editedPlan) => {
                 void submitPlanApproval(pendingPlanApproval.requestId, true, editedPlan);
               }}
@@ -1303,32 +1432,17 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 <ComposerToolbar />
               </div>
               {sessionBusy ? (
-                <div className="flex items-center gap-1">
-                  {/* Queue button: parks the typed prompt to fire after the
-                      current turn ends (or immediately if the user then stops). */}
-                  <button
-                    onClick={handleEnqueue}
-                    disabled={!value.trim() && tags.length === 0}
-                    title="加入队列(当前任务结束后自动发送)"
-                    aria-label="加入队列"
-                    className={cn(
-                      "inline-flex items-center justify-center rounded-md bg-accent p-1.5 text-surface transition-all",
-                      "hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle",
-                    )}
-                  >
-                    <IconSend2 size={14} />
-                  </button>
-                  <button
-                    onClick={() => void interrupt()}
-                    title="停止生成"
-                    className={cn(
-                      "inline-flex items-center justify-center rounded-md bg-danger p-1.5 text-surface",
-                      "hover:brightness-110",
-                    )}
-                  >
-                    <IconPlayerStop size={14} />
-                  </button>
-                </div>
+                <button
+                  onClick={() => void interrupt()}
+                  title="停止生成"
+                  aria-label="停止生成"
+                  className={cn(
+                    "inline-flex items-center justify-center rounded-md bg-danger p-1.5 text-surface transition-all",
+                    "hover:brightness-110",
+                  )}
+                >
+                  <IconPlayerStop size={14} />
+                </button>
               ) : (
                 <button
                   onClick={handleSend}
@@ -1422,16 +1536,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
         />
       )}
 
-      {/* Plan drawer - right-side slide-out showing the full plan content.
-          Opened when the user clicks a plan title in the activity popover.
-          Absolute-positioned inside the ChatPane root so it overlays the
-          right strip of the chat area (message stream + composer). */}
-      {drawerPlan && (
-        <PlanDrawer
-          plan={drawerPlan}
-          onClose={() => closePlanDrawer(sessionId)}
-        />
-      )}
     </div>
   );
 }
@@ -1463,6 +1567,7 @@ const MessageRow = memo(function MessageRow({
   onSubmitEdit,
   onCancelEdit,
   onOpenPlan,
+  hideTurnStat,
 }: {
   msg: ChatMessage;
   isStreamingTail?: boolean;
@@ -1475,8 +1580,14 @@ const MessageRow = memo(function MessageRow({
   onStartEdit?: (msg: ChatMessage) => void;
   onSubmitEdit?: (msg: ChatMessage, newText: string) => void;
   onCancelEdit?: () => void;
-  /** Called when the user clicks an inline plan block - opens the PlanDrawer. */
+  /** Called when the user clicks an inline plan block - opens the plan in
+   *  the editor column via openPlanDrawer. */
   onOpenPlan?: (plan: string) => void;
+  /** Suppress the per-turn "开始 · 用时" stat row. Set when this row is a
+   *  textMsg inside a turnGroup — the TurnPanel header already shows the
+   *  turn's timing, so a second stat line above the reply would be
+   *  redundant. Defaults to false (standalone single items keep their own). */
+  hideTurnStat?: boolean;
 }) {
   const isUser = msg.role === "user";
   const copyText = useMemo(() => blocksToText(msg.blocks), [msg.blocks]);
@@ -1521,8 +1632,9 @@ const MessageRow = memo(function MessageRow({
     <div className={cn("group", isUser ? "mt-5 flex justify-end" : "mt-3")}>
       <div className={isUser ? "max-w-[85%]" : "w-full"}>
         {/* Per-turn stat row - only on the first assistant message of a
-            turn (the one carrying turnMeta). Sits above the content. */}
-        {!isUser && msg.turnMeta && <TurnStatRow meta={msg.turnMeta} />}
+            turn (the one carrying turnMeta), and not suppressed by a parent
+            TurnPanel (hideTurnStat). Sits above the content. */}
+        {!isUser && msg.turnMeta && !hideTurnStat && <TurnStatRow meta={msg.turnMeta} />}
         <div
           // User messages get a native tooltip showing the full send date-time
           // on hover (assistant messages have no createdAt tooltip - the

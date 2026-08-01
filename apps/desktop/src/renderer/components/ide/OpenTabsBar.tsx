@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   DndContext,
   PointerSensor,
@@ -14,15 +14,38 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { Menu } from "@base-ui/react/menu";
 import { basename } from "@renderer/lib/path.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { IconX } from "@renderer/lib/icons.js";
+import {
+  IconClipboard,
+  IconX,
+  IconMessage,
+  IconCopy,
+  IconStack2,
+} from "@renderer/lib/icons.js";
 import { TabBarChevronButton, TabBarOverflowMenu } from "../layout/TabBarChrome.js";
 
 /** Stable empty array so the selector never returns a fresh [] (Zustand
  *  Object.is rule — a new [] every render causes an infinite loop). */
 const EMPTY_OPEN_FILES: string[] = [];
+
+/** Synthetic key for the plan tab in the tabNodes registry. Used so the
+ *  scroll-into-view logic can target the plan tab the same way it targets
+ *  file tabs (which are keyed by their file path). */
+const PLAN_TAB_KEY = "__plan__";
+
+/** Shared menu styling constants - match FileTree's context menu for visual
+ *  consistency across all right-click menus in the app. */
+const MENU_POPUP_CLASS = cn(
+  "z-50 min-w-[180px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
+  "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+  "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+  "transition-[transform,opacity] duration-100",
+);
+const MENU_ITEM_CLASS =
+  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted";
 
 /**
  * Open-tabs bar — the horizontal strip of open files above the Monaco editor,
@@ -59,8 +82,31 @@ export function OpenTabsBar() {
   );
   const setActive = useSessionStore((s) => s.setIdeActiveFile);
   const close = useSessionStore((s) => s.closeFileInIde);
+  const closeOthers = useSessionStore((s) => s.closeOtherFilesInIde);
+  const closeAll = useSessionStore((s) => s.closeAllFilesInIde);
   const reorderFile = useSessionStore((s) => s.reorderIdeFile);
+  const clearIdeActiveFile = useSessionStore((s) => s.clearIdeActiveFile);
+  const enqueueChatFile = useSessionStore((s) => s.enqueueChatFile);
   const dirtySet = useDirtyFiles();
+
+  // Right-click context menu state: which file + cursor position. null =
+  // menu closed. Lifted to the bar level (single Menu) rather than per-tab
+  // to avoid conflicts with dnd-kit listeners on each tab.
+  const [ctxMenu, setCtxMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+
+  // Plan tab: shown alongside file tabs when a plan has been opened for
+  // viewing. The plan state is per-session (keyed by activeSessionId), while
+  // file tabs are per-project - they coexist in the same tab bar.
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const planText = useSessionStore(
+    (s) => (activeSessionId ? s.planDrawerPlanBySession[activeSessionId] ?? null : null),
+  );
+  const planTabActive = useSessionStore(
+    (s) => (activeSessionId ? s.planTabActiveBySession[activeSessionId] ?? false : false),
+  );
+  const setPlanTabActive = useSessionStore((s) => s.setPlanTabActive);
+  const closePlanDrawer = useSessionStore((s) => s.closePlanDrawer);
+  const hasPlanTab = !!planText;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // Maps a tab path → its DOM node, used to scrollIntoView the active tab.
@@ -87,16 +133,55 @@ export function OpenTabsBar() {
     return () => ro.disconnect();
   }, [openFiles.length, recomputeScrollState]);
 
-  // Scroll the active tab into view whenever it changes — so selecting a
-  // background tab or opening a new one never leaves it hidden off-screen.
+  // Scroll the active tab FULLY into view whenever it changes - so selecting
+  // a background tab or opening a new one never leaves its close button
+  // clipped. Works for BOTH file tabs (keyed by path) and the plan tab (keyed
+  // by PLAN_TAB_KEY). We use a double-rAF (two frames) to ensure the DOM has
+  // fully settled: the first frame lets React commit the new active-state
+  // classes (which change the tab width via min-w), the second frame lets the
+  // browser lay out at the new width before we measure. getBoundingClientRect
+  // gives viewport-accurate positions regardless of offsetParent nesting. A
+  // small right-edge buffer keeps the close button clear of the fade gradient.
+  const activeTabKey = planTabActive ? PLAN_TAB_KEY : activeFile;
   useEffect(() => {
-    if (!activeFile) return;
-    const node = tabNodes.current.get(activeFile);
-    node?.scrollIntoView({ inline: "nearest", behavior: "smooth", block: "nearest" });
-    // Recompute after the smooth scroll settles.
-    const t = setTimeout(recomputeScrollState, 260);
-    return () => clearTimeout(t);
-  }, [activeFile, openFiles.length, recomputeScrollState]);
+    if (!activeTabKey) return;
+    let raf1 = 0;
+    let raf2 = 0;
+    let t = 0;
+    const scrollTabFullyIntoView = () => {
+      const node = tabNodes.current.get(activeTabKey);
+      const el = scrollRef.current;
+      if (!node || !el) return;
+      const nodeRect = node.getBoundingClientRect();
+      const viewRect = el.getBoundingClientRect();
+      const BUFFER = 10; // px - keep the close button clear of the edge fade
+      if (nodeRect.left < viewRect.left + 1) {
+        // Left edge clipped - scroll left to reveal the whole tab.
+        el.scrollBy({ left: nodeRect.left - viewRect.left - 2, behavior: "smooth" });
+      } else if (nodeRect.right > viewRect.right - BUFFER) {
+        // Right edge (close button) clipped or under the fade - scroll right.
+        el.scrollBy({ left: nodeRect.right - viewRect.right + BUFFER, behavior: "smooth" });
+      }
+    };
+    const doScroll = () => {
+      scrollTabFullyIntoView();
+      // Re-check after the smooth scroll settles (~280ms) in case the layout
+      // shifted during the animation (e.g. a sibling tab width changed).
+      t = window.setTimeout(() => {
+        scrollTabFullyIntoView();
+        recomputeScrollState();
+      }, 280);
+    };
+    // Double rAF: frame 1 = React commit + class application, frame 2 = layout.
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(doScroll);
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      if (t) clearTimeout(t);
+    };
+  }, [activeTabKey, openFiles.length, hasPlanTab, recomputeScrollState]);
 
   const scrollByPage = useCallback((dir: 1 | -1) => {
     const el = scrollRef.current;
@@ -137,7 +222,7 @@ export function OpenTabsBar() {
     [openFiles, reorderFile],
   );
 
-  if (openFiles.length === 0) return null;
+  if (openFiles.length === 0 && !hasPlanTab) return null;
   const overflowing = canScrollLeft || canScrollRight;
 
   return (
@@ -174,18 +259,75 @@ export function OpenTabsBar() {
                 <SortableFileTab
                   key={path}
                   path={path}
-                  isActive={path === activeFile}
+                  isActive={path === activeFile && !planTabActive}
                   dirty={dirtySet.has(path)}
                   registerNode={(node) => {
                     if (node) tabNodes.current.set(path, node);
                     else tabNodes.current.delete(path);
                   }}
-                  onActivate={() => setActive(path)}
+                  onActivate={() => {
+                    setActive(path);
+                    // Deactivate the plan tab so the file tab takes focus.
+                    if (activeSessionId && planTabActive) {
+                      setPlanTabActive(activeSessionId, false);
+                    }
+                  }}
                   onClose={() => close(path)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setCtxMenu({ path, x: e.clientX, y: e.clientY });
+                  }}
                 />
               ))}
             </SortableContext>
           </DndContext>
+
+          {/* Plan tab - not draggable, sits after the file tabs. Clicking
+              activates the plan view (clears activeFile, sets planTabActive);
+              the × closes the plan tab entirely. */}
+          {hasPlanTab && (
+            <div
+              ref={(node) => {
+                if (node) tabNodes.current.set(PLAN_TAB_KEY, node);
+                else tabNodes.current.delete(PLAN_TAB_KEY);
+              }}
+              role="tab"
+              aria-selected={planTabActive}
+              title="查看计划内容"
+              onClick={() => {
+                if (activeSessionId) {
+                  clearIdeActiveFile();
+                  setPlanTabActive(activeSessionId, true);
+                }
+              }}
+              className={cn(
+                "group flex min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 text-[11px] transition-colors",
+                // Match the file-tab width rules: active plan tab gets a
+                // min-width so its label + close button are fully visible.
+                planTabActive ? "min-w-[100px] max-w-[200px]" : "max-w-[160px]",
+                planTabActive
+                  ? "border-accent bg-surface text-content"
+                  : "border-transparent text-content-muted hover:bg-surface-muted/50 hover:text-content",
+              )}
+            >
+              <IconClipboard size={12} className="shrink-0 text-accent" />
+              <span className="min-w-0 flex-1 truncate">计划</span>
+              <button
+                type="button"
+                aria-label="Close plan tab"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (activeSessionId) closePlanDrawer(activeSessionId);
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-0 transition-opacity hover:bg-surface-hover hover:text-content group-hover:opacity-100 data-[active=true]:opacity-100"
+                data-active={planTabActive}
+                title="关闭"
+              >
+                <IconX size={10} />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Edge fades — overlay only, pointer-events disabled so they never
@@ -212,16 +354,52 @@ export function OpenTabsBar() {
       {overflowing && (
         <TabBarOverflowMenu
           heading="Open files"
-          items={openFiles.map((path) => ({
-            key: path,
-            label: basename(path),
-            title: path,
-            active: path === activeFile,
-            dotClass: dirtySet.has(path) ? "bg-accent animate-pulse" : undefined,
-          }))}
-          onSelect={(path) => setActive(path)}
+          items={[
+            ...openFiles.map((path) => ({
+              key: path,
+              label: basename(path),
+              title: path,
+              active: path === activeFile && !planTabActive,
+              dotClass: dirtySet.has(path) ? "bg-accent animate-pulse" : undefined,
+            })),
+            ...(hasPlanTab ? [{
+              key: "__plan__",
+              label: "计划",
+              title: "查看计划内容",
+              active: planTabActive,
+              dotClass: undefined as string | undefined,
+            }] : []),
+          ]}
+          onSelect={(key) => {
+            if (key === "__plan__") {
+              if (activeSessionId) {
+                clearIdeActiveFile();
+                setPlanTabActive(activeSessionId, true);
+              }
+            } else {
+              setActive(key);
+              if (activeSessionId && planTabActive) {
+                setPlanTabActive(activeSessionId, false);
+              }
+            }
+          }}
         />
       )}
+
+      {/* Right-click context menu for file tabs. Controlled + cursor-anchored
+          (Pattern B from LeftBar) so it opens exactly at the cursor position,
+          and doesn't conflict with dnd-kit listeners on the tab. */}
+      <FileTabContextMenu
+        ctxMenu={ctxMenu}
+        onClose={() => setCtxMenu(null)}
+        actions={{
+          close: (p) => close(p),
+          closeOthers: (p) => closeOthers(p),
+          closeAll: () => closeAll(),
+          activate: (p) => setActive(p),
+          addToChat: (p) => enqueueChatFile(p),
+        }}
+      />
     </div>
   );
 }
@@ -233,6 +411,8 @@ interface SortableFileTabProps {
   registerNode: (node: HTMLDivElement | null) => void;
   onActivate: () => void;
   onClose: () => void;
+  /** Right-click handler: opens the context menu at the cursor. */
+  onContextMenu: (e: React.MouseEvent) => void;
 }
 
 function SortableFileTab({
@@ -242,6 +422,7 @@ function SortableFileTab({
   registerNode,
   onActivate,
   onClose,
+  onContextMenu,
 }: SortableFileTabProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: path });
@@ -295,20 +476,32 @@ function SortableFileTab({
         onActivate();
       }}
       onMouseDown={onMouseDown}
+      onContextMenu={onContextMenu}
       role="tab"
       aria-selected={isActive}
       title={path}
       className={cn(
-        "group flex max-w-[200px] min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 text-[11px] transition-colors",
+        "group flex min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 text-[11px] transition-colors",
+        // The active tab gets a min-width so its name + close button are
+        // always fully visible (not truncated by sibling tabs). Background
+        // tabs can shrink more aggressively since their close button is
+        // hover-only.
+        isActive ? "min-w-[140px] max-w-[240px]" : "max-w-[160px]",
         isActive
           ? "border-accent bg-surface text-content"
           : "border-transparent text-content-muted hover:bg-surface-muted/50 hover:text-content",
         isDragging && "shadow-lg",
       )}
     >
-      <span className="max-w-[120px] truncate font-mono">{basename(path)}</span>
-      {/* Dirty dot (unsaved) OR close button on hover — same rule as before:
-          an unsaved file can't be closed from the bar (would lose edits). */}
+      {/* File name - flex-1 + min-w-0 so it shrinks to make room for the
+          close button, and truncates with ellipsis when space is tight. No
+          fixed max-w: the tab's own max-w (or flex shrink) governs the cap. */}
+      <span className="min-w-0 flex-1 truncate font-mono">{basename(path)}</span>
+      {/* Dirty dot (unsaved) OR close button on hover - same rule as before:
+          an unsaved file can't be closed from the bar (would lose edits).
+          The close button is always visible on the active tab (data-active)
+          so the user can close it without hovering; background tabs show it
+          on hover. shrink-0 ensures it's never squeezed out by the name. */}
       {dirty ? (
         <span
           className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent animate-pulse"
@@ -320,7 +513,7 @@ function SortableFileTab({
           aria-label="Close tab"
           onClick={handleClose}
           onPointerDown={(e) => e.stopPropagation()}
-          className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-0 transition-opacity hover:bg-surface-hover hover:text-content group-hover:opacity-100 data-[active=true]:opacity-100"
+          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-0 transition-opacity hover:bg-surface-hover hover:text-content group-hover:opacity-100 data-[active=true]:opacity-100"
           data-active={isActive}
           title="关闭"
         >
@@ -328,6 +521,99 @@ function SortableFileTab({
         </button>
       )}
     </div>
+  );
+}
+
+/* ───────────────────────── context menu ───────────────────────── */
+
+/** Actions available from the file-tab context menu. Passed in from
+ *  OpenTabsBar so the menu component stays presentational. */
+interface FileTabContextMenuActions {
+  close: (path: string) => void;
+  closeOthers: (keepPath: string) => void;
+  closeAll: () => void;
+  activate: (path: string) => void;
+  addToChat: (path: string) => void;
+}
+
+/** Cursor-anchored right-click menu for editor file tabs. Renders a single
+ *  controlled `Menu.Root` (open iff ctxMenu is non-null) with a virtual anchor
+ *  positioned at the cursor coordinates. Items: close, close others, close
+ *  all, copy path, add to chat. Closes after any action. */
+function FileTabContextMenu({
+  ctxMenu,
+  onClose,
+  actions,
+}: {
+  ctxMenu: { path: string; x: number; y: number } | null;
+  onClose: () => void;
+  actions: FileTabContextMenuActions;
+}) {
+  // Virtual anchor at the cursor position so the menu opens exactly where the
+  // user right-clicked (base-ui's ContextMenu.Trigger anchors to the element
+  // edge, not the cursor).
+  const anchor = useMemo(() => {
+    const x = ctxMenu?.x ?? 0;
+    const y = ctxMenu?.y ?? 0;
+    return {
+      getBoundingClientRect: () => ({
+        x, y, top: y, left: x, bottom: y, right: x, width: 0, height: 0,
+        toJSON: () => ({}),
+      }),
+    };
+  }, [ctxMenu?.x, ctxMenu?.y]);
+
+  const path = ctxMenu?.path;
+
+  const handleCopyPath = () => {
+    if (path) navigator.clipboard.writeText(path).catch(() => {});
+  };
+
+  return (
+    <Menu.Root open={!!ctxMenu} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <Menu.Portal>
+        <Menu.Positioner anchor={anchor} side="bottom" align="start" sideOffset={4}>
+          <Menu.Popup className={MENU_POPUP_CLASS}>
+            <Menu.Item
+              onClick={() => { if (path) actions.close(path); }}
+              className={MENU_ITEM_CLASS}
+            >
+              <IconX size={14} className="shrink-0" />
+              <span>关闭</span>
+            </Menu.Item>
+            <Menu.Item
+              onClick={() => { if (path) actions.closeOthers(path); }}
+              className={MENU_ITEM_CLASS}
+            >
+              <IconX size={14} className="shrink-0 opacity-50" />
+              <span>关闭其他</span>
+            </Menu.Item>
+            <Menu.Item
+              onClick={() => actions.closeAll()}
+              className={MENU_ITEM_CLASS}
+            >
+              <IconStack2 size={14} className="shrink-0" />
+              <span>关闭全部</span>
+            </Menu.Item>
+            <Menu.Separator className="my-1 h-px bg-edge" />
+            <Menu.Item
+              onClick={() => { if (path) actions.addToChat(path); }}
+              className={MENU_ITEM_CLASS}
+            >
+              <IconMessage size={14} className="shrink-0" />
+              <span>加入聊天</span>
+            </Menu.Item>
+            <Menu.Item
+              onClick={handleCopyPath}
+              className={MENU_ITEM_CLASS}
+            >
+              <IconCopy size={14} className="shrink-0" />
+              <span>复制路径</span>
+            </Menu.Item>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   );
 }
 

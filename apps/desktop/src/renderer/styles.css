@@ -56,12 +56,23 @@
 }
 
 .dark {
+  /* Dark-mode base font weight. White text on a dark background undergoes
+   * optical thinning (subpixel anti-aliasing erodes stroke edges), so even
+   * at pure #fff the default weight 400 reads as low-contrast (~visually
+   * 300). 500 was tried and still felt thin, so the base is lifted to 600.
+   * The matching .dark .font-* ladder shift below keeps relative hierarchy
+   * intact. Light mode is untouched. */
+  font-weight: 600;
+
   --surface: 24 24 27; /* zinc-900 */
   --surface-muted: 39 39 42; /* zinc-800 */
   --surface-hover: 63 63 70; /* zinc-700 */
-  --content: 244 244 245; /* zinc-100 — light text on dark bg */
-  --content-muted: 161 161 170; /* zinc-400 */
-  --content-subtle: 82 82 91; /* zinc-600 */
+  --content: 255 255 255; /* pure white — max-contrast text on dark bg */
+  --content-muted: 212 212 216; /* zinc-300 — one stop brighter than
+                                 * light-mode's zinc-400 so secondary text
+                                 * stays readable on zinc-900 */
+  --content-subtle: 113 113 122; /* zinc-500 — lifted from zinc-600 so dim
+                                  * labels/metadata don't vanish on dark */
   --edge: 39 39 42; /* zinc-800 */
   --input-edge: 161 161 170; /* zinc-400 — brighter than --edge so the
                               * composer box outline stays visible on the
@@ -82,6 +93,30 @@
   --right-panel-font-size: 14px;
 
   color-scheme: dark;
+}
+
+/* ───────────── Dark-mode font-weight ladder shift ─────────────
+ * Pairs with `.dark { font-weight: 600 }` above. Because the base weight is
+ * lifted to 600, the standard Tailwind utilities (which set weight directly
+ * on the element) would otherwise sit AT or BELOW the body weight —
+ * .font-medium (500) would render thinner than body text, inverting the
+ * intended hierarchy. These rules add one .dark ancestor to win specificity
+ * and shift the whole ladder up one stop, preserving the relative emphasis:
+ *   body 600  ←  font-medium 600  ←  font-semibold 700  ←  font-bold 800.
+ * font-normal (400) is also lifted to 500 so the few "explicitly thin" spots
+ * (TerminalPanel / MessageBlocks / ContentTagChip) stay a notch lighter than
+ * body without dropping below comfortable dark-mode legibility. */
+.dark .font-normal {
+  font-weight: 500;
+}
+.dark .font-medium {
+  font-weight: 600;
+}
+.dark .font-semibold {
+  font-weight: 700;
+}
+.dark .font-bold {
+  font-weight: 800;
 }
 
 /* ───────────── Derived chat font sizes ─────────────

@@ -295,6 +295,11 @@ export class SdkMessageAdapter {
      *  instance lives across the turn (clear() is called by the runtime
      *  at the *next* turn's start, not here). */
     private snapshots: FileSnapshot,
+    /** The turn's AbortSignal. When aborted (user clicked stop), flushFinal()
+     *  marks still-running subagents as `killed` instead of `completed` so
+     *  they visually show "已终止" (stopped), reflecting the user's intent.
+     *  `null` only in tests that don't exercise interrupt. */
+    private abortSignal: AbortSignal | null = null,
   ) {
     this.state = {
       blockMessageIds: new Map(),
@@ -371,25 +376,32 @@ export class SdkMessageAdapter {
         phase: "cleared",
       } satisfies PlanUpdateEvent);
     }
-    // End-of-turn safety net: any FOREGROUND subagent still in "running" is
-    // finished (the parent turn is over — it was blocking on it). Mark those
-    // completed so the capsule stops animating. We only auto-complete — real
-    // task_updated events arriving earlier may have set failed/killed, which
-    // we preserve.
+    // End-of-turn safety net for still-running subagents.
+    //
+    // NORMAL turn end: any FOREGROUND subagent still "running" is finished
+    // (the parent turn was blocking on it). Mark those "completed" so the
+    // capsule stops animating. We only auto-complete - real task_updated
+    // events arriving earlier may have set failed/killed, which we preserve.
     //
     // BACKGROUND subagents (is_backgrounded=true) are different: the parent
     // agent did NOT block on them and they may still be running in the CLI
-    // after this turn's stream closes. We deliberately leave them in
-    // "running" so the renderer keeps the "busy" signal (locked composer,
-    // animated capsule) alive while they remain running. Their final
-    // task_updated may not arrive under single-turn query semantics, but
-    // preserving the running state here at least reflects "work was
-    // delegated and may still be in progress" instead of falsely showing
-    // completed.
+    // after this turn's stream closes. We deliberately leave them "running"
+    // so the renderer keeps the "busy" signal alive while they remain
+    // running.
+    //
+    // INTERRUPTED turn (user clicked stop): the abort signal is set. The user
+    // asked to STOP everything, so mark ALL still-running subagents
+    // (foreground AND background) as "killed" - they show "已终止" (stopped),
+    // reflecting the user's intent rather than falsely reporting "completed".
+    const aborted = !!this.abortSignal?.aborted;
     let subagentsChanged = false;
     for (const [id, s] of this.state.subagents) {
-      if (s.status === "running" && !s.isBackgrounded) {
-        this.state.subagents.set(id, { ...s, status: "completed", endedAt: s.endedAt ?? Date.now() });
+      if (s.status === "running" && (aborted || !s.isBackgrounded)) {
+        this.state.subagents.set(id, {
+          ...s,
+          status: aborted ? "killed" : "completed",
+          endedAt: s.endedAt ?? Date.now(),
+        });
         subagentsChanged = true;
       }
     }

@@ -297,6 +297,12 @@ export interface SessionState {
    *  NOT persisted - it's transient: cleared on turn.done / error / interrupt
    *  / session delete, alongside runningBySession. */
   runningTurnStartedAt: Record<string, number>;
+  /** Per-session "用户已手动停止"哨兵。interrupt() 置位,下一个真正启动的
+   *  turn (sendPrompt / editAndResendMessage) 清除。存活期间,迟到的
+   *  subagent.update / turn.done 不得复活 running 子代理或保留 running roster
+   *  -- 用户的中断是权威意图。NOT persisted - 仅内存态,随 deleteSession
+   *  一并清理。 */
+  interruptedBySession: Record<string, boolean>;
   claudeInstalled: boolean | null;
   /** Settings modal visibility (opened from the LeftBar ⚙ footer and the CLI-missing CTA). */
   settingsOpen: boolean;
@@ -350,11 +356,23 @@ export interface SessionState {
   /** Per-session plan-mode draft (empty = not in plan mode). Drives the
    *  Plan section of the activity capsule. */
   planBySession: Record<string, PlanDraft>;
-  /** Per-session plan text selected for viewing in the right-side plan
-   *  drawer. null = drawer closed. Set when the user clicks a plan title in
-   *  the activity popover; cleared on close / session reset. Ephemeral (not
-   *  persisted) - it's a transient view, not session state. */
+  /** Per-session plan text selected for viewing in the editor column as a
+   *  plan tab. null = no plan tab open. Set when the user clicks a plan title
+   *  in the activity popover or a plan card in the message stream; cleared on
+   *  close / session reset. Ephemeral (not persisted). */
   planDrawerPlanBySession: Record<string, string | null>;
+  /** Per-session flag: when true AND planDrawerPlanBySession[sid] is non-null,
+   *  the editor column shows the PlanViewer (plan tab is "active"). Switching
+   *  to a file tab sets this false (but keeps the plan text so the plan tab
+   *  can be re-activated). Ephemeral. */
+  planTabActiveBySession: Record<string, boolean>;
+  /** Per-session edited draft of a pending plan approval. When the user edits
+   *  the plan in the Monaco editor (opened from the approval prompt via
+   *  "编辑计划"), the edited text is staged here so PlanApprovalPrompt picks
+   *  it up as its draft - the user still confirms via 批准并执行, so editing
+   *  in the editor never auto-approves. Cleared on submitPlanApproval /
+   *  closePlanDrawer / session reset. Ephemeral (not persisted). */
+  planApprovalDraftBySession: Record<string, string>;
   /** Per-session subagent roster (REPLACE semantics from `subagent.update`).
    *  Empty array = no subagents active. Includes recently-completed ones
    *  until the next turn clears them. */
@@ -643,12 +661,26 @@ export interface SessionState {
    *  mode and the model can revise. On success the pending card clears;
    *  on IPC failure it stays so the user can retry. */
   submitPlanApproval: (requestId: string, approved: boolean, editedPlan?: string, reason?: string) => Promise<void>;
-  /** Open the right-side plan drawer for a session, showing the given plan
-   *  markdown. Called when the user clicks a plan title in the activity
+  /** Open a plan tab in the editor column for a session, showing the given
+   *  plan markdown. Activates the plan tab (planTabActive = true). Called
+   *  when the user clicks a plan card or a plan title in the activity
    *  popover. Ephemeral view state (not persisted). */
   openPlanDrawer: (sessionId: string, plan: string) => void;
-  /** Close the plan drawer for a session. */
+  /** Close the plan tab for a session (removes the plan text entirely). */
   closePlanDrawer: (sessionId: string) => void;
+  /** Set whether the plan tab is the active tab in the editor column. When
+   *  true the editor shows PlanViewer; when false it shows the active file.
+   *  Does NOT clear the plan text - the plan tab stays in the tab bar. */
+  setPlanTabActive: (sessionId: string, active: boolean) => void;
+  /** Stage an edited plan draft (from the Monaco editor) for a pending
+   *  ExitPlanMode approval. PlanApprovalPrompt reads this as its initial
+   *  draft so edits made in the editor flow back to the approval sheet
+   *  without auto-approving. */
+  setPlanApprovalDraft: (sessionId: string, draft: string) => void;
+  /** Update the plan text shown in the plan tab (PlanViewer). For historical
+   *  (already-frozen) plan edits this updates the local view model only - it
+   *  does NOT rewrite the frozen message-stream block or persist. */
+  updatePlanDrawerPlan: (sessionId: string, plan: string) => void;
   /** Rewind the most recent turn: restore all files Edit/Write touched
    *  to their pre-turn state. The IPC call returns the list of restored
    *  paths; we leave the UI state update to the `turn.rewound` event
@@ -707,8 +739,18 @@ export interface SessionState {
   /** Remove a file from the editor's open list; active shifts to the
    *  previous file (or next, or null). */
   closeFileInIde: (filePath: string) => void;
+  /** Close every open file EXCEPT the given one; the given file becomes
+   *  active. Used by the tab context menu's "关闭其他". */
+  closeOtherFilesInIde: (keepFilePath: string) => void;
+  /** Close all open files; active becomes null (editor column hides). Used
+   *  by the tab context menu's "关闭全部". */
+  closeAllFilesInIde: () => void;
   /** Set the active file (must already be open). */
   setIdeActiveFile: (filePath: string) => void;
+  /** Hide the editor column by clearing the active file, WITHOUT removing it
+   *  from the open-files list. The editor column disappears; re-opening any
+   *  file restores it. Used by the toolbar's editor-column toggle button. */
+  clearIdeActiveFile: () => void;
   /** Move an open file within the editor's tab strip (drag-to-reorder).
    *  No-op for out-of-range / same index. Persists. */
   reorderIdeFile: (from: number, to: number) => void;
@@ -1051,7 +1093,16 @@ function hydrateCapsule(
     }
     const subagentsBySession = { ...s.subagentsBySession };
     if (subagents && Array.isArray(subagents) && subagents.length > 0) {
-      subagentsBySession[sessionId] = subagents;
+      // If this session was manually interrupted, the persisted roster may
+      // still carry `running` subagents (the abort's flushFinal runs async
+      // and can race this hydration). Demote any `running` entry to `killed`
+      // so re-entering the thread can't resurrect "运行中" subagents the user
+      // already stopped. Mirrors the late-event guard in the subagent.update
+      // handler below.
+      const interrupted = !!s.interruptedBySession[sessionId];
+      subagentsBySession[sessionId] = interrupted
+        ? subagents.map((a) => (a.status === "running" ? { ...a, status: "killed" as const } : a))
+        : subagents;
     } else {
       delete subagentsBySession[sessionId];
     }
@@ -1729,6 +1780,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   messagesBySession: {},
   runningBySession: {},
   runningTurnStartedAt: {},
+  interruptedBySession: {},
   claudeInstalled: null,
   settingsOpen: false,
   commandPaletteOpen: false,
@@ -1753,6 +1805,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   todosBySession: {},
   planBySession: {},
   planDrawerPlanBySession: {},
+  planTabActiveBySession: {},
+  planApprovalDraftBySession: {},
   subagentsBySession: {},
   contextSnapshotBySession: {},
   usageHistoryBySession: {},
@@ -2487,6 +2541,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete runningBySession[id];
       const runningTurnStartedAt = { ...s.runningTurnStartedAt };
       delete runningTurnStartedAt[id];
+      const interruptedBySession = { ...s.interruptedBySession };
+      delete interruptedBySession[id];
       const todosBySession = { ...s.todosBySession };
       delete todosBySession[id];
       const planBySession = { ...s.planBySession };
@@ -2507,6 +2563,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete pendingPlanApprovalBySession[id];
       const planDrawerPlanBySession = { ...s.planDrawerPlanBySession };
       delete planDrawerPlanBySession[id];
+      const planTabActiveBySession = { ...s.planTabActiveBySession };
+      delete planTabActiveBySession[id];
+      const planApprovalDraftBySession = { ...s.planApprovalDraftBySession };
+      delete planApprovalDraftBySession[id];
       const pendingApprovals = s.pendingApprovals.filter((p) => p.sessionId !== id);
       // Drop the session from the tab strip too. If it was the active tab,
       // the focus jumps to the previous tab (openTab logic replicated
@@ -2533,6 +2593,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           usageHistoryBySession,
           pendingPlanApprovalBySession,
           planDrawerPlanBySession,
+          planTabActiveBySession,
+          planApprovalDraftBySession,
           pendingApprovals,
           openTabs,
         };
@@ -2560,6 +2622,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         messagesBySession,
         runningBySession,
         runningTurnStartedAt,
+        interruptedBySession,
         todosBySession,
         planBySession,
         subagentsBySession,
@@ -2570,6 +2633,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         usageHistoryBySession,
         pendingPlanApprovalBySession,
         planDrawerPlanBySession,
+        planTabActiveBySession,
+        planApprovalDraftBySession,
         pendingApprovals,
         openTabs: finalActive ? openTabs : openTabs,
         sessions: isActiveProject ? nextList : s.sessions,
@@ -2741,6 +2806,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // (stamped at the first delta/tool/plan) falls back to this value so
       // the timing is continuous across the handoff.
       runningTurnStartedAt: { ...s.runningTurnStartedAt, [sessionId]: Date.now() },
+      // A new turn supersedes any prior manual interrupt: clear the sentinel
+      // so subagent.update / turn.done events for THIS turn aren't filtered.
+      interruptedBySession: { ...s.interruptedBySession, [sessionId]: false },
     }));
 
 	    // 2. fire the turn; events stream back via ingestEvent. Ship the
@@ -2840,6 +2908,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       },
       runningBySession: { ...s.runningBySession, [sessionId]: true },
       runningTurnStartedAt: { ...s.runningTurnStartedAt, [sessionId]: Date.now() },
+      // A new turn supersedes any prior manual interrupt: clear the sentinel
+      // so subagent.update / turn.done events for THIS turn aren't filtered.
+      interruptedBySession: { ...s.interruptedBySession, [sessionId]: false },
       turnFilesBySession: { ...s.turnFilesBySession, [sessionId]: [] },
     }));
 
@@ -2894,10 +2965,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Also demote any still-running subagents (typically backgrounded tasks
     // whose lifecycle outlived the parent turn's stream) to "killed": the
     // user asked to STOP, so the composer must unlock even if the CLI hasn't
-    // fully torn those tasks down yet. Without this, `hasRunningSubagents`
-    // keeps the input box stuck in the running/stop state after the main
-    // agent already stopped. Real task_updated events (if any still arrive)
-    // supersede via the roster's REPLACE semantics.
+    // fully torn those tasks down yet.
+    //
+    // Set a per-session "interrupted" sentinel so the LATE events that the
+    // abort unwinds (flushFinal's subagent.update carrying still-running
+    // backgrounded subagents, and the follow-up turn.done) can't resurrect a
+    // running subagent / keep the roster alive and re-lock the composer. The
+    // sentinel survives until the next real turn starts (sendPrompt /
+    // editAndResendMessage clear it). Without it, switching tabs away and
+    // back re-mounts ChatPane, re-reads the running roster, and the send
+    // button flips back to "running".
     set((s) => {
       const runningTurnStartedAt = { ...s.runningTurnStartedAt };
       delete runningTurnStartedAt[sessionId];
@@ -2913,6 +2990,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runningBySession: { ...s.runningBySession, [sessionId]: false },
         runningTurnStartedAt,
+        interruptedBySession: { ...s.interruptedBySession, [sessionId]: true },
         subagentsBySession,
       };
     });
@@ -2978,7 +3056,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     // subagent.update: REPLACE semantics — swap the full roster.
     if (e.type === "subagent.update") {
-      set((s) => ({ subagentsBySession: { ...s.subagentsBySession, [sid]: e.agents } }));
+      // If the user has manually interrupted this session, the abort unwinds
+      // late subagent.update events (from flushFinal / in-flight
+      // flushSubagents) whose roster may still carry `running` backgrounded
+      // subagents. Those would resurrect a "killed" subagent and re-lock the
+      // composer. Filter any `running` entry down to `killed` so the user's
+      // stop intent wins. REPLACE semantics otherwise.
+      set((s) => {
+        const agents = s.interruptedBySession[sid]
+          ? e.agents.map((a) => (a.status === "running" ? { ...a, status: "killed" as const } : a))
+          : e.agents;
+        return { subagentsBySession: { ...s.subagentsBySession, [sid]: agents } };
+      });
       return;
     }
     // token-usage.updated: replace this session's context snapshot. The
@@ -3258,9 +3347,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             // whose lifecycle outlives this turn's stream), KEEP the roster so
             // the renderer can keep the composer locked + show the task as
             // in-progress. Only clear when nothing is running (the normal
-            // case — foreground tasks were force-completed by the adapter).
+            // case - foreground tasks were force-completed by the adapter).
+            // EXCEPTION: a user-interrupted session (sentinel set by
+            // interrupt()) must NOT keep a running roster - the abort's late
+            // subagent.update can leave a backgrounded subagent "running" and
+            // re-lock the composer after the user explicitly stopped. Clear it.
             const curAgents = s.subagentsBySession[sid] ?? [];
-            const hasRunning = curAgents.some((a) => a.status === "running");
+            const interrupted = !!s.interruptedBySession[sid];
+            const hasRunning = !interrupted && curAgents.some((a) => a.status === "running");
             // Append a finalized usage record for this turn (for the activity
             // capsule's consumption history). Derive the turn's start from the
             // first assistant message still carrying this turn's turnMeta.
@@ -3627,8 +3721,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // way we flip hasApproval off immediately so the badge doesn't linger.
         const list = s.messagesBySession[sessionId] ?? EMPTY_MESSAGES;
         const next = upsertLivePlanBlock(list, pending.plan, "ready", false, s.runningTurnStartedAt[sessionId] ?? Date.now());
+        // Clear the staged editor draft now that the decision is submitted -
+        // the draft only mattered while the approval was pending.
+        const { [sessionId]: _dropDraft, ...restDrafts } = s.planApprovalDraftBySession;
         return {
           pendingPlanApprovalBySession: rest,
+          planApprovalDraftBySession: restDrafts,
           messagesBySession: next === list
             ? s.messagesBySession
             : { ...s.messagesBySession, [sessionId]: next },
@@ -3642,12 +3740,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   openPlanDrawer: (sessionId, plan) => {
     set((s) => ({
       planDrawerPlanBySession: { ...s.planDrawerPlanBySession, [sessionId]: plan },
+      planTabActiveBySession: { ...s.planTabActiveBySession, [sessionId]: true },
     }));
   },
   closePlanDrawer: (sessionId) => {
     set((s) => {
-      const { [sessionId]: _drop, ...rest } = s.planDrawerPlanBySession;
-      return { planDrawerPlanBySession: rest };
+      const { [sessionId]: _dropPlan, ...restPlan } = s.planDrawerPlanBySession;
+      const { [sessionId]: _dropActive, ...restActive } = s.planTabActiveBySession;
+      const { [sessionId]: _dropDraft, ...restDrafts } = s.planApprovalDraftBySession;
+      // When closing the plan tab, restore the active file to the first open
+      // file (if any) so the editor column stays visible instead of hiding
+      // entirely. This mirrors closing a file tab that shifts to the next.
+      const pid = s.activeProjectId;
+      const openFiles = pid ? s.ideOpenFilesByProject[pid] ?? [] : [];
+      const restoreFile = openFiles.length > 0 ? openFiles[0] : null;
+      return {
+        planDrawerPlanBySession: restPlan,
+        planTabActiveBySession: restActive,
+        planApprovalDraftBySession: restDrafts,
+        ...(pid && restoreFile
+          ? { ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: restoreFile } }
+          : {}),
+      };
+    });
+  },
+  setPlanTabActive: (sessionId, active) => {
+    set((s) => ({
+      planTabActiveBySession: { ...s.planTabActiveBySession, [sessionId]: active },
+    }));
+  },
+  setPlanApprovalDraft: (sessionId, draft) => {
+    set((s) => ({
+      planApprovalDraftBySession: { ...s.planApprovalDraftBySession, [sessionId]: draft },
+    }));
+  },
+  updatePlanDrawerPlan: (sessionId, plan) => {
+    set((s) => {
+      // No-op if no plan tab is open for this session - avoids opening one
+      // as a side effect of a stray save.
+      if (s.planDrawerPlanBySession[sessionId] == null) return s;
+      return {
+        planDrawerPlanBySession: { ...s.planDrawerPlanBySession, [sessionId]: plan },
+      };
     });
   },
 
@@ -3871,11 +4005,56 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     persistIdeBuckets(get());
   },
 
+  closeOtherFilesInIde: (keepFilePath) => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    const prev = get().ideOpenFilesByProject[pid] ?? [];
+    if (!prev.includes(keepFilePath)) return;
+    const open = [keepFilePath];
+    // Clean up per-file view-mode + diff-before for the dropped paths.
+    const prevViewMode = get().ideFileViewModeByProject[pid] ?? {};
+    const viewMode: Record<string, FileViewMode> = {};
+    if (keepFilePath in prevViewMode) viewMode[keepFilePath] = prevViewMode[keepFilePath];
+    const prevDiffBefore = get().ideDiffBeforeByProject[pid] ?? {};
+    const diffBefore: Record<string, string> = {};
+    if (keepFilePath in prevDiffBefore) diffBefore[keepFilePath] = prevDiffBefore[keepFilePath];
+    set((s) => ({
+      ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
+      ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: keepFilePath },
+      ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
+      ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: diffBefore },
+    }));
+    persistIdeBuckets(get());
+  },
+
+  closeAllFilesInIde: () => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    const prev = get().ideOpenFilesByProject[pid] ?? [];
+    if (prev.length === 0) return;
+    set((s) => ({
+      ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: [] },
+      ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: null },
+      ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: {} },
+      ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: {} },
+    }));
+    persistIdeBuckets(get());
+  },
+
   setIdeActiveFile: (filePath) => {
     const pid = get().activeProjectId;
     if (!pid) return;
     set((s) => ({
       ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: filePath },
+    }));
+    persistIdeBuckets(get());
+  },
+
+  clearIdeActiveFile: () => {
+    const pid = get().activeProjectId;
+    if (!pid) return;
+    set((s) => ({
+      ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: null },
     }));
     persistIdeBuckets(get());
   },
