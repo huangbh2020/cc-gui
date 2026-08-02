@@ -38,6 +38,7 @@ export function PlanStreamBlock({
   phase,
   hasApproval,
   onOpenPlan,
+  projectPath,
 }: {
   plan: string;
   phase: PlanUpdateEvent["phase"];
@@ -48,6 +49,8 @@ export function PlanStreamBlock({
   /** Called when the user clicks the card - opens the right-side PlanDrawer
    *  with this plan's full markdown content. */
   onOpenPlan?: (plan: string) => void;
+  /** Project root for resolving file paths mentioned in the plan preview. */
+  projectPath?: string | null;
 }) {
   const isDrafting = phase === "drafting";
   const label = hasApproval ? "待审阅" : isDrafting ? "草拟中" : null;
@@ -88,7 +91,7 @@ export function PlanStreamBlock({
       {preview && (
         <div className="px-3 pb-2">
           <div className="prose-plan max-h-32 overflow-hidden text-[11px] leading-relaxed text-content-muted">
-            <Markdown>{preview}</Markdown>
+            <Markdown projectPath={projectPath}>{preview}</Markdown>
           </div>
         </div>
       )}

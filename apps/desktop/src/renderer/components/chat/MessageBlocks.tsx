@@ -22,6 +22,7 @@ import {
   IconWorldWww,
   IconWorldSearch,
   IconHelpCircle,
+  IconSparkles,
 } from "@renderer/lib/icons.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import type { Block, TurnMeta } from "@renderer/stores/sessionStore.js";
@@ -31,6 +32,7 @@ import { PlanStreamBlock } from "./PlanStreamBlock.js";
 import { TurnFilesCard } from "./TurnFilesCard.js";
 import { CurrentOpTicker } from "./CurrentOpTicker.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
+import { FileLink } from "./FileLink.js";
 
 /** Map of absolute file path → its pre-turn content. Built from the
  *  `turn.files` event payload so the Write tool card can diff the new
@@ -55,21 +57,26 @@ const MessageBlocks = memo(function MessageBlocks({
   beforeMap,
   isStreamingTail,
   onOpenPlan,
+  projectPath,
 }: {
   blocks: Block[];
   /** Pre-turn file contents for Write-tool diffing. Forwarded down to any
-   * procedural group rendered inside this message (the single-message
-   * path - the cluster path in ChatPane passes beforeMap directly to
-   * TurnPanel). */
+   *  procedural group rendered inside this message (the single-message
+   *  path - the cluster path in ChatPane passes beforeMap directly to
+   *  TurnPanel). */
   beforeMap?: BeforeContentMap;
   /** When true, this message is the last one in the stream and is still
-   * receiving content deltas. Instructs text blocks to skip expensive
-   * Markdown parsing and render as raw text until streaming settles. */
+   *  receiving content deltas. Instructs text blocks to skip expensive
+   *  Markdown parsing and render as raw text until streaming settles. */
   isStreamingTail?: boolean;
   /** Called when the user clicks an inline plan block - opens the right-side
    *  PlanDrawer with that plan's full markdown content. Forwarded to
    *  PlanStreamBlock via BlockView. */
   onOpenPlan?: (plan: string) => void;
+  /** Project root for resolving file paths mentioned in text / shown on tool
+   *  cards. Session-scoped (the owning project of this message's session), so
+   *  backgrounded tabs resolve correctly. */
+  projectPath?: string | null;
 }) {
   if (blocks.length === 0) return null;
   const segments = groupBlocks(blocks);
@@ -77,9 +84,9 @@ const MessageBlocks = memo(function MessageBlocks({
     <div className="space-y-2">
       {segments.map((seg, i) =>
         seg.kind === "single" ? (
-          <BlockView key={i} block={seg.block} defaultOpen={seg.defaultOpen} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} />
+          <BlockView key={i} block={seg.block} defaultOpen={seg.defaultOpen} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} projectPath={projectPath} />
         ) : (
-          <TurnPanel key={i} blocks={seg.blocks} beforeMap={beforeMap} turnActive={isStreamingTail} onOpenPlan={onOpenPlan} />
+          <TurnPanel key={i} blocks={seg.blocks} beforeMap={beforeMap} turnActive={isStreamingTail} onOpenPlan={onOpenPlan} projectPath={projectPath} />
         ),
       )}
     </div>
@@ -176,10 +183,12 @@ function ProceduralRunCard({
   blocks,
   beforeMap,
   defaultOpen = false,
+  projectPath,
 }: {
   blocks: ProceduralBlock[];
   beforeMap?: BeforeContentMap;
   defaultOpen?: boolean;
+  projectPath?: string | null;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
@@ -221,7 +230,7 @@ function ProceduralRunCard({
       {open && (
         <div className="space-y-1.5 py-1 pl-4">
           {blocks.map((b, i) => (
-            <BlockView key={i} block={b} beforeMap={beforeMap} />
+            <BlockView key={i} block={b} beforeMap={beforeMap} projectPath={projectPath} />
           ))}
         </div>
       )}
@@ -243,10 +252,12 @@ function PanelBody({
   blocks,
   beforeMap,
   onOpenPlan,
+  projectPath,
 }: {
   blocks: Block[];
   beforeMap?: BeforeContentMap;
   onOpenPlan?: (plan: string) => void;
+  projectPath?: string | null;
 }) {
   const segments = groupBlocks(blocks);
   return (
@@ -259,9 +270,10 @@ function PanelBody({
             defaultOpen={seg.defaultOpen}
             beforeMap={beforeMap}
             onOpenPlan={onOpenPlan}
+            projectPath={projectPath}
           />
         ) : (
-          <ProceduralRunCard key={i} blocks={seg.blocks} beforeMap={beforeMap} />
+          <ProceduralRunCard key={i} blocks={seg.blocks} beforeMap={beforeMap} projectPath={projectPath} />
         ),
       )}
     </div>
@@ -293,6 +305,7 @@ export function TurnPanel({
   turnActive = false,
   turnMeta,
   onOpenPlan,
+  projectPath,
 }: {
   /** The turn's process blocks in order: thinking, tool calls, and any text
    *  the model produced between tools. Text blocks are rendered inline inside
@@ -303,7 +316,7 @@ export function TurnPanel({
   beforeMap?: BeforeContentMap;
   /** Whether this turn is the live streaming tail. Drives the "current
    *  operation" ticker inside the expanded body (shows what the model is
-   *  doing right now). Does NOT control collapse — that's tied to
+   *  doing right now). Does NOT control collapse - that's tied to
    *  turnMeta.endedAt so the panel stays open for the whole run. */
   turnActive?: boolean;
   /** The turn's timing metadata. `startedAt` feeds the header clock and the
@@ -312,6 +325,8 @@ export function TurnPanel({
   turnMeta?: TurnMeta;
   /** Forwarded to BlockView for plan blocks (opens the PlanDrawer). */
   onOpenPlan?: (plan: string) => void;
+  /** Project root for file-path resolution, forwarded to PanelBody/BlockView. */
+  projectPath?: string | null;
 }) {
   const completed = turnMeta?.endedAt !== undefined;
   // The panel defaults OPEN while the turn is still running (so the user can
@@ -377,7 +392,7 @@ export function TurnPanel({
               <CurrentOpTicker op={runningTool} turnActive={turnActive} />
             </div>
           )}
-          <PanelBody blocks={blocks} beforeMap={beforeMap} onOpenPlan={onOpenPlan} />
+          <PanelBody blocks={blocks} beforeMap={beforeMap} onOpenPlan={onOpenPlan} projectPath={projectPath} />
         </div>
       )}
     </div>
@@ -390,6 +405,7 @@ const BlockView = memo(function BlockView({
   beforeMap,
   isStreamingTail,
   onOpenPlan,
+  projectPath,
 }: {
   block: Block;
   defaultOpen?: boolean;
@@ -401,6 +417,8 @@ const BlockView = memo(function BlockView({
   isStreamingTail?: boolean;
   /** Forwarded to PlanStreamBlock - opens the PlanDrawer on click. */
   onOpenPlan?: (plan: string) => void;
+  /** Project root for resolving file paths in text blocks and tool cards. */
+  projectPath?: string | null;
 }) {
   switch (block.kind) {
     case "text": {
@@ -420,7 +438,7 @@ const BlockView = memo(function BlockView({
       // already guarded without sacrificing live markdown formatting.
       // eslint-disable-next-line react-hooks/rules-of-hooks
       const deferredText = useDeferredValue(block.text);
-      return <Markdown>{deferredText}</Markdown>;
+      return <Markdown projectPath={projectPath}>{deferredText}</Markdown>;
     }
 
     case "thinking":
@@ -431,7 +449,7 @@ const BlockView = memo(function BlockView({
       );
 
     case "tool_use":
-      return <ToolCard block={block} defaultOpen={defaultOpen} beforeMap={beforeMap} />;
+      return <ToolCard block={block} defaultOpen={defaultOpen} beforeMap={beforeMap} projectPath={projectPath} />;
 
     case "attachment":
       return (
@@ -463,6 +481,7 @@ const BlockView = memo(function BlockView({
           phase={block.phase}
           hasApproval={block.hasApproval}
           onOpenPlan={onOpenPlan}
+          projectPath={projectPath}
         />
       );
 
@@ -480,16 +499,19 @@ const BlockView = memo(function BlockView({
 });
 export { BlockView };
 
-/** A pasted-content or file-reference attachment shown as a chip-like card in
- *  the message stream. Mirrors the composer's ContentTagChip visual language
- *  (accent theme color) so an attachment reads the same before and after
- *  sending.
+/** A pasted-content, file-reference, or skill attachment shown as a chip-like
+ *  card in the message stream. Mirrors the composer's ContentTagChip visual
+ *  language (accent theme color) so an attachment reads the same before and
+ *  after sending.
  *
  *  - Paste attachments (attachmentKind="paste" or undefined): clipboard icon,
  *    collapsed = one-line preview, expanded = full content + Copy button.
  *  - File attachments (attachmentKind="file"): file icon, collapsed = file
  *    name, expanded = the full file path (the `@path` reference sent to the
  *    model). No Copy button — a path is short enough to read inline.
+ *  - Skill attachments (attachmentKind="skill"): sparkles icon, static
+ *    non-expandable chip showing `/name`. No content to expand — a skill is
+ *    just an invocation command.
  *
  *  Unlike the composer's TagPopover (fixed-positioned to the chip), this
  *  expands inline — the message stream is the stable anchor here, so a
@@ -502,12 +524,31 @@ function AttachmentCard({
 }: {
   preview: string;
   content: string;
-  attachmentKind?: "paste" | "file";
+  attachmentKind?: "paste" | "file" | "skill";
   filePath?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const isFile = attachmentKind === "file";
+  const isSkill = attachmentKind === "skill";
+
+  // A skill attachment is an atomic, non-expandable block: it carries only a
+  // `/name` invocation, so there's nothing to expand. Render it as a static
+  // chip that mirrors the composer's skill chip, so it reads the same before
+  // and after sending.
+  if (isSkill) {
+    return (
+      <div className="[font-size:var(--chat-fs-sm)]">
+        <span
+          title={`Skill: ${content}`}
+          className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[11px] text-accent"
+        >
+          <IconSparkles size={12} className="opacity-80" />
+          <span className="max-w-[220px] truncate">{content}</span>
+        </span>
+      </div>
+    );
+  }
 
   const handleCopy = async () => {
     try {
@@ -582,10 +623,12 @@ function ToolCard({
   block,
   defaultOpen = false,
   beforeMap,
+  projectPath,
 }: {
   block: Extract<Block, { kind: "tool_use" }>;
   defaultOpen?: boolean;
   beforeMap?: BeforeContentMap;
+  projectPath?: string | null;
 }) {
   if (block.toolName === "Edit" && isEditInput(block.input)) {
     return (
@@ -596,6 +639,7 @@ function ToolCard({
         status={block.status}
         result={block.result}
         defaultOpen={defaultOpen}
+        projectPath={projectPath}
       />
     );
   }
@@ -608,10 +652,11 @@ function ToolCard({
         result={block.result}
         defaultOpen={defaultOpen}
         beforeMap={beforeMap}
+        projectPath={projectPath}
       />
     );
   }
-  return <GenericToolCard block={block} defaultOpen={defaultOpen} />;
+  return <GenericToolCard block={block} defaultOpen={defaultOpen} projectPath={projectPath} />;
 }
 
 /** Edit tool card: line-level diff view. Inside an expanded TurnPanel it
@@ -625,6 +670,7 @@ function EditToolCard({
   status,
   result,
   defaultOpen = false,
+  projectPath,
 }: {
   filePath: string;
   oldString: string;
@@ -632,6 +678,7 @@ function EditToolCard({
   status: "running" | "done" | "error";
   result?: unknown;
   defaultOpen?: boolean;
+  projectPath?: string | null;
 }) {
   // Seed the open state from defaultOpen so ToolGroup can force-open all
   // children on group expand. The card's own state still wins after
@@ -650,7 +697,11 @@ function EditToolCard({
         <StatusIcon status={status} />
         <ToolIcon name="Edit" className="text-content-subtle" />
         <span className="font-medium text-content-muted">Edit</span>
-        <span className="truncate font-mono text-content-subtle">{filePath}</span>
+        {/* FileLink is a span (role=button) that stops propagation on click,
+            so clicking the path opens the file without toggling the card. */}
+        <span className="truncate font-mono text-content-subtle">
+          <FileLink token={filePath} projectPath={projectPath} />
+        </span>
         <span className="ml-auto flex items-center gap-1.5 [font-size:var(--chat-fs-xxs)]">
           {adds > 0 && <span className="text-accent">+{adds}</span>}
           {dels > 0 && <span className="text-danger">−{dels}</span>}
@@ -684,6 +735,7 @@ function WriteToolCard({
   result,
   defaultOpen = false,
   beforeMap,
+  projectPath,
 }: {
   filePath: string;
   content: string;
@@ -691,6 +743,7 @@ function WriteToolCard({
   result?: unknown;
   defaultOpen?: boolean;
   beforeMap?: BeforeContentMap;
+  projectPath?: string | null;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const lineCount = content ? content.split("\n").length : 0;
@@ -725,7 +778,9 @@ function WriteToolCard({
         <StatusIcon status={status} />
         <ToolIcon name="Write" className="text-content-subtle" />
         <span className="font-medium text-content-muted">Write</span>
-        <span className="truncate font-mono text-content-subtle">{filePath}</span>
+        <span className="truncate font-mono text-content-subtle">
+          <FileLink token={filePath} projectPath={projectPath} />
+        </span>
         <span className="ml-auto flex items-center gap-1.5 [font-size:var(--chat-fs-xxs)]">
           {diff && adds > 0 && <span className="text-accent">+{adds}</span>}
           {diff && dels > 0 && <span className="text-danger">−{dels}</span>}
@@ -768,11 +823,17 @@ function WriteToolCard({
 function GenericToolCard({
   block,
   defaultOpen = false,
+  projectPath,
 }: {
   block: Extract<Block, { kind: "tool_use" }>;
   defaultOpen?: boolean;
+  projectPath?: string | null;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  // The Read tool (and any file-bearing tool routed here) shows a file_path in
+  // its summary line - linkify it. Bash/Grep/Glob summaries are commands or
+  // patterns, not paths, so they stay plain text.
+  const summaryToolPath = extractToolFilePath(block.toolName, block.input);
 
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
@@ -783,7 +844,13 @@ function GenericToolCard({
         <StatusIcon status={block.status} />
         <ToolIcon name={block.toolName} className="text-content-subtle" />
         <span className="font-medium text-content-muted">{block.toolName}</span>
-        <span className="truncate text-content-subtle">{toolSummary(block.toolName, block.input)}</span>
+        {summaryToolPath ? (
+          <span className="truncate font-mono text-content-subtle">
+            <FileLink token={summaryToolPath} projectPath={projectPath} />
+          </span>
+        ) : (
+          <span className="truncate text-content-subtle">{toolSummary(block.toolName, block.input)}</span>
+        )}
         <Chevron open={open} />
       </button>
       {open && (
@@ -981,4 +1048,20 @@ function isWriteInput(i: unknown): i is { file_path: string; content: string } {
   if (!i || typeof i !== "object") return false;
   const o = i as Record<string, unknown>;
   return typeof o.file_path === "string" && typeof o.content === "string";
+}
+
+/** Extract a `file_path` from a tool's input when the tool is one that
+ *  operates on a single file (Read / Write / Edit). Returns null for tools
+ *  whose summary is not a path (Bash, Grep, Glob, etc.) so GenericToolCard
+ *  renders their plain-text summary instead of a link. Reuses the Edit/Write
+ *  type guards and adds a plain Read fallback. */
+function extractToolFilePath(toolName: string, input: unknown): string | null {
+  if (toolName === "Edit" && isEditInput(input)) return input.file_path;
+  if (toolName === "Write" && isWriteInput(input)) return input.file_path;
+  if (toolName === "Read") {
+    if (!input || typeof input !== "object") return null;
+    const o = input as Record<string, unknown>;
+    return typeof o.file_path === "string" ? o.file_path : null;
+  }
+  return null;
 }

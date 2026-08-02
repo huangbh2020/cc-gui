@@ -6,9 +6,11 @@
  * the list over IPC and caches it; this module provides the type the cache
  * holds and the filter used by the picker.
  *
- * Selecting a skill inserts `/name ` into the textarea (replacing the trigger
- * token); the user then adds arguments and sends the turn. The SDK is started
- * with `skills: "all"`, so the agent recognizes and runs the skill.
+ * Selecting a skill creates an atomic skill tag (a chip above the textarea,
+ * replacing the `/query` trigger token); the user then types their message and
+ * sends the turn. The `/name` invocation is injected into the prompt by
+ * composePromptWithTags on Send. The SDK is started with `skills: "all"`, so
+ * the agent recognizes and runs the skill.
  *
  * This is intentionally separate from the Cmd/Ctrl+K app command palette
  * (`lib/commands.ts`) and from terminal custom commands.

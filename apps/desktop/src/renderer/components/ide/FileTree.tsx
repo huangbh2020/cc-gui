@@ -10,9 +10,7 @@ import { FILE_DRAG_MIME } from "@renderer/lib/contentTag.js";
 import {
   IconChevronRight,
   IconChevronDown,
-  IconFolder,
   IconFolderOpen,
-  IconFile,
   IconLoader2,
   IconExternalLink,
   IconClipboard,
@@ -20,6 +18,7 @@ import {
   IconMessage,
   IconCheck,
 } from "@renderer/lib/icons.js";
+import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 
 /** Stable empty array for the expanded-dirs selector (Zustand Object.is). */
 const EMPTY_EXPANDED: string[] = [];
@@ -339,9 +338,6 @@ function DirNode({
           <span className="shrink-0 text-content-subtle">
             {isOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
           </span>
-          <span className="shrink-0 text-content-subtle">
-            {isOpen ? <IconFolderOpen size={13} /> : <IconFolder size={13} />}
-          </span>
           <span className="truncate text-content-muted">{entry.name}</span>
           {loading && <IconLoader2 size={10} className="ml-auto animate-spin text-content-subtle" />}
         </ContextMenu.Trigger>
@@ -439,7 +435,7 @@ function FileNodeRow({
           {/* Spacer to align with directory chevrons. */}
           <span className="w-3 shrink-0" />
           <span className="shrink-0 text-content-subtle">
-            <IconFile size={13} />
+            <FileTypeIcon path={path} size={13} />
           </span>
           <span className="truncate">{name}</span>
           {/* Agent-touched dot: accent for created, danger-ish for modified. */}
@@ -456,7 +452,7 @@ function FileNodeRow({
         <ContextMenu.Portal>
           <ContextMenu.Positioner>
             <ContextMenu.Popup className={MENU_POPUP_CLASS}>
-              <MenuItem icon={<IconFile size={12} />} label="打开" onClick={onClick} />
+              <MenuItem icon={<FileTypeIcon path={path} size={12} />} label="打开" onClick={onClick} />
               <MenuItem
                 icon={<IconExternalLink size={12} />}
                 label="在资源管理器中显示"

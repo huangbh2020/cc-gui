@@ -28,6 +28,7 @@ import {
   IconSettings,
   IconSun,
   IconMoon,
+  IconSearch,
 } from "@renderer/lib/icons.js";
 
 /** Visual grouping label shown as a section header in the palette. */
@@ -106,6 +107,18 @@ const STATIC_COMMANDS: CommandDef[] = [
       s.setRightPanelTab("files");
       s.setRightOpen(true);
     },
+  },
+  {
+    id: "files.search",
+    label: "搜索文件",
+    group: "视图",
+    keywords: ["search", "files", "grep", "搜索", "查找", "文件"],
+    icon: IconSearch,
+    shortcutHint: "⌘⇧F",
+    perform: (s) => {
+      s.setSearchDialogOpen(true);
+    },
+    available: (s) => s.activeProjectId !== null,
   },
   {
     id: "view.right-panel.git",

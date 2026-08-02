@@ -8,6 +8,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { ideDirtyTracker } from "./OpenTabsBar.js";
 import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3 } from "@renderer/lib/icons.js";
+import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { Markdown } from "../chat/Markdown.js";
 // Side-effect import: configures Monaco's worker environment + local instance
 // (no CDN). Must run before any <Editor> mounts. See monacoSetup.ts.
@@ -99,7 +100,7 @@ export function FileEditor({
         {effectiveMode === "diff" && diffBefore != null ? (
           <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
         ) : effectiveMode === "preview" ? (
-          <MarkdownPreviewPane filePath={filePath} />
+          <MarkdownPreviewPane filePath={filePath} projectPath={projectPath} />
         ) : (
           <EditPane filePath={filePath} />
         )}
@@ -139,6 +140,7 @@ function EditorToolbar({
       : filePath;
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-surface-muted/40 px-2.5 py-1">
+      <FileTypeIcon path={filePath} size={14} className="shrink-0 text-content-subtle" />
       <span className="truncate font-mono text-[11px] text-content-muted" title={filePath}>
         {rel}
       </span>
@@ -340,7 +342,7 @@ function EditPane({ filePath }: { filePath: string }) {
  *  overrides `--chat-font-size` so the rendered text uses an editor-appropriate
  *  size instead of the chat bubble size. Read-only - no save / dirty tracking.
  *  Re-reads on filePath change. */
-function MarkdownPreviewPane({ filePath }: { filePath: string }) {
+function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; projectPath: string }) {
   const [content, setContent] = useState<string | null>(null); // null = loading
   useEffect(() => {
     let cancelled = false;
@@ -368,7 +370,7 @@ function MarkdownPreviewPane({ filePath }: { filePath: string }) {
   }
   return (
     <div className="h-full overflow-auto bg-surface px-6 py-4 [--chat-font-size:13px]">
-      <Markdown>{content}</Markdown>
+      <Markdown projectPath={projectPath}>{content}</Markdown>
     </div>
   );
 }

@@ -15,7 +15,7 @@
  * code-block HTML, which is produced from known content (the code text) and
  * is thus safe by construction.
  */
-import { memo, useState, useMemo } from "react";
+import { memo, useState, useMemo, createContext, useContext } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -24,6 +24,8 @@ import { cn } from "@renderer/lib/cn.js";
 import { IconCheck, IconCopy } from "@renderer/lib/icons.js";
 import type { Components } from "react-markdown";
 import { codeCacheKey, getCodeHtml, setCodeHtml } from "@renderer/lib/markdownCache.js";
+import { splitTextByPathTokens } from "@renderer/lib/fileLink.js";
+import { FileLink } from "./FileLink.js";
 
 // ── Lazy highlighter singleton ────────────────────────────────────────
 // Initialised on first encounter of a fenced code block; kept alive for the
@@ -154,18 +156,34 @@ function CopyButton({ text }: { text: string }) {
 
 // ── react-markdown component overrides ────────────────────────────────
 
-const components: Components = {
-  // Inline code — styled inline, no highlighting needed.
+/**
+ * Tracks whether the current text node is rendered inside a `code`/`pre`
+ * context. When true, the `text` override skips path linkification - code
+ * spans/blocks should render verbatim, not as clickable file links. Set by
+ * the `code`/`pre` overrides below via the provider wrapping their children.
+ */
+const CodeContext = createContext(false);
+const useInCode = () => useContext(CodeContext);
+
+/**
+ * Build the react-markdown component overrides. `projectPath` is threaded in
+ * so the `text` override can resolve relative file paths mentioned in prose
+ * against the owning project root. The overrides are memoised per
+ * `projectPath` value.
+ */
+function buildComponents(projectPath: string | null | undefined): Components {
+  return {
+  // Inline code - styled inline, no highlighting needed.
   code({ className, children }) {
     const isInline = !isFencedCode(className);
     if (isInline) {
       return (
         <code className="rounded bg-surface-muted/80 px-1 py-0.5 font-mono [font-size:var(--chat-fs-xs)] text-content">
-          {children}
+          <CodeContext.Provider value={true}>{children}</CodeContext.Provider>
         </code>
       );
     }
-    return <code className="font-mono">{children}</code>;
+    return <code className="font-mono"><CodeContext.Provider value={true}>{children}</CodeContext.Provider></code>;
   },
 
   // Fenced code block: highlighted via shiki with copy button + lang label.
@@ -285,9 +303,46 @@ const components: Components = {
   h3({ children }) {
     return <h3 className="mb-1 mt-2 font-semibold text-content [font-size:var(--chat-font-size)]">{children}</h3>;
   },
-};
+  // Text override: scan leaf text nodes for file-path-like tokens and wrap
+  // matches in a clickable <FileLink>. Skipped inside code spans/blocks via
+  // CodeContext. This is synchronous + allocation-light (a regex split) so it
+  // is safe to run on every text node during streaming; the expensive path
+  // (IPC resolution) happens only on click inside <FileLink>.
+  text({ children }) {
+    if (useInCode()) return <>{children}</>;
+    // react-markdown passes string children for text nodes; non-string
+    // (numbers/elements) pass through untouched.
+    if (typeof children !== "string") return <>{children}</>;
+    const segs = splitTextByPathTokens(children);
+    if (segs.length <= 1 && segs[0]?.kind === "text") return <>{children}</>;
+    return (
+      <>
+        {segs.map((seg, i) =>
+          seg.kind === "text" ? (
+            <span key={i}>{seg.text}</span>
+          ) : (
+            <FileLink key={i} token={seg.token} projectPath={projectPath} />
+          ),
+        )}
+      </>
+    );
+  },
+  };
+}
 
-export const Markdown = memo(function Markdown({ children }: { children: string }) {
+export const Markdown = memo(function Markdown({
+  children,
+  projectPath,
+}: {
+  children: string;
+  /** Project root used to resolve relative/incomplete file paths mentioned in
+   *  the prose. When omitted, only absolute paths under a known project can be
+   *  opened (safe degradation). For chat this should be the SESSION's owning
+   *  project path (not necessarily the active project) so backgrounded tabs
+   *  resolve correctly. */
+  projectPath?: string | null;
+}) {
+  const components = useMemo(() => buildComponents(projectPath), [projectPath]);
   return (
     <div
       className="text-content [font-size:var(--chat-font-size)] [line-height:var(--chat-line-height)] [font-weight:var(--chat-font-weight)] [&>p]:my-1.5 [&:first-child]:mt-0 [&:last-child]:mb-0"

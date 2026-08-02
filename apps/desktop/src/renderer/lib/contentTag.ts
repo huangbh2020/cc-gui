@@ -31,15 +31,21 @@ export const TAG_THRESHOLD_CHARS = 200;
  *  for ordinary multi-line pastes. */
 export const TAG_THRESHOLD_LINES = 3;
 
-/** Source of the tag: "paste" for bulky clipboard content, "file" for a
- *  file dragged in from the file tree (path reference only — no content
- *  is read). */
-export type ContentTagKind = "paste" | "file";
+/** Source of the tag:
+ *  - "paste": bulky clipboard content promoted to a chip.
+ *  - "file": a file dragged in from the file tree (path reference only — no
+ *    content is read).
+ *  - "skill": a skill selected from the `/` menu. Treated as an atomic,
+ *    undeletable-in-parts block: it lives as a chip in the composer and as a
+ *    standalone card in the message stream. Its `content` is `/name`, sent to
+ *    the SDK as a bare line so the agent recognizes the skill invocation. */
+export type ContentTagKind = "paste" | "file" | "skill";
 
 /** One content tag. `id` is the React key + removal handle. `content` is the
- *  full pasted text (for paste) or the `@path` reference string (for file),
- *  sent verbatim on Send. `preview` is for chip display. `filePath` is only
- *  set for file tags (the absolute path of the dragged file). */
+ *  payload sent verbatim on Send: the full pasted text (paste), an `@path`
+ *  reference string (file), or `/name` (skill). `preview` is for chip display.
+ *  `filePath` is only set for file tags (the absolute path of the dragged
+ *  file). */
 export interface ContentTag {
   id: string;
   kind: ContentTagKind;
@@ -104,6 +110,18 @@ export function makeFileTag(filePath: string): ContentTag {
   };
 }
 
+/** Build a ContentTag for a skill chosen from the `/` menu. Unlike file/paste
+ *  tags a skill carries no payload — its `content` is just `/name`, the form
+ *  the SDK recognizes as a skill invocation. `preview` is the skill name. */
+export function makeSkillTag(skill: { name: string }): ContentTag {
+  return {
+    id: cryptoRandomId(),
+    kind: "skill",
+    preview: skill.name,
+    content: `/${skill.name}`,
+  };
+}
+
 /** Browser-safe UUID. Electron renderer has `crypto.randomUUID()` in secure
  *  contexts; fall back to a Math.random-based id for any environment that
  *  doesn't (defensive — shouldn't happen in Electron, but keeps the code
@@ -124,6 +142,9 @@ function cryptoRandomId(): string {
  *  Tags are appended so the model can clearly see "user typed X, plus these
  *  N attachments". Order: typed text first, then tags in array order.
  *
+ *  - Skill tags become bare `/name` lines — the SDK recognizes this as a skill
+ *    invocation. They are NOT delimited: a bare command line is how skills are
+ *    triggered, and wrapping it in markers would break recognition.
  *  - Paste tags become delimited content blocks (full text wrapped in
  *    `--- pasted content N ---` / `--- end ---` markers).
  *  - File tags become bare `@path` reference lines (one per line) — the
@@ -134,14 +155,14 @@ export function composePromptWithTags(
 ): string {
   const textTrimmed = text.trim();
   if (tags.length === 0) return textTrimmed;
-  // Separate paste blocks (delimited) from file refs (bare @path lines).
-  // We preserve the original tag order by walking the array and emitting
-  // each tag's contribution in sequence, joined by blank lines.
+  // Walk the tags in array order, emitting each tag's contribution. Skill and
+  // file tags contribute a bare single line (`/name` / `@path`); paste tags
+  // contribute a delimited block. Parts are joined by blank lines.
   const parts: string[] = [];
   let pasteIdx = 0;
   for (const tag of tags) {
-    if (tag.kind === "file") {
-      parts.push(tag.content); // already "@path"
+    if (tag.kind === "skill" || tag.kind === "file") {
+      parts.push(tag.content); // "/name" or "@path"
     } else {
       pasteIdx += 1;
       parts.push(
@@ -168,4 +189,17 @@ export function appendUniqueFileTags(
     next.push(makeFileTag(p));
   }
   return next;
+}
+
+/** Append a skill tag, skipping when the same skill name is already present.
+ *  A skill is identified by its `/name` content, so we dedupe on that. */
+export function appendUniqueSkillTag(
+  prev: ReadonlyArray<ContentTag>,
+  skill: { name: string },
+): ContentTag[] {
+  const content = `/${skill.name}`;
+  if (prev.some((t) => t.kind === "skill" && t.content === content)) {
+    return [...prev];
+  }
+  return [...prev, makeSkillTag(skill)];
 }

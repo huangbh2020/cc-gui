@@ -58,7 +58,7 @@ export type Block =
   | { kind: "thinking"; text: string }
   | { kind: "tool_use"; toolCallId: string; toolName: string; input: unknown; status: "running" | "done" | "error"; result?: unknown }
   | { kind: "error"; message: string }
-  | { kind: "attachment"; preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }
+  | { kind: "attachment"; preview: string; content: string; attachmentKind?: "paste" | "file" | "skill"; filePath?: string }
   | {
       kind: "plan";
       /** Stable id for the in-turn live plan block — "current" while the turn
@@ -160,7 +160,7 @@ export interface QueuedPrompt {
 export interface PromptAttachment {
   preview: string;
   content: string;
-  attachmentKind?: "paste" | "file";
+  attachmentKind?: "paste" | "file" | "skill";
   filePath?: string;
 }
 
@@ -311,6 +311,10 @@ export interface SessionState {
    *  wired in App.tsx and by any in-app "command palette" affordance. The
    *  palette itself (CommandPalette.tsx) reads this to mount/unmount. */
   commandPaletteOpen: boolean;
+  /** File search dialog visibility. Opened from the Files panel search
+   *  button, the `files.search` command, or the Cmd/Ctrl+Shift+F hotkey.
+   *  The dialog (SearchDialog.tsx) reads this to mount/unmount. NOT persisted. */
+  searchDialogOpen: boolean;
   /** Left sidebar visibility. Lifted from App.tsx local state so the
    *  command palette (and other store consumers) can toggle it. Workspace-only
    *  — the settings view pins it open. NOT persisted (matches original behavior). */
@@ -577,7 +581,7 @@ export interface SessionState {
   renameSession: (id: string, title: string) => Promise<void>;
   sendPrompt: (
     prompt: string,
-    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }[],
+    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file" | "skill"; filePath?: string }[],
     /** Text shown in the user message's text block. Defaults to `prompt`,
      *  but when attachments are present the caller passes just the typed
      *  text (without the inlined attachment content) so the card + text
@@ -597,7 +601,7 @@ export interface SessionState {
     sessionId: string,
     messageId: string,
     newPrompt: string,
-    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }[],
+    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file" | "skill"; filePath?: string }[],
     displayText?: string,
   ) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -605,6 +609,10 @@ export interface SessionState {
   setSettingsOpen: (open: boolean) => void;
   /** Toggle the Cmd/Ctrl+K command palette open/closed. */
   setCommandPaletteOpen: (open: boolean) => void;
+  /** Toggle the file search dialog open/closed. Opened from the Files panel
+   *  search button, the `files.search` command, or the Cmd/Ctrl+Shift+F
+   *  global hotkey. NOT persisted (pure in-memory, like the command palette). */
+  setSearchDialogOpen: (open: boolean) => void;
   /** Toggle the left sidebar open/closed (direct set). NOT persisted. */
   setLeftOpen: (open: boolean) => void;
   /** Toggle the right IDE panel open/closed (direct set). NOT persisted. */
@@ -1794,6 +1802,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   claudeInstalled: null,
   settingsOpen: false,
   commandPaletteOpen: false,
+  // File search dialog (opened from the Files panel search button / Cmd+Shift+F
+  // / command palette). Pure in-memory, mirrors commandPaletteOpen.
+  searchDialogOpen: false,
   // Layout panel visibility — lifted from App.tsx useState. Defaults mirror
   // the original App.tsx useState initial values (left+right open, terminal
   // collapsed). NOT persisted.
@@ -3457,6 +3468,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setSettingsOpen: (open) => set({ settingsOpen: open }),
 
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  setSearchDialogOpen: (open) => set({ searchDialogOpen: open }),
   setLeftOpen: (open) => set({ leftOpen: open }),
   setRightOpen: (open) => set({ rightOpen: open }),
   setBottomTerminalOpen: (open) => set({ bottomTerminalOpen: open }),

@@ -22,9 +22,11 @@ import type { FileSearchEntry } from "@contracts/ipc";
 import {
   type ContentTag,
   appendUniqueFileTags,
+  appendUniqueSkillTag,
   composePromptWithTags,
   makeContentTag,
   makeFileTag,
+  makeSkillTag,
   shouldPromoteToTag,
   FILE_DRAG_MIME,
 } from "@renderer/lib/contentTag.js";
@@ -748,6 +750,13 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     [],
   );
 
+  /** Add a skill (from the `/` picker) as an atomic skill tag. Unlike
+   *  text-insertion, a skill tag can be removed only as a whole (via its ×
+   *  button) and survives as a standalone block in the message stream. */
+  const addSkillTag = useCallback((skill: SkillInfo) => {
+    setTags((prev) => appendUniqueSkillTag(prev, skill));
+  }, []);
+
   // Drain the per-session "add to chat" queue. Other surfaces (e.g. the
   // file-tree context menu) push absolute paths into the queue via
   // `enqueueChatFile`; this effect materializes them as file-reference tags
@@ -776,50 +785,17 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     [addFileTags, clearTriggerToken],
   );
 
-  /** Slash picker confirm: insert `/name ` in place of the trigger token and
-   *  keep focus so the user can add arguments / context before sending. The
-   *  SDK is started with `skills: "all"`, so sending `/name <args>` runs the
-   *  skill as a normal turn. */
+  /** Slash picker confirm: drop the `/query` token and add a skill tag (an
+   *  atomic chip above the textarea), mirroring how `@` mention picks become
+   *  file tags. The tag survives as a standalone block in the message stream
+   *  and is removable only as a whole via its × button. The full `/name`
+   *  invocation is injected into the prompt by composePromptWithTags on Send. */
   const handleSlashPick = useCallback(
     (skill: SkillInfo) => {
-      const start = triggerStartRef.current;
-      const el = textareaRef.current;
-      // Insert text = leading "/" + skill name + trailing space (so the user
-      // lands right where arguments go). A trailing space also terminates the
-      // trigger token, preventing the picker from re-arming on the next keystroke.
-      const insert = `/${skill.name} `;
-      if (start === null || !el) {
-        // No recorded trigger position (e.g. picker opened without typing "/");
-        // just append at the caret. Fallback path — normally unreachable.
-        const caret = el?.selectionStart ?? value.length;
-        const next = value.slice(0, caret) + insert + value.slice(caret);
-        setValue(next);
-        setPickerKind(null);
-        triggerStartRef.current = null;
-        requestAnimationFrame(() => {
-          const t = textareaRef.current;
-          if (!t) return;
-          const pos = caret + insert.length;
-          t.focus();
-          t.setSelectionRange(pos, pos);
-        });
-        return;
-      }
-      const caret = el.selectionStart ?? value.length;
-      // Replace [start, caret) — the `/query` token — with the resolved insert.
-      const next = value.slice(0, start) + insert + value.slice(caret);
-      setValue(next);
-      setPickerKind(null);
-      triggerStartRef.current = null;
-      const pos = start + insert.length;
-      requestAnimationFrame(() => {
-        const t = textareaRef.current;
-        if (!t) return;
-        t.focus();
-        t.setSelectionRange(pos, pos);
-      });
+      addSkillTag(skill);
+      clearTriggerToken();
     },
-    [value],
+    [addSkillTag, clearTriggerToken],
   );
 
   /** Open the attach picker from the bottom-left + button. */
@@ -1074,6 +1050,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 onSubmitEdit={handleEditSubmit}
                 onCancelEdit={() => setEditingMessageId(null)}
                 onOpenPlan={(p) => openPlanDrawer(sessionId, p)}
+                projectPath={projectPath}
               />
             </div>
           </div>
@@ -1119,12 +1096,13 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 turnActive={turnActive}
                 turnMeta={item.turnMeta}
                 onOpenPlan={onOpenPlan}
+                projectPath={projectPath}
               />
             )}
             {/* Text replies (and plan / turn-files / error blocks) stay
                 visible below the panel. hideTurnStat suppresses the
                 per-message stat row since the TurnPanel header already
-                shows the turn's 开始/用时 — avoiding a duplicate timing line. */}
+                shows the turn's 开始/用时 - avoiding a duplicate timing line. */}
             {item.textMsgs.map((msg, idx) => (
               <MessageRow
                 key={msg.id}
@@ -1134,6 +1112,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 beforeMap={beforeMap}
                 hideTurnStat
                 onOpenPlan={onOpenPlan}
+                projectPath={projectPath}
               />
             ))}
             {turnActive && (
@@ -1145,7 +1124,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
         </div>
       );
     },
-    [beforeMap, sessionBusy, editingMessageId, lastUserMessageId, handleEditSubmit, sessionId],
+    [beforeMap, sessionBusy, editingMessageId, lastUserMessageId, handleEditSubmit, sessionId, projectPath],
   );
 
   // Footer content rendered after all message items. Both the plan card and
@@ -1397,6 +1376,9 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                     tag={tag}
                     open={openTagId === tag.id}
                     onToggle={() => {
+                      // Skill tags have no content to preview — they're atomic
+                      // `/name` invocations, so the body click is a no-op.
+                      if (tag.kind === "skill") return;
                       setOpenTagId((cur) => {
                         if (cur === tag.id) return null; // closing
                         // Opening: capture this chip's box so the popover can
@@ -1591,6 +1573,7 @@ const MessageRow = memo(function MessageRow({
   onCancelEdit,
   onOpenPlan,
   hideTurnStat,
+  projectPath,
 }: {
   msg: ChatMessage;
   isStreamingTail?: boolean;
@@ -1607,10 +1590,14 @@ const MessageRow = memo(function MessageRow({
    *  the editor column via openPlanDrawer. */
   onOpenPlan?: (plan: string) => void;
   /** Suppress the per-turn "开始 · 用时" stat row. Set when this row is a
-   *  textMsg inside a turnGroup — the TurnPanel header already shows the
+   *  textMsg inside a turnGroup - the TurnPanel header already shows the
    *  turn's timing, so a second stat line above the reply would be
    *  redundant. Defaults to false (standalone single items keep their own). */
   hideTurnStat?: boolean;
+  /** Project root for resolving file paths mentioned in the message text /
+   *  shown on tool cards. Session-scoped so backgrounded tabs resolve to
+   *  their own project. */
+  projectPath?: string | null;
 }) {
   const isUser = msg.role === "user";
   const copyText = useMemo(() => blocksToText(msg.blocks), [msg.blocks]);
@@ -1669,7 +1656,7 @@ const MessageRow = memo(function MessageRow({
               : "text-content [font-size:var(--chat-font-size)]"
           }
         >
-          <MessageBlocks blocks={msg.blocks} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} />
+          <MessageBlocks blocks={msg.blocks} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} projectPath={projectPath} />
           {/* Streaming loader at the bottom of the content while this
               message is still receiving deltas. */}
           {isStreamingTail && (

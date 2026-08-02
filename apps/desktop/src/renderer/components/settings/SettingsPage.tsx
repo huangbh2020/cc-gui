@@ -97,7 +97,17 @@ export function SettingsPage() {
       }
       center={
         <div
-          className="min-h-0 flex-1 overflow-y-auto px-6 py-5"
+          // `h-full` (not flex-1) is required here: the parent in
+          // ThreePaneLayout is a non-flex `overflow-hidden` box, so `flex-1`
+          // was inert and this wrapper fell back to content height. That broke
+          // the height chain — child panels using `h-full` couldn't resolve,
+          // their internal `overflow-y-auto` regions never scrolled, and tall
+          // content (e.g. a long skill list) pushed the bottom "新建" button
+          // off-screen (clipped by the outer overflow-hidden). h-full makes this
+          // wrapper a definite height so child panels fill it and scroll
+          // internally; overflow-y-auto still lets non-internal-scroll panels
+          // (Git/Terminal/About) scroll when their content is tall.
+          className="min-h-0 h-full overflow-y-auto px-6 py-5"
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
           {active === "custom-models" && <CustomModelsPanel />}

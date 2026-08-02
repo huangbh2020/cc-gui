@@ -25,6 +25,7 @@ import {
   IconCopy,
   IconStack2,
 } from "@renderer/lib/icons.js";
+import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { TabBarChevronButton, TabBarOverflowMenu } from "../layout/TabBarChrome.js";
 
 /** Stable empty array so the selector never returns a fresh [] (Zustand
@@ -493,9 +494,10 @@ function SortableFileTab({
         isDragging && "shadow-lg",
       )}
     >
-      {/* File name - flex-1 + min-w-0 so it shrinks to make room for the
-          close button, and truncates with ellipsis when space is tight. No
-          fixed max-w: the tab's own max-w (or flex shrink) governs the cap. */}
+      {/* File-type icon + file name. The icon is shrink-0 so it survives
+          truncation; the name flex-1 + min-w-0 truncates with ellipsis when
+          space is tight. The tab's own max-w governs the overall cap. */}
+      <FileTypeIcon path={path} size={13} className="shrink-0 text-content-subtle" />
       <span className="min-w-0 flex-1 truncate font-mono">{basename(path)}</span>
       {/* Dirty dot (unsaved) OR close button on hover - same rule as before:
           an unsaved file can't be closed from the bar (would lose edits).

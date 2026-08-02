@@ -631,8 +631,12 @@ function NewSkillForm({
           value={form.body}
           onChange={(e) => update("body", e.target.value)}
           spellCheck={false}
+          // w-full (not flex-1): Field wraps this in a block <label>, not a flex
+          // container, so flex-1 was a no-op and the textarea fell back to its
+          // default cols=20 width. w-full makes it fill the row like the other
+          // inputs (which use inputCls with w-full).
           className={cn(
-            "min-h-[200px] flex-1 resize-y rounded border border-edge bg-surface px-2.5 py-2 font-mono text-[0.7857em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none",
+            "min-h-[200px] w-full resize-y rounded border border-edge bg-surface px-2.5 py-2 font-mono text-[0.7857em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none",
           )}
           placeholder={"# Skill 标题\n\n说明这个 skill 的使用方式、步骤、注意事项…"}
         />

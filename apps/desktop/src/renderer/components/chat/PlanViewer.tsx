@@ -80,6 +80,22 @@ export function PlanViewer({
   const updatePlanDrawerPlan = useSessionStore((s) => s.updatePlanDrawerPlan);
   const setPlanApprovalDraft = useSessionStore((s) => s.setPlanApprovalDraft);
 
+  // Project root for the session owning this plan (so file paths mentioned in
+  // the plan markdown resolve to the right project). Resolved via sessionId ->
+  // projectId -> projects[].path, mirroring ChatPane's session-keyed lookup.
+  const projectPath = useSessionStore((s) => {
+    let pid: string | undefined;
+    for (const list of Object.values(s.sessionsByProject)) {
+      const found = list?.find((x) => x.id === sessionId);
+      if (found) {
+        pid = found.projectId;
+        break;
+      }
+    }
+    if (!pid) return null;
+    return s.projects.find((p) => p.id === pid)?.path ?? null;
+  });
+
   const theme = useMonacoTheme();
 
   // Keep the draft in sync with the upstream plan while NOT editing - so a
@@ -278,7 +294,7 @@ export function PlanViewer({
         ) : (
           <div className="h-full overflow-auto p-4">
             <div className="prose-plan text-[13px] leading-relaxed text-content">
-              <Markdown>{plan || "_(计划为空)_"}</Markdown>
+              <Markdown projectPath={projectPath}>{plan || "_(计划为空)_"}</Markdown>
             </div>
           </div>
         )}

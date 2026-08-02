@@ -9,6 +9,7 @@ import { RightPanel } from "./components/layout/RightPanel.js";
 import { BottomTerminalBar } from "./components/layout/BottomTerminalBar.js";
 import { SettingsPage } from "./components/settings/SettingsPage.js";
 import { CommandPalette } from "./components/layout/CommandPalette.js";
+import { SearchDialog } from "./components/ide/SearchDialog.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
 import { useSessionStore } from "./stores/sessionStore.js";
 import { useTheme } from "./lib/theme.js";
@@ -75,6 +76,8 @@ export function App() {
 
   /** Command palette (Cmd/Ctrl+K) visibility. */
   const setCommandPaletteOpen = useSessionStore((s) => s.setCommandPaletteOpen);
+  /** File search dialog (Cmd/Ctrl+Shift+F) visibility. */
+  const setSearchDialogOpen = useSessionStore((s) => s.setSearchDialogOpen);
 
   // Auto-open the right panel when something requests its attention (the
   // 审查 button on a turn-files card, or any openFileInIde call). The store
@@ -84,24 +87,33 @@ export function App() {
     if (ideFocusNonce > 0) setRightOpen(true);
   }, [ideFocusNonce, setRightOpen]);
 
-  // Global Cmd/Ctrl+K toggles the command palette. Registered on window so it
-  // works in both workspace and settings views. preventDefault stops the
-  // browser's default Cmd+K behavior (focus search bar / caret browsing).
+  // Global Cmd/Ctrl+K toggles the command palette, and Cmd/Ctrl+Shift+F opens
+  // the file search dialog. Registered on window so they work in both the
+  // workspace and settings views. preventDefault stops the browser's default
+  // behavior (Cmd+K -> focus search bar / caret browsing; Cmd+Shift+F -> page
+  // search on some platforms).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setCommandPaletteOpen(!useSessionStore.getState().commandPaletteOpen);
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSearchDialogOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setCommandPaletteOpen]);
+  }, [setCommandPaletteOpen, setSearchDialogOpen]);
 
   return (
     <div className="flex h-full w-full flex-col bg-surface text-content">
-      {/* Command palette overlays both workspace and settings views. */}
+      {/* Command palette + file search dialog overlay both workspace and
+          settings views. */}
       <CommandPalette />
+      <SearchDialog />
       {settingsOpen ? (
         <>
           <Titlebar
