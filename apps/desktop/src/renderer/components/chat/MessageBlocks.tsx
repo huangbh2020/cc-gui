@@ -9,7 +9,6 @@ import {
   IconClipboard,
   IconFile,
   IconCopy,
-  IconLoader2,
   // Tool-kind icons (left glyph of each action card).
   IconBulb,
   IconTerminal,
@@ -236,20 +235,18 @@ function ProceduralRunCard({
  *  inline blocks. This restores the pre-aggregation grouping behavior inside
  *  the panel.
  *
- *  `live`: while the turn is still streaming, procedural run cards start
- *  EXPANDED so the user can watch the model work (the whole point of keeping
- *  the panel open before the final reply). Once the turn settles they collapse
- *  to their one-line summary so the history reads compactly. */
+ *  Procedural run cards ALWAYS default to collapsed — the outer TurnPanel is
+ *  what opens/closes with the turn lifecycle; the run cards inside are a
+ *  drill-down the user opens on demand. `live` is unused for collapse but
+ *  kept on the signature for callers that pass it. */
 function PanelBody({
   blocks,
   beforeMap,
   onOpenPlan,
-  live = false,
 }: {
   blocks: Block[];
   beforeMap?: BeforeContentMap;
   onOpenPlan?: (plan: string) => void;
-  live?: boolean;
 }) {
   const segments = groupBlocks(blocks);
   return (
@@ -264,7 +261,7 @@ function PanelBody({
             onOpenPlan={onOpenPlan}
           />
         ) : (
-          <ProceduralRunCard key={i} blocks={seg.blocks} beforeMap={beforeMap} defaultOpen={live} />
+          <ProceduralRunCard key={i} blocks={seg.blocks} beforeMap={beforeMap} />
         ),
       )}
     </div>
@@ -279,15 +276,17 @@ function PanelBody({
  *  inside this panel, while only the final reply text (after the last tool)
  *  renders outside it and stays visible.
  *
- *  - `turnActive`: the turn is still streaming and the model hasn't moved to
- *    its final reply yet (the live tail is still a procedural block). While
- *    active the panel auto-expands so the user can watch the model work; the
- *    header shows a spinner and a live-ticking duration.
- *  - Once `turnActive` turns false (the model started its final reply, or the
- *    turn ended), the panel auto-collapses so the process recedes and the
- *    user's focus moves to the reply. The user can still re-expand by clicking.
- *  - `turnMeta.endedAt` frozen → header shows a checkmark and a frozen
- *    duration. An error anywhere in the turn shows an X instead. */
+ *  - While the turn is still running (turnMeta.endedAt undefined) the panel
+ *    stays OPEN by default so the user can watch the model work; the header
+ *    shows a live-ticking duration. `turnActive` additionally drives the live
+ *    "current operation" ticker inside the expanded body.
+ *  - The panel collapses ONLY when the turn ends (turn.done sets endedAt) —
+ *    not when the final reply text starts streaming. The user can still
+ *    re-expand by clicking.
+ *  - The header is minimal: just "开始 HH:MM:SS · 用时 NN.Ns". An error
+ *    anywhere in the turn surfaces an X before the label; running/completed
+ *    states show no glyph (the live duration and the chevron already carry
+ *    the state). */
 export function TurnPanel({
   blocks,
   beforeMap,
@@ -302,9 +301,10 @@ export function TurnPanel({
   /** Pre-turn file contents for Write-tool diffing. Forwarded down to
    *  WriteToolCard so diffs render inside the expanded panel. */
   beforeMap?: BeforeContentMap;
-  /** Whether this turn is still streaming and hasn't reached its final reply
-   *  yet — the panel auto-expands to show live progress. Clears once the model
-   *  starts its final text reply (or the turn ends), collapsing the process. */
+  /** Whether this turn is the live streaming tail. Drives the "current
+   *  operation" ticker inside the expanded body (shows what the model is
+   *  doing right now). Does NOT control collapse — that's tied to
+   *  turnMeta.endedAt so the panel stays open for the whole run. */
   turnActive?: boolean;
   /** The turn's timing metadata. `startedAt` feeds the header clock and the
    *  duration baseline; `endedAt` undefined means the turn is still running
@@ -313,17 +313,21 @@ export function TurnPanel({
   /** Forwarded to BlockView for plan blocks (opens the PlanDrawer). */
   onOpenPlan?: (plan: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const completed = turnMeta?.endedAt !== undefined;
+  // The panel defaults OPEN while the turn is still running (so the user can
+  // watch the model work) and collapses only once the turn ends (turn.done).
+  // Initial state follows `completed` so a freshly mounted running turn opens
+  // and a historical (ended) turn starts collapsed. LegendList recycles/
+  // remounts items during streaming — re-mounting a running turn re-seeds
+  // open=true, keeping the process visible throughout.
+  const [open, setOpen] = useState(!completed);
 
-  // Auto-collapse the moment the panel stops being "active" — i.e. once a
-  // text reply has appeared (turnActive flips to false) OR the turn formally
-  // ended. The user can still re-expand by clicking. This fires on the
-  // true→false transition of `turnActive`, and on undefined→defined of
-  // endedAt (handled together since either means "process is done").
+  // Collapse exactly when the turn ends (the false→true transition of
+  // `completed`), regardless of whether the final reply text has started
+  // streaming. The user can still re-expand by clicking.
   useEffect(() => {
-    if (!turnActive) setOpen(false);
-  }, [turnActive]);
+    if (completed) setOpen(false);
+  }, [completed]);
 
   const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
 
@@ -356,13 +360,7 @@ export function TurnPanel({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-1.5 border-b border-edge py-1.5 text-left text-[13px] text-content-subtle hover:bg-surface-muted/40"
       >
-        {completed && aggregateStatus !== "error" ? (
-          <IconCheck size={12} className="shrink-0 text-accent" />
-        ) : aggregateStatus === "error" ? (
-          <IconX size={12} className="shrink-0 text-danger" />
-        ) : live ? (
-          <IconLoader2 size={12} className="shrink-0 animate-spin text-accent" />
-        ) : null}
+        {aggregateStatus === "error" && <IconX size={12} className="shrink-0 text-danger" />}
         <span>开始</span>
         <span className="tabular-nums text-content-muted">{fmtClock(startedAt)}</span>
         <span className="text-content-subtle">·</span>
@@ -379,7 +377,7 @@ export function TurnPanel({
               <CurrentOpTicker op={runningTool} turnActive={turnActive} />
             </div>
           )}
-          <PanelBody blocks={blocks} beforeMap={beforeMap} onOpenPlan={onOpenPlan} live={live} />
+          <PanelBody blocks={blocks} beforeMap={beforeMap} onOpenPlan={onOpenPlan} />
         </div>
       )}
     </div>

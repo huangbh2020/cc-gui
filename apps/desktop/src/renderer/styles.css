@@ -14,14 +14,23 @@
  * symptom. So: keep these in sync with tailwind.config.js token names.
  */
 :root {
+  /* Base font weight lifted for perceived contrast. On a light background
+   * weight-400 gray text can read as low-contrast (anti-aliasing softens
+   * thin strokes), so the inherited base is set to 500. The matching
+   * .font-* ladder shift below keeps relative hierarchy intact. The dark
+   * scope (.dark) overrides this with its own heavier 600 base. */
+  font-weight: 500;
+
   /* surfaces (backgrounds) */
   --surface: 255 255 255; /* white */
   --surface-muted: 244 244 245; /* zinc-100 */
   --surface-hover: 228 228 231; /* zinc-200 */
-  /* content (text) */
-  --content: 24 24 27; /* zinc-900 */
-  --content-muted: 82 82 91; /* zinc-600 */
-  --content-subtle: 161 161 170; /* zinc-400 */
+  /* content (text) — deepened one stop for stronger contrast on white.
+   * Body stays at near-black zinc-950; muted/subtle drop one shade each
+   * (zinc-700 / zinc-500) so secondary text doesn't wash out. */
+  --content: 9 9 11; /* zinc-950 — near-black, max contrast on white */
+  --content-muted: 63 63 70; /* zinc-700 — one stop darker than before */
+  --content-subtle: 113 113 122; /* zinc-500 — one stop darker than before */
   /* borders */
   --edge: 228 228 231; /* zinc-200 */
   /* Brighter border for the composer input box. In dark mode the regular
@@ -60,8 +69,10 @@
    * optical thinning (subpixel anti-aliasing erodes stroke edges), so even
    * at pure #fff the default weight 400 reads as low-contrast (~visually
    * 300). 500 was tried and still felt thin, so the base is lifted to 600.
-   * The matching .dark .font-* ladder shift below keeps relative hierarchy
-   * intact. Light mode is untouched. */
+   * The matching .dark .font-* ladder shift (in the font-weight ladder
+   * section below) keeps relative hierarchy intact. Light mode uses a 500
+   * base via :root (lighter than dark because black-on-white needs less
+   * help), with its own ladder shift in the same section. */
   font-weight: 600;
 
   --surface: 24 24 27; /* zinc-900 */
@@ -95,17 +106,42 @@
   color-scheme: dark;
 }
 
-/* ───────────── Dark-mode font-weight ladder shift ─────────────
- * Pairs with `.dark { font-weight: 600 }` above. Because the base weight is
- * lifted to 600, the standard Tailwind utilities (which set weight directly
- * on the element) would otherwise sit AT or BELOW the body weight —
- * .font-medium (500) would render thinner than body text, inverting the
- * intended hierarchy. These rules add one .dark ancestor to win specificity
- * and shift the whole ladder up one stop, preserving the relative emphasis:
- *   body 600  ←  font-medium 600  ←  font-semibold 700  ←  font-bold 800.
- * font-normal (400) is also lifted to 500 so the few "explicitly thin" spots
+/* ───────────── Font-weight ladder shifts ─────────────
+ * Pairs with the base font-weight set on :root (500, light) and .dark (600,
+ * dark). Because the inherited base is lifted, the raw Tailwind utilities
+ * (which set weight directly on the element) would otherwise sit AT or BELOW
+ * body weight — .font-medium (500) would render thinner than body text,
+ * inverting the hierarchy. Both blocks add one ancestor to win specificity
+ * over the utility classes and shift the whole ladder up one stop.
+ *
+ * ORDER MATTERS: the light block is declared first, the dark block second.
+ * .dark and html have equal specificity (0,1,1) when .dark is on <html>, so
+ * source order decides — the dark block wins only because it comes last.
+ * Keep the dark block below the light block.
+ *
+ * Resulting ladders:
+ *   light: body 500  ←  font-normal 500  ←  font-medium 600  ←  font-semibold 700  ←  font-bold 800
+ *   dark:  body 600  ←  font-normal 500  ←  font-medium 600  ←  font-semibold 700  ←  font-bold 800
+ * font-normal is lifted only to 500 in both so the few "explicitly thin" spots
  * (TerminalPanel / MessageBlocks / ContentTagChip) stay a notch lighter than
- * body without dropping below comfortable dark-mode legibility. */
+ * body without dropping below comfortable legibility. */
+
+/* Light-mode ladder (:root base = 500). */
+html .font-normal {
+  font-weight: 500;
+}
+html .font-medium {
+  font-weight: 600;
+}
+html .font-semibold {
+  font-weight: 700;
+}
+html .font-bold {
+  font-weight: 800;
+}
+
+/* Dark-mode ladder (.dark base = 600). Must come AFTER the light block so it
+ * wins the equal-specificity tie when <html> carries .dark. */
 .dark .font-normal {
   font-weight: 500;
 }
