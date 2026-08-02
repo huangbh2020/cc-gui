@@ -153,12 +153,26 @@ async function scanSkillsRoot(rootDir: string, source: SkillSource, into: Map<st
     return; // not present / unreadable — nothing to list
   }
   for (const entry of entries) {
-    // Only directories (incl. symlinked ones) are skills. We resolve the
-    // symlinked target so a missing/unreadable link is skipped cleanly.
-    if (!entry.isDirectory()) continue;
+    // A skill is a directory — either a real one or a symlink pointing at a
+    // directory (common when linking a shared checkout like gstack). NOTE:
+    // `Dirent.isDirectory()` does NOT follow symlinks — a symlink reports
+    // `isSymbolicLink()` and `isDirectory() === false` — so we must accept
+    // both and let `safeRealPath` resolve the link to its real target. Plain
+    // files (e.g. .DS_Store) fall through and are skipped.
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const skillPath = path.join(root, entry.name);
     const real = await safeRealPath(skillPath);
     if (!real) continue;
+    // Guard against symlinks that resolve to a file (not a dir) — `realpath`
+    // follows the link, so a stat on the resolved path tells the true type.
+    let isDir = true;
+    try {
+      const st = await fs.stat(real);
+      isDir = st.isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) continue;
 
     const md = await readTextHead(path.join(real, "SKILL.md"));
     const fm = md ? parseSkillFrontmatter(md) : {};

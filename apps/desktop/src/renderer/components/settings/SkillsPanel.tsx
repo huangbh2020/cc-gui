@@ -5,7 +5,8 @@
  *
  * ## Layout
  *
- *   ┌─ left (skill list) ────┬─ right (editor / empty) ──────────┐
+ *   ┌─ project selector (dropdown) ──────────────────────────────┐
+ *   ├─ left (skill list) ────┬─ right (editor / empty) ──────────┤
  *   │ • pdf       [全局]      │  — editing existing —             │
  *   │ • docx      [全局]      │  full SKILL.md source textarea    │
  *   │ • my-skill  [项目]      │  — or creating new —              │
@@ -13,16 +14,25 @@
  *   └─────────────────────────┤  scope (全局/项目) · 保存/删除     │
  *                              └───────────────────────────────────┘
  *
- * Selecting a skill on the left loads its full SKILL.md into the editor on
- * the right (raw text — frontmatter + body together). "+ 新建 Skill" opens a
- * structured form (name / description / body) that is assembled into a
- * minimal frontmatter on save. After any mutation the store's `skills` cache
- * is reloaded so the composer `/` menu stays in sync.
+ * ## Which project's skills are shown?
  *
- * Mirrors CustomModelsPanel's two-column shape, selection state pattern, and
- * ConfirmDialog-based delete confirmation.
+ * The panel keeps its OWN "managed project" selection (independent of the
+ * workspace's activeProjectId) so switching it here never disturbs the
+ * workspace. It defaults to the workspace's active project on first open.
+ * The project dropdown at the top makes this explicit: project-scoped skills
+ * always belong to whichever project is shown there, removing the prior
+ * ambiguity where the binding was invisible.
+ *
+ * The skill list is fetched locally (panelSkills state) keyed on the managed
+ * project, NOT read from the session store's `skills` cache — that cache is
+ * bound to activeProjectId for the composer `/` menu and must not be coupled
+ * to this panel's selection. After a mutation, if the managed project happens
+ * to be the active one, we also reload the store cache so the `/` menu stays
+ * in sync.
+ *
+ * Mirrors CustomModelsPanel's two-column shape and ConfirmDialog-based delete.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
@@ -39,6 +49,11 @@ import type { SkillInfo, SkillSource } from "@contracts/ipc";
  *  editor disables the name field for existing skills, so this only gates the
  *  "create new" form. */
 const SKILL_NAME_RE = /^[A-Za-z0-9_-]+$/;
+
+/** Stable empty array so the panel's skill list has a stable reference when
+ *  empty (avoiding needless re-renders — same convention as sessionStore's
+ *  EMPTY_SKILLS). */
+const EMPTY_PANEL_SKILLS: SkillInfo[] = [];
 
 /** Selection in the left list. `"new"` = the transient create entry;
  *  `null` = empty state. An existing skill is keyed by `${source}:${name}`
@@ -65,23 +80,58 @@ function skillKey(s: { source: SkillSource; name: string }): string {
 }
 
 export function SkillsPanel() {
-  const skills = useSessionStore((s) => s.skills);
-  const reloadSkills = useSessionStore((s) => s.reloadSkills);
-  const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const projects = useSessionStore((s) => s.projects);
+  const activeProjectId = useSessionStore((s) => s.activeProjectId);
+  const reloadSkills = useSessionStore((s) => s.reloadSkills);
 
-  // The active project's path — needed for the skills IPC (identity check on
-  // main). Null when no project is open: only global skills are manageable.
-  const projectPath = activeProjectId
-    ? projects.find((p) => p.id === activeProjectId)?.path ?? null
-    : null;
+  // Projects available to manage (non-archived). The dropdown lists these.
+  const managedProjects = projects.filter((p) => !p.archived);
 
-  // Make sure the skill list is populated even if the user opened Settings
-  // before ever sending a message (reloadSkills is also called on init/project
-  // switch, but this covers the "fresh open → straight to settings" path).
+  // The panel's OWN project selection — independent of the workspace's
+  // activeProjectId so switching here never disturbs the workspace. Defaults
+  // to the active project; falls back to the first available project.
+  const [managedProjectId, setManagedProjectId] = useState<string | null>(
+    () => activeProjectId ?? managedProjects[0]?.id ?? null,
+  );
+  const managedProject = managedProjects.find((p) => p.id === managedProjectId);
+  const projectPath = managedProject?.path ?? null;
+
+  // Panel-local skill list, keyed on the managed project. NOT the store
+  // cache (that one follows activeProjectId for the composer `/` menu).
+  const [panelSkills, setPanelSkills] = useState<SkillInfo[]>(EMPTY_PANEL_SKILLS);
+  const [listLoading, setListLoading] = useState(false);
+
+  const loadPanelSkills = useCallback(async () => {
+    if (!projectPath) {
+      setPanelSkills(EMPTY_PANEL_SKILLS);
+      return;
+    }
+    setListLoading(true);
+    try {
+      const { skills } = await api.skills.list({ projectPath });
+      setPanelSkills(skills.length ? skills : EMPTY_PANEL_SKILLS);
+    } catch (err) {
+      console.error("SkillsPanel load failed:", err);
+      setPanelSkills(EMPTY_PANEL_SKILLS);
+    } finally {
+      setListLoading(false);
+    }
+  }, [projectPath]);
+
+  // (Re)load whenever the managed project changes, and once on mount.
   useEffect(() => {
-    void reloadSkills();
-  }, [reloadSkills]);
+    void loadPanelSkills();
+  }, [loadPanelSkills]);
+
+  // Switching the managed project also clears any in-flight edit/create, so a
+  // stale editor for project A doesn't linger while the list shows project B.
+  const switchProject = (id: string) => {
+    setManagedProjectId(id);
+    setSelected(null);
+    setEditContent(null);
+    setNewForm(null);
+    setError(null);
+  };
 
   const [selected, setSelected] = useState<Selection>(null);
   // Full SKILL.md source for the skill being edited (null = not loaded yet).
@@ -92,6 +142,16 @@ export function SkillsPanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<SkillInfo | null>(null);
+
+  // After any mutation: refresh this panel's list, and (if the managed project
+  // is also the workspace's active one) refresh the store cache so the
+  // composer `/` menu sees the change too.
+  const refreshAfterMutation = useCallback(async () => {
+    await loadPanelSkills();
+    if (managedProjectId && managedProjectId === activeProjectId) {
+      void reloadSkills();
+    }
+  }, [loadPanelSkills, managedProjectId, activeProjectId, reloadSkills]);
 
   const startEdit = async (skill: SkillInfo) => {
     if (!projectPath) return;
@@ -117,8 +177,8 @@ export function SkillsPanel() {
 
   const startAdd = () => {
     setSelected({ kind: "new" });
-    // Default scope: project when one is active (most user-created skills are
-    // project-scoped), else global.
+    // Default scope: project when one is being managed (most user-created
+    // skills are project-scoped), else global.
     setNewForm({ ...emptyNewForm(), scope: projectPath ? "project" : "global" });
     setEditContent(null);
     setError(null);
@@ -147,7 +207,7 @@ export function SkillsPanel() {
         setError(res.error ?? "保存失败");
         return;
       }
-      await reloadSkills();
+      await refreshAfterMutation();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -184,7 +244,7 @@ export function SkillsPanel() {
         setError(res.error ?? "保存失败");
         return;
       }
-      await reloadSkills();
+      await refreshAfterMutation();
       // Land on the freshly created skill so the user sees it selected.
       setSelected({ kind: "skill", source: newForm.scope, name });
       setNewForm(null);
@@ -217,7 +277,7 @@ export function SkillsPanel() {
       ) {
         cancel();
       }
-      await reloadSkills();
+      await refreshAfterMutation();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -231,9 +291,37 @@ export function SkillsPanel() {
         <h2 className="font-semibold text-content">Skills</h2>
         <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
           管理 Claude 技能(SKILL.md)。全局 skill 存放在 <code className="rounded bg-surface-muted px-0.5">~/.claude/skills</code>,
-          所有项目可用;项目 skill 存放在当前项目的 <code className="rounded bg-surface-muted px-0.5">.claude/skills</code>,
-          仅当前项目可用(同名时覆盖全局)。在输入框输入 <code className="rounded bg-surface-muted px-0.5">/</code> 即可调用。
+          所有项目可用;项目 skill 存放在所选项目的 <code className="rounded bg-surface-muted px-0.5">.claude/skills</code>,
+          仅该项目可用(同名时覆盖全局)。在输入框输入 <code className="rounded bg-surface-muted px-0.5">/</code> 即可调用。
         </p>
+      </div>
+
+      {/* ───────── Project selector ───────── */}
+      {/* Makes the project binding explicit: project-scoped skills always
+          belong to the project shown here. Switching it reloads the list and
+          does NOT touch the workspace's active project. */}
+      <div className="mb-3 flex items-center gap-2">
+        <span className="text-[0.7857em] font-medium text-content-muted">项目:</span>
+        {managedProjects.length > 0 ? (
+          <select
+            value={managedProjectId ?? ""}
+            onChange={(e) => switchProject(e.target.value)}
+            className={cn(
+              "min-w-0 flex-1 rounded border border-edge bg-surface px-2 py-1 text-[0.7857em] text-content focus:border-accent focus:outline-none",
+            )}
+          >
+            {managedProjects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+                {p.id === activeProjectId ? " (当前工作区)" : ""}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-[0.7857em] text-content-subtle">
+            暂无项目 — 仅可管理全局 skill
+          </span>
+        )}
       </div>
 
       <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr] gap-4">
@@ -241,7 +329,9 @@ export function SkillsPanel() {
         <aside className="flex min-h-0 flex-col rounded-md border border-edge bg-surface/40">
           <div className="flex items-center justify-between px-2.5 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
             <span>Skills</span>
-            <span className="tabular-nums">{skills.length}</span>
+            <span className="tabular-nums">
+              {listLoading ? "…" : panelSkills.length}
+            </span>
           </div>
           <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
             {selected?.kind === "new" && (
@@ -250,7 +340,7 @@ export function SkillsPanel() {
                 新建 Skill
               </div>
             )}
-            {skills.map((s) => {
+            {panelSkills.map((s) => {
               const isActive =
                 selected?.kind === "skill" &&
                 selected.source === s.source &&
@@ -291,7 +381,7 @@ export function SkillsPanel() {
                 </button>
               );
             })}
-            {skills.length === 0 && selected?.kind !== "new" && (
+            {panelSkills.length === 0 && !listLoading && selected?.kind !== "new" && (
               <div className="px-2 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
                 未发现 skill。
                 <br />
@@ -304,7 +394,7 @@ export function SkillsPanel() {
               variant="ghost"
               size="sm"
               onClick={startAdd}
-              disabled={selected?.kind === "new"}
+              disabled={selected?.kind === "new" || !projectPath}
               className="w-full justify-center gap-1"
             >
               <IconPlus size={12} />
@@ -338,7 +428,7 @@ export function SkillsPanel() {
               onSave={() => void saveEdit()}
               onCancel={cancel}
               onDelete={() => {
-                const target = skills.find(
+                const target = panelSkills.find(
                   (s) => s.source === selected.source && s.name === selected.name,
                 );
                 if (target) setPendingDelete(target);
@@ -356,8 +446,10 @@ export function SkillsPanel() {
         description={
           <>
             确认删除「{pendingDelete?.name}」(
-            {pendingDelete?.source === "project" ? "项目级" : "全局"})?此操作不可撤销,
-            skill 目录及其下所有文件将被移除。
+            {pendingDelete?.source === "project"
+              ? `项目级 · ${managedProject?.name ?? ""}`
+              : "全局"}
+            )?此操作不可撤销,skill 目录及其下所有文件将被移除。
           </>
         }
         confirmText="删除"
@@ -516,7 +608,7 @@ function NewSkillForm({
         />
       </Field>
 
-      {/* Scope selector: project only available when a project is open. */}
+      {/* Scope selector: project only available when a project is selected. */}
       <Field label="存放范围">
         <div className="flex gap-1.5">
           <ScopeRadio
@@ -528,7 +620,7 @@ function NewSkillForm({
             label="当前项目 (.claude/skills)"
             active={form.scope === "project"}
             disabled={!hasProject}
-            title={!hasProject ? "未打开项目" : undefined}
+            title={!hasProject ? "未选择项目" : undefined}
             onClick={() => hasProject && update("scope", "project")}
           />
         </div>
@@ -593,11 +685,11 @@ function ScopeRadio({
 }
 
 const inputCls =
-  "min-w-0 flex-1 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
+  "min-w-0 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="mb-2 block">
+    <label className="mb-2 block w-full">
       <span className="mb-0.5 block text-[0.7857em] font-medium text-content-muted">{label}</span>
       {children}
     </label>
