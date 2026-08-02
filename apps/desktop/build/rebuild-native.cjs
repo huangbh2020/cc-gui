@@ -7,7 +7,7 @@
  * `electron-builder install-app-deps` rebuilds for process.arch (the runner's
  * native arch) only. That was fine when CI built a single arch, but now macOS
  * builds split into arm64 and x64 jobs, each on a matching runner. The x64
- * job (macos-13) needs node-pty rebuilt for x64; the arm64 job
+ * job (macos-15-intel) needs node-pty rebuilt for x64; the arm64 job
  * (macos-latest) for arm64. On a matching runner install-app-deps already
  * targets the right arch, but we also need fix-node-pty-conpty.cjs to pick
  * the right conpty/<arch> binaries - it reads `npm_config_arch`.

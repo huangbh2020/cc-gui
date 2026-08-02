@@ -5,9 +5,9 @@
 # check for updates from within the app.
 #
 # macOS is split into two build jobs on matching runners (macos-latest=arm64,
-# macos-13=x64) so the claude-agent-sdk platform subpackage and node-pty native
-# addon are installed + rebuilt for the correct arch. Building both archs from a
-# single arm64 runner produced x64 DMGs containing arm64 binaries, which
+# macos-15-intel=x64) so the claude-agent-sdk platform subpackage and node-pty
+# native addon are installed + rebuilt for the correct arch. Building both archs
+# from a single arm64 runner produced x64 DMGs containing arm64 binaries, which
 # triggered a Rosetta prompt on Intel Macs.
 #
 # The two mac jobs each emit a single-arch latest-mac.yml; the publish job
@@ -34,14 +34,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-latest is Apple Silicon (arm64); macos-13 is the Intel (x64)
-          # image GitHub still provides. Each job builds ONLY its runner's
-          # native arch (electron-builder.yml omits mac.target.*.arch, so it
-          # defaults to process.arch), which ensures native bits match.
+          # macos-latest is Apple Silicon (arm64); macos-15-intel is GitHub's
+          # dedicated Intel (x86_64) runner (macos-13 was retired Dec 2025; the
+          # Intel image is the last one, supported until 2027-08). Each job
+          # builds ONLY its runner's native arch (electron-builder.yml omits
+          # mac.target.*.arch, so it defaults to process.arch), which ensures
+          # native bits match.
           - os: macos-latest
             platform: mac
             arch: arm64
-          - os: macos-13
+          - os: macos-15-intel
             platform: mac
             arch: x64
           # Pin to windows-2022 (not -latest): windows-latest has migrated to the

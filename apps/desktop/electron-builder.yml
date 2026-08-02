@@ -64,9 +64,10 @@ extraMetadata:
 # Not signed yet (first P6 pass) - users right-click > Open on first launch.
 #
 # No `arch` is specified: electron-builder builds process.arch (the runner's
-# native arch). CI runs separate jobs on macos-latest (arm64) and macos-13
-# (x64) so each architecture's native bits (claude-agent-sdk platform
-# subpackage, node-pty .node) are installed + rebuilt on a matching host.
+# native arch). CI runs separate jobs on macos-latest (arm64) and
+# macos-15-intel (x64) so each architecture's native bits (claude-agent-sdk
+# platform subpackage, node-pty .node) are installed + rebuilt on a matching
+# host.
 # Building both archs from one runner produced x64 DMGs containing arm64
 # claude/node-pty binaries -> Rosetta prompt on Intel Macs.
 # Single-arch builds also keep filenames distinct: arm64 artifacts get an
