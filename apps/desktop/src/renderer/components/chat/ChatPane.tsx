@@ -18,7 +18,6 @@ import {
 import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_CHAT_QUEUE, EMPTY_PROMPT_QUEUE, type Block, type ChatMessage, type TodoItem, type TurnMeta, type QueuedPrompt } from "@renderer/stores/sessionStore.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
-import type { PermissionMode } from "@contracts/runtime";
 import type { FileSearchEntry } from "@contracts/ipc";
 import {
   type ContentTag,
@@ -29,10 +28,7 @@ import {
   shouldPromoteToTag,
   FILE_DRAG_MIME,
 } from "@renderer/lib/contentTag.js";
-import {
-  executeSlashCommand,
-  type SlashCommandContext,
-} from "@renderer/lib/slashCommands.js";
+import type { SkillInfo } from "@renderer/lib/slashCommands.js";
 import { MessageBlocks, TurnPanel, type ProceduralBlock, type BeforeContentMap } from "./MessageBlocks.js";
 import { ComposerToolbar } from "./ComposerToolbar.js";
 import { QuestionPrompt } from "./QuestionPrompt.js";
@@ -620,7 +616,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   const [attachPickerOpen, setAttachPickerOpen] = useState(false);
   const [attachPickerQuery, setAttachPickerQuery] = useState("");
   const [attachAnchor, setAttachAnchor] = useState<DOMRect | null>(null);
-  const setPermissionMode = useSessionStore((s) => s.setPermissionMode);
   // Content tags: long/multi-line pastes promoted to chips above the
   // textarea so they don't bury the input area. Ephemeral per-turn UI
   // state (cleared on send). See lib/contentTag.ts for the promote rules.
@@ -761,6 +756,9 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   const chatFileQueue = useSessionStore((s) =>
     sessionId ? s.chatFileQueueBySession[sessionId] ?? EMPTY_CHAT_QUEUE : EMPTY_CHAT_QUEUE,
   );
+  // Cached skill list for the `/` menu. Loaded per active project by the store
+  // (initDeferred + selectProject); read here as a stable reference.
+  const skills = useSessionStore((s) => s.skills);
   const drainChatFileQueue = useSessionStore((s) => s.drainChatFileQueue);
   useEffect(() => {
     if (chatFileQueue.length === 0) return;
@@ -778,26 +776,50 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     [addFileTags, clearTriggerToken],
   );
 
-  /** Slash picker confirm: run the command via the shared context. */
+  /** Slash picker confirm: insert `/name ` in place of the trigger token and
+   *  keep focus so the user can add arguments / context before sending. The
+   *  SDK is started with `skills: "all"`, so sending `/name <args>` runs the
+   *  skill as a normal turn. */
   const handleSlashPick = useCallback(
-    (cmd: Parameters<typeof executeSlashCommand>[0]) => {
-      const ctx: SlashCommandContext = {
-        clearToken: clearTriggerToken,
-        clearDraft: () => {
-          setValue("");
-          setTags([]);
-        },
-        sendPrompt: (p) => {
-          void sendPrompt(p);
-        },
-        setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
-        openModelPicker: () => {
-          /* no-op: model dropdown isn't externally focusable yet */
-        },
-      };
-      executeSlashCommand(cmd, ctx);
+    (skill: SkillInfo) => {
+      const start = triggerStartRef.current;
+      const el = textareaRef.current;
+      // Insert text = leading "/" + skill name + trailing space (so the user
+      // lands right where arguments go). A trailing space also terminates the
+      // trigger token, preventing the picker from re-arming on the next keystroke.
+      const insert = `/${skill.name} `;
+      if (start === null || !el) {
+        // No recorded trigger position (e.g. picker opened without typing "/");
+        // just append at the caret. Fallback path — normally unreachable.
+        const caret = el?.selectionStart ?? value.length;
+        const next = value.slice(0, caret) + insert + value.slice(caret);
+        setValue(next);
+        setPickerKind(null);
+        triggerStartRef.current = null;
+        requestAnimationFrame(() => {
+          const t = textareaRef.current;
+          if (!t) return;
+          const pos = caret + insert.length;
+          t.focus();
+          t.setSelectionRange(pos, pos);
+        });
+        return;
+      }
+      const caret = el.selectionStart ?? value.length;
+      // Replace [start, caret) — the `/query` token — with the resolved insert.
+      const next = value.slice(0, start) + insert + value.slice(caret);
+      setValue(next);
+      setPickerKind(null);
+      triggerStartRef.current = null;
+      const pos = start + insert.length;
+      requestAnimationFrame(() => {
+        const t = textareaRef.current;
+        if (!t) return;
+        t.focus();
+        t.setSelectionRange(pos, pos);
+      });
     },
-    [clearTriggerToken, sendPrompt, setPermissionMode],
+    [value],
   );
 
   /** Open the attach picker from the bottom-left + button. */
@@ -1492,11 +1514,12 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
             onPick={handleMentionPick}
             onClose={() => setPickerKind(null)}
           />
-          {/* Inline /-slash command picker. Anchored above the textarea;
-              selecting runs the command (local action or sent prompt). */}
+          {/* Inline /-slash skill picker. Anchored above the textarea;
+              selecting inserts `/name ` so the user can add arguments. */}
           <SlashCommandPicker
             open={pickerKind === "slash"}
             query={pickerQuery}
+            skills={skills}
             anchorRect={pickerAnchor}
             onPick={handleSlashPick}
             onClose={() => setPickerKind(null)}

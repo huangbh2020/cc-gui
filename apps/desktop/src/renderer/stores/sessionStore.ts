@@ -40,6 +40,7 @@ import {
   type GitDiffOpenMode,
   type FileViewMode,
   type CustomCommand,
+  type SkillInfo,
 } from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
 
@@ -347,6 +348,10 @@ export interface SessionState {
   customModelId: string | null;
   /** User-defined custom-model configs (desensitized — tokens masked). */
   customModels: CustomModelPublic[];
+  /** Discovered skills for the composer `/` menu. Cached per active project
+   *  (global ~/.claude/skills + the project's .claude/skills); refreshed on
+   *  init and project switch. Empty list = no skills installed. */
+  skills: SkillInfo[];
   /** Reasoning effort for the next session ("default" = don't pass --effort).
    *  Defaults to "high" so new sessions get the most thinking out of the
    *  box — users can cycle down to Auto if they want claude to pick. */
@@ -641,6 +646,10 @@ export interface SessionState {
   setEffort: (effort: EffortLevel) => void;
   setCustomModel: (id: string | null, model?: string) => void;
   reloadCustomModels: () => Promise<void>;
+  /** Re-fetch the skill list for the active project from main (scans
+   *  ~/.claude/skills + the project's .claude/skills). Safe to call anytime;
+   *  no-op silently when there is no active project. */
+  reloadSkills: () => Promise<void>;
   dismissQuestion: () => void;
   /** Submit answers to the head AskUserQuestion for the active session.
    *  Calls `claude:respondQuestion` which resolves the provider's pending
@@ -855,6 +864,7 @@ export const EMPTY_CHAT_QUEUE: string[] = [];
 /** Stable empty prompt-queue reference (selector must return a stable array). */
 export const EMPTY_PROMPT_QUEUE: QueuedPrompt[] = [];
 const EMPTY_CUSTOM_MODELS: CustomModelPublic[] = [];
+const EMPTY_SKILLS: SkillInfo[] = [];
 const EMPTY_SESSIONS: Session[] = [];
 export const EMPTY_SUBAGENTS: SubagentSnapshot[] = [];
 /** Stable empty usage-history reference (selector must return a stable array). */
@@ -1801,6 +1811,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   model: "default",
   customModelId: null,
   customModels: EMPTY_CUSTOM_MODELS,
+  skills: EMPTY_SKILLS,
   effort: "high",
   todosBySession: {},
   planBySession: {},
@@ -1982,6 +1993,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Custom-model configs for the model dropdown.
     void get().reloadCustomModels();
+
+    // Skill list for the composer `/` menu (scans ~/.claude/skills + the
+    // active project's .claude/skills).
+    void get().reloadSkills();
 
     // Appearance extras (right-panel font size, user-message bg, accent color).
     // chatFontSize was already loaded in init() - only the rest here.
@@ -2181,6 +2196,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Expand the newly added project.
       expandedProjects: { ...s.expandedProjects, [project.id]: true },
     }));
+    // Load skills for the freshly activated project's `/` menu.
+    void get().reloadSkills();
     return project.id;
   },
 
@@ -2202,6 +2219,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (next) {
       await get().selectSession(next.id);
     }
+    // Skills are project-scoped (project's .claude/skills overlays the global
+    // dir), so refresh the composer `/` menu for the newly active project.
+    void get().reloadSkills();
   },
 
   toggleProjectExpanded: (projectId) =>
@@ -3633,6 +3653,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set({ customModels: models });
     } catch (err) {
       console.error("reloadCustomModels failed:", err);
+    }
+  },
+
+  reloadSkills: async () => {
+    // Resolve the active project's path. skills.list scans that root's
+    // .claude/skills in addition to the user-global dir; without a project
+    // there's nothing project-scoped to add (global-only would mislead the
+    // menu into showing skills that may not apply), so we no-op.
+    const pid = get().activeProjectId;
+    const project = pid ? get().projects.find((p) => p.id === pid) : undefined;
+    if (!project) {
+      set({ skills: EMPTY_SKILLS });
+      return;
+    }
+    try {
+      const { skills } = await api.skills.list({ projectPath: project.path });
+      set({ skills: skills.length ? skills : EMPTY_SKILLS });
+    } catch (err) {
+      console.error("reloadSkills failed:", err);
     }
   },
 

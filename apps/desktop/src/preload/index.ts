@@ -194,6 +194,19 @@ const api = {
   pickFiles: ((input) =>
     ipcRenderer.invoke(IPC.DIALOG_PICK_FILES, input)) as RpcMap["dialog.pickFiles"],
 
+  /** Skill discovery + management. `list` scans ~/.claude/skills + the active
+   *  project's .claude/skills; read/save/delete operate on a single skill. */
+  skills: {
+    list: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_LIST, input)) as RpcMap["skills.list"],
+    read: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_READ, input)) as RpcMap["skills.read"],
+    save: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_SAVE, input)) as RpcMap["skills.save"],
+    delete: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_DELETE, input)) as RpcMap["skills.delete"],
+  },
+
   /** Probe whether the default provider is functional. */
   claudeHealthCheck: (): Promise<{
     installed: boolean;

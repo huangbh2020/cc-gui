@@ -1,33 +1,35 @@
 /**
- * Composer slash-command picker. Anchored above the textarea when the user
- * types `/` at line start or after whitespace. Visual language matches
- * FileMentionPicker.
+ * Composer skill-command picker. Anchored above the textarea when the user
+ * types `/` at line start or after whitespace. Lists skills discovered from
+ * the filesystem (passed in as props from the store cache). Visual language
+ * matches FileMentionPicker.
  */
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
-import { IconSlash } from "@renderer/lib/icons.js";
-import {
-  filterSlashCommands,
-  type SlashCommandDef,
-} from "@renderer/lib/slashCommands.js";
+import { IconSparkles } from "@renderer/lib/icons.js";
+import { filterSkillCommands } from "@renderer/lib/slashCommands.js";
+import type { SkillInfo } from "@contracts/ipc";
 
 export interface SlashCommandPickerProps {
   open: boolean;
   /** Query after the leading `/` (may be empty). */
   query: string;
+  /** Cached skill list (from the store; loaded per active project). */
+  skills: SkillInfo[];
   anchorRect: DOMRect | null;
-  onPick: (cmd: SlashCommandDef) => void;
+  onPick: (skill: SkillInfo) => void;
   onClose: () => void;
 }
 
 export function SlashCommandPicker({
   open,
   query,
+  skills,
   anchorRect,
   onPick,
   onClose,
 }: SlashCommandPickerProps) {
-  const commands = filterSlashCommands(query);
+  const commands = filterSkillCommands(query, skills);
   const [activeIdx, setActiveIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -92,22 +94,21 @@ export function SlashCommandPicker({
       onMouseDown={(e) => e.preventDefault()}
     >
       <div className="flex items-center gap-1.5 border-b border-edge px-2.5 py-1.5 text-[11px] text-content-muted">
-        <IconSlash size={12} className="shrink-0 opacity-70" />
-        <span className="truncate">命令{query ? ` · /${query}` : ""}</span>
+        <IconSparkles size={12} className="shrink-0 opacity-70" />
+        <span className="truncate">Skill 命令{query ? ` · /${query}` : ""}</span>
       </div>
 
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-1">
         {commands.length === 0 ? (
           <div className="px-3 py-6 text-center text-[12px] text-content-subtle">
-            无匹配命令
+            {skills.length === 0 ? "未发现 skill(可在 ~/.claude/skills 安装)" : "无匹配 skill"}
           </div>
         ) : (
           commands.map((cmd, idx) => {
-            const Icon = cmd.icon;
             const isActive = idx === activeIdx;
             return (
               <button
-                key={cmd.id}
+                key={`${cmd.source}:${cmd.name}`}
                 type="button"
                 data-idx={idx}
                 onMouseEnter={() => setActiveIdx(idx)}
@@ -117,19 +118,20 @@ export function SlashCommandPicker({
                   isActive ? "bg-accent/12 text-content" : "text-content",
                 )}
               >
-                {Icon ? (
-                  <Icon size={14} className="shrink-0 text-content-muted" />
-                ) : (
-                  <IconSlash size={14} className="shrink-0 text-content-muted" />
-                )}
+                <IconSparkles size={14} className="shrink-0 text-content-muted" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">{cmd.name}</span>
+                  <span className="block truncate font-medium">
+                    /{cmd.name}
+                    {cmd.argumentHint ? (
+                      <span className="ml-0.5 text-[10px] text-content-subtle">{cmd.argumentHint}</span>
+                    ) : null}
+                  </span>
                   <span className="block truncate text-[10px] text-content-subtle">
-                    {cmd.description}
+                    {cmd.description || "(无描述)"}
                   </span>
                 </span>
                 <span className="shrink-0 text-[10px] text-content-subtle">
-                  {cmd.kind === "local" ? "本地" : "发送"}
+                  {cmd.source === "project" ? "项目" : "全局"}
                 </span>
               </button>
             );
@@ -143,7 +145,7 @@ export function SlashCommandPicker({
           <kbd className="ml-0.5 rounded border border-edge px-1">↓</kbd>
           {" "}导航{" "}
           <kbd className="ml-1 rounded border border-edge px-1">↵</kbd>
-          {" "}执行
+          {" "}插入
         </span>
         <span>{commands.length} 条</span>
       </div>

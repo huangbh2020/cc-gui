@@ -104,6 +104,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       permissionMode: req.permissionMode,
       resume: req.resumeProviderSessionId ?? undefined,
       includePartialMessages: true,
+      // Enable every discovered skill (user-global ~/.claude/skills + project
+      // .claude/skills + plugin skills). The composer `/` menu lists the
+      // disk-scanned skills so the user can insert `/name`; the SDK recognizes
+      // and runs them. Passing 'all' is the SDK's single recommended switch —
+      // do NOT also add 'Skill' to allowedTools. See sdk.d.ts Options.skills.
+      skills: "all",
       // SDK #359: On Windows there is a timing/buffering race in the stdio
       // control-stream transport that causes "Tool permission request failed:
       // AbortError: Tool permission stream closed before response received"

@@ -3,6 +3,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ThreePaneLayout } from "@renderer/components/layout/ThreePaneLayout.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
+import { SkillsPanel } from "./SkillsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
 import { GitPanel } from "./GitPanel.js";
 import { TerminalPanel } from "./TerminalPanel.js";
@@ -18,6 +19,7 @@ import { AboutPanel } from "./AboutPanel.js";
  *
  * Available sections:
  *  - 模型配置 (CustomModelsPanel - two-column: provider list + config form)
+ *  - Skills  (SkillsPanel - two-column: skill list + raw SKILL.md editor)
  *  - 外观    (AppearancePanel - flat one-row-per-feature list)
  *  - Git     (GitPanel)
  *  - 终端    (TerminalPanel - shell override + per-project commands)
@@ -28,7 +30,7 @@ import { AboutPanel } from "./AboutPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "custom-models" | "appearance" | "git" | "terminal" | "about";
+type SectionId = "general" | "custom-models" | "skills" | "appearance" | "git" | "terminal" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -38,6 +40,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   // { id: "general", label: "通用" }, // 暂时屏蔽:通用设置尚未实现,日后恢复
   { id: "custom-models", label: "模型配置" },
+  { id: "skills", label: "Skills" },
   { id: "appearance", label: "外观" },
   { id: "git", label: "Git" },
   { id: "terminal", label: "终端" },
@@ -98,6 +101,7 @@ export function SettingsPage() {
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
           {active === "custom-models" && <CustomModelsPanel />}
+          {active === "skills" && <SkillsPanel />}
           {active === "appearance" && <AppearancePanel />}
           {active === "git" && <GitPanel />}
           {active === "terminal" && <TerminalPanel />}

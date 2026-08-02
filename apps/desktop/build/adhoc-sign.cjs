@@ -4,13 +4,18 @@
 // macOS signing entirely — its macPackager only signs when it finds a
 // "Developer ID Application" cert in the keychain, and osx-sign throws rather
 // than falling back to ad-hoc. On macOS 15+ (Sequoia) Gatekeeper then refuses
-// to run a fully-unsigned app at all: right-click > Open offers no bypass and
-// no "Open Anyway" appears in System Settings.
+// to run a fully-unsigned app at all: no bypass is offered.
 //
 // Signing with the ad-hoc identity ("-") gives Gatekeeper a signature to
-// verify, so first launch works via right-click > Open (or System Settings >
-// Privacy & Security > Open Anyway). Users still see the "unverified
-// developer" dialog once — that's expected without real notarization.
+// verify. With a signature, the quarantine attribute (set on browser-downloaded
+// apps) is what blocks launch — removing it lets the app open normally:
+//
+//   xattr -dr com.apple.quarantine /Applications/Mcode.app
+//
+// Or use System Settings > Privacy & Security > Open Anyway (the only GUI
+// bypass on macOS 26+; right-click > Open no longer works there). Homebrew
+// casks strip quarantine at install time, so `brew install --cask mcode` opens
+// without any of this.
 //
 // Wired up through electron-builder's `mac.sign` option (electron-builder.yml);
 // electron-builder calls this with the osx-sign opts, where opts.app is the

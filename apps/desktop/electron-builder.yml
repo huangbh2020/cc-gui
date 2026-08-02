@@ -64,11 +64,12 @@ extraMetadata:
 #
 # No paid Apple Developer ID cert yet, so no real signing / notarization.
 # electron-builder skips macOS signing entirely when it can't find a cert —
-# and on macOS 15+ a fully-unsigned app is blocked outright (right-click >
-# Open offers no bypass). `mac.sign` points at build/adhoc-sign.cjs, which
-# ad-hoc signs the bundle ("-" identity) so Gatekeeper can at least offer
-# right-click > Open / Open Anyway on first launch. Real Developer ID signing
-# + notarization (P6) would remove that first-launch dialog entirely.
+# and on macOS 15+ a fully-unsigned app is blocked outright. `mac.sign` points
+# at build/adhoc-sign.cjs, which ad-hoc signs the bundle ("-" identity). The
+# remaining first-launch dialog for dmg downloads is then bypassable via
+# `xattr -dr com.apple.quarantine` or System Settings > Open Anyway (see the
+# script header). Real Developer ID signing + notarization (P6) would remove
+# the dialog entirely.
 #
 # No `arch` is specified: electron-builder builds process.arch (the runner's
 # native arch). CI runs separate jobs on macos-latest (arm64) and

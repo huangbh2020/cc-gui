@@ -1012,6 +1012,83 @@ export const GitCheckoutSchema = z.object({
 });
 export type GitCheckoutInput = z.infer<typeof GitCheckoutSchema>;
 
+/* ── Skill discovery (composer slash-command menu) ──
+ *  The composer's `/` menu lists skills discovered by scanning the local
+ *  filesystem (`~/.claude/skills/` global + `<project>/.claude/skills/`
+ *  project-scoped). Each skill's SKILL.md frontmatter supplies the name +
+ *  description; we don't depend on a running SDK session for the listing, so
+ *  the menu is instant. Selecting a skill inserts `/name` into the textarea
+ *  and the user sends it as a normal turn (SDK is started with
+ *  `skills: "all"`, so the agent recognizes and runs the skill). */
+
+export type SkillSource = "global" | "project";
+
+/** One discoverable skill surfaced in the composer `/` menu. Mirrors the
+ *  fields the SDK's own `SlashCommand` exposes (name / description /
+ *  argumentHint) plus a `source` discriminator so the UI can show whether a
+ *  skill came from the user's global dir or the active project. */
+export interface SkillInfo {
+  /** Skill name without the leading slash (e.g. "pdf"). Used as the slash
+   *  command the user sends, and as the dedupe key (project overrides global). */
+  name: string;
+  /** Short description from SKILL.md frontmatter (may be empty when absent). */
+  description: string;
+  /** Hint for skill arguments (e.g. "<file>"), when present in frontmatter. */
+  argumentHint?: string;
+  /** Where the skill was discovered: user-global vs the active project. */
+  source: SkillSource;
+}
+
+/** List skills for a project root. `projectPath` must match a persisted
+ *  Project.path (main cross-checks, same containment guard as file ops). */
+export const SkillsListSchema = z.object({
+  projectPath: z.string(),
+});
+export type SkillsListInput = z.infer<typeof SkillsListSchema>;
+
+/** Skill name charset — kebab-case-ish identifiers only. Restricting here
+ *  (and again in main with pathWithin) prevents path-traversal via `../` or
+ *  absolute paths. Matches what the SDK / Claude Code itself accepts. */
+const SKILL_NAME_RE = /^[A-Za-z0-9_-]+$/;
+
+/** Read one skill's full SKILL.md source. Returns the complete file text (no
+ *  truncation — skills can be large). A missing file resolves to empty
+ *  content so the editor opens cleanly for a not-yet-written skill. */
+export const SkillsReadSchema = z.object({
+  /** Project root (must match a persisted Project.path). Only used to verify
+   *  the caller's identity; the skill itself is resolved by `source` + `name`. */
+  projectPath: z.string(),
+  /** Which skills root to read from: user-global or the active project. */
+  source: z.enum(["global", "project"]),
+  /** Skill name (= directory name under <root>/.claude/skills/). */
+  name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
+});
+export type SkillsReadInput = z.infer<typeof SkillsReadSchema>;
+
+/** Write (create or overwrite) a skill's SKILL.md. Creates the skill directory
+ *  if absent; always writes the full file content (complete overwrite).
+ *  `newName` is reserved for future rename support (when set and differs from
+ *  `name`, the skill directory is moved first); v1 UI leaves it unset. */
+export const SkillsSaveSchema = z.object({
+  projectPath: z.string(),
+  source: z.enum(["global", "project"]),
+  name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
+  /** Full SKILL.md text (frontmatter + body). Written verbatim. */
+  content: z.string(),
+  newName: z.string().regex(SKILL_NAME_RE).optional(),
+});
+export type SkillsSaveInput = z.infer<typeof SkillsSaveSchema>;
+
+/** Delete a skill directory. For a symlinked skill only the link is removed
+ *  (the target — e.g. a gstack checkout — is left intact); for a real
+ *  directory the whole skill folder is removed recursively. */
+export const SkillsDeleteSchema = z.object({
+  projectPath: z.string(),
+  source: z.enum(["global", "project"]),
+  name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
+});
+export type SkillsDeleteInput = z.infer<typeof SkillsDeleteSchema>;
+
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
 export interface ClaudeEventMessage {
@@ -1252,6 +1329,20 @@ export interface RpcMap {
   /** Native multi-file picker (project-external files allowed). Returns the
    *  selected absolute paths; empty array when the user cancels. */
   "dialog.pickFiles": (input: DialogPickFilesInput) => Promise<{ paths: string[] }>;
+  /** Discover skills for the composer `/` menu. Scans the user-global
+   *  `~/.claude/skills/` plus the active project's `.claude/skills/` and
+   *  parses each SKILL.md's frontmatter. Always resolves (degrades to an
+   *  empty list on any IO error). */
+  "skills.list": (input: SkillsListInput) => Promise<{ skills: SkillInfo[] }>;
+  /** Read one skill's full SKILL.md source (no truncation). Missing file →
+   *  empty content. */
+  "skills.read": (input: SkillsReadInput) => Promise<{ content: string }>;
+  /** Create or overwrite a skill's SKILL.md (full content write; creates the
+   *  skill directory if absent). Returns ok:false + error on any IO failure. */
+  "skills.save": (input: SkillsSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Delete a skill directory (symlink → unlink link only; real dir → recursive
+   *  remove). Returns ok:false + error on any IO failure. */
+  "skills.delete": (input: SkillsDeleteInput) => Promise<{ ok: boolean; error?: string }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -1330,6 +1421,12 @@ export const IPC = {
   SHELL_SHOW_ITEM_IN_FOLDER: "shell:showItemInFolder",
   // Native multi-file picker (project-external files allowed) for the composer
   DIALOG_PICK_FILES: "dialog:pickFiles",
+  // Skill discovery for the composer `/` menu (scans ~/.claude/skills + project)
+  SKILLS_LIST: "skills:list",
+  // Skill management (settings panel): read / save / delete a single skill
+  SKILLS_READ: "skills:read",
+  SKILLS_SAVE: "skills:save",
+  SKILLS_DELETE: "skills:delete",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",

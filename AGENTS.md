@@ -170,7 +170,7 @@ pnpm build
 | P3.5 中间面板 Tab 模式 | ✅ | 中间面板显示模式偏好(单/tab),`openTabs` + `SessionTabs` 标签条;关闭 tab 后台 turn 继续运行 |
 | P4 IDE 右栏 | ⬜ | 文件树、git、终端(xterm+node-pty)、Monaco diff |
 | P5 体验打磨 | ⬜ | 浏览器预览、checkpoint 时间线、Cmd+K、审批 UI |
-| P6 发布 | ✅ 基础 | electron-builder(mac/win 安装包)、electron-updater(GitHub Releases 渠道)、CI(typecheck + tag 自动发布)。mac 包已接 ad-hoc 签名(无 Apple 付费证书,首次启动仍需右键打开/仍要打开);真实 Developer ID 签名+公证未做,未含 Vitest |
+| P6 发布 | ✅ 基础 | electron-builder(mac/win 安装包)、electron-updater(GitHub Releases 渠道)、CI(typecheck + tag 自动发布)。mac 包已接 ad-hoc 签名(无 Apple 付费证书,dmg 直下首次启动需 `xattr -dr com.apple.quarantine` 或系统设置"仍要打开";brew cask 安装无此问题);真实 Developer ID 签名+公证未做,未含 Vitest |
 
 详见 `docs/tech-stack.md` 第八节。
 
