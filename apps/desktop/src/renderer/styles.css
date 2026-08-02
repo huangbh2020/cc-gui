@@ -52,6 +52,14 @@
    *   --user-bubble is a neutral gray (zinc-500) so user prompts read as a
    *     calm, non-distracting bubble; presets in Settings offer color picks. */
   --chat-font-size: 14px; /* default = text-sm */
+  /* Chat prose line-height + base weight. A relaxed line height (1.7) and
+   * regular weight (400) give comfortable, airy reading on both themes —
+   * the same values are mirrored in .dark so the reading experience stays
+   * consistent regardless of theme. Contrast is tuned purely via the color
+   * tokens, not by diverging weight/spacing. Consumed by the Markdown
+   * container in Markdown.tsx. */
+  --chat-line-height: 1.7;
+  --chat-font-weight: 400;
   --user-bubble: 82 82 91; /* default = zinc-500 (neutral gray), R G B triplet */
 
   /* Global side-panel + settings base font size - user-configurable via
@@ -66,28 +74,31 @@
 
 .dark {
   /* Dark-mode base font weight. White text on a dark background undergoes
-   * optical thinning (subpixel anti-aliasing erodes stroke edges), so even
-   * at pure #fff the default weight 400 reads as low-contrast (~visually
-   * 300). 500 was tried and still felt thin, so the base is lifted to 600.
-   * The matching .dark .font-* ladder shift (in the font-weight ladder
-   * section below) keeps relative hierarchy intact. Light mode uses a 500
-   * base via :root (lighter than dark because black-on-white needs less
-   * help), with its own ladder shift in the same section. */
+   * optical thinning, so the default 400 reads as low-contrast. The base is
+   * lifted to 600 for crisp, readable UI text. The matching .dark .font-*
+   * ladder shift (in the font-weight ladder section below) keeps relative
+   * hierarchy intact. Light mode uses a 500 base via :root (lighter than
+   * dark because black-on-white needs less help), with its own ladder shift
+   * in the same section. */
   font-weight: 600;
 
-  --surface: 24 24 27; /* zinc-900 */
-  --surface-muted: 39 39 42; /* zinc-800 */
-  --surface-hover: 63 63 70; /* zinc-700 */
-  --content: 255 255 255; /* pure white — max-contrast text on dark bg */
-  --content-muted: 212 212 216; /* zinc-300 — one stop brighter than
-                                 * light-mode's zinc-400 so secondary text
-                                 * stays readable on zinc-900 */
-  --content-subtle: 113 113 122; /* zinc-500 — lifted from zinc-600 so dim
-                                  * labels/metadata don't vanish on dark */
-  --edge: 39 39 42; /* zinc-800 */
-  --input-edge: 161 161 170; /* zinc-400 — brighter than --edge so the
-                              * composer box outline stays visible on the
-                              * zinc-900 background */
+  --surface: 13 14 17; /* near-black with a faint cool tint — deeper than
+                        * zinc-900 so white text floats with more pop, matching
+                        * the reference design's dark background. */
+  --surface-muted: 22 24 28; /* one stop up from surface for inset panels */
+  --surface-hover: 34 36 41; /* hover/active states */
+  --content: 245 247 250; /* near-white with the faintest cool tint — reads
+                           * as "clean white" but softer than pure #fff,
+                           * avoiding harsh glare on the deep background. */
+  --content-muted: 178 184 193; /* cool light-gray-blue for secondary text;
+                                 * brighter than pure gray so it stays legible
+                                 * without competing with primary text. */
+  --content-subtle: 122 128 138; /* mid cool-gray for dim metadata/labels */
+  --edge: 34 36 41; /* matches surface-hover — subtle dividers on deep bg */
+  --input-edge: 92 99 112; /* cool gray — brighter than --edge so the
+                            * composer box outline stays visible on the
+                            * deep background. Tuned to read clearly without
+                            * being as bright as the muted-text color. */
   --accent: 16 185 129; /* emerald-500 */
   --danger: 248 113 113; /* red-400 */
   --warning: 251 191 36; /* amber-400 */
@@ -98,6 +109,12 @@
    * Overridden at runtime by lib/appearance.ts when the user sets a custom
    * value. */
   --chat-font-size: 14px;
+  /* Chat prose line-height + base weight — intentionally identical to the
+   * light-mode values (:root) so the reading experience is consistent
+   * across themes. The contrast tuning is handled entirely by the text/
+   * background color tokens (--content*), not by weight/spacing divergence. */
+  --chat-line-height: 1.7;
+  --chat-font-weight: 400;
   --user-bubble: 113 113 122; /* default = zinc-500 (\#71717a) */
 
   /* Global side-panel + settings base font size (same default in light + dark). */
@@ -223,6 +240,17 @@ body,
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Dark-mode font rendering: switch from gray-scale antialiasing to the
+ * platform default (subpixel on macOS). Gray AA thins light-on-dark strokes,
+ * which is the "still not enough contrast" symptom on white text. Letting
+ * the browser use subpixel rendering restores edge crispness so the heavier
+ * font weights read as intended. Scoped to .dark so light mode keeps its
+ * smoother antialiased look (black-on-white doesn't need the help). */
+.dark {
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
 }
 
 /* AskUserQuestion bottom-sheet slide-up. Tailwind's arbitrary-animation

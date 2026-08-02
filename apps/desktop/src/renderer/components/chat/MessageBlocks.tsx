@@ -536,7 +536,7 @@ function AttachmentCard({
         ) : (
           <IconClipboard size={12} className="opacity-80" />
         )}
-        <span className="max-w-[220px] truncate font-normal">{preview}</span>
+        <span className="max-w-[220px] truncate">{preview}</span>
         <IconChevronDown
           size={11}
           className={cn("shrink-0 opacity-70 transition-transform", !open && "-rotate-90")}

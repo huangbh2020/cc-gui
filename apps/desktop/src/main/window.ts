@@ -8,14 +8,19 @@ import { logStartup } from "@main/lib/startupTimer.js";
 let mainWindow: BrowserWindow | null = null;
 
 /** Background color matching the effective theme, so the first frame (before
- *  React mounts) doesn't flash the wrong color. Mirrors --surface in CSS. */
+ *  React mounts) doesn't flash the wrong color. Mirrors --surface in CSS
+ *  (styles.css): light = #ffffff, dark = rgb(13,14,17) = #0d0e11. */
 function bgColor(): string {
-  return getEffectiveTheme() === "dark" ? "#18181b" : "#ffffff";
+  return getEffectiveTheme() === "dark" ? "#0d0e11" : "#ffffff";
 }
 
 /** Title-bar overlay colour scheme that matches the app theme. The overlay sits
  *  behind the native min/max/close buttons when `titleBarStyle: 'hidden'` is
  *  active, so it must visually blend with the custom titlebar in the renderer.
+ *
+ *  `color` mirrors --surface; `symbolColor` mirrors --content-subtle so the
+ *  button glyphs match the dim UI text tone. Values must stay in sync with
+ *  styles.css (.dark block).
  *
  *  `height` must match the renderer titlebar's height (h-10 = 40px): Electron
  *  draws the overlay aligned to the top of the window, and the buttons are
@@ -24,8 +29,8 @@ function bgColor(): string {
 function overlayColors() {
   const dark = getEffectiveTheme() === "dark";
   return {
-    color: dark ? "#18181b" : "#ffffff",
-    symbolColor: dark ? "#a1a1aa" : "#71717a",
+    color: dark ? "#0d0e11" : "#ffffff",
+    symbolColor: dark ? "#7a808a" : "#71717a",
     height: 40,
   };
 }

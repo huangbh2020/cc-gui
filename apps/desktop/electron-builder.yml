@@ -61,7 +61,14 @@ extraMetadata:
 
 # ── macOS ──
 # dmg = distributable installer; zip = autoUpdater download payload.
-# Not signed yet (first P6 pass) - users right-click > Open on first launch.
+#
+# No paid Apple Developer ID cert yet, so no real signing / notarization.
+# electron-builder skips macOS signing entirely when it can't find a cert —
+# and on macOS 15+ a fully-unsigned app is blocked outright (right-click >
+# Open offers no bypass). `mac.sign` points at build/adhoc-sign.cjs, which
+# ad-hoc signs the bundle ("-" identity) so Gatekeeper can at least offer
+# right-click > Open / Open Anyway on first launch. Real Developer ID signing
+# + notarization (P6) would remove that first-launch dialog entirely.
 #
 # No `arch` is specified: electron-builder builds process.arch (the runner's
 # native arch). CI runs separate jobs on macos-latest (arm64) and
@@ -77,6 +84,9 @@ mac:
     - target: dmg
     - target: zip
   category: public.app-category.developer-tools
+  # Custom ad-hoc signer (see build/adhoc-sign.cjs). Relative path is
+  # resolved from the electron-builder cwd (apps/desktop).
+  sign: ./build/adhoc-sign.cjs
   hardenedRuntime: false
   gatekeeperAssess: false
 

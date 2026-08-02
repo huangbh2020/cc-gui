@@ -177,9 +177,11 @@ export const codeHtmlCache = new LRUCache<CachedString>(500, 52_428_800);
  *  Key = fnv1a(markdownText). */
 export const mdAstCache = new LRUCache<CachedString>(500, 52_428_800);
 
-/** Compute a cache key from code text + language tag. */
-export function codeCacheKey(text: string, lang: string): string {
-  return fnv1a(text + "\0" + lang);
+/** Compute a cache key from code text + language tag + Shiki theme.
+ *  The theme is included so a theme switch invalidates stale HTML and
+ *  triggers re-highlighting instead of serving the wrong palette. */
+export function codeCacheKey(text: string, lang: string, theme: string): string {
+  return fnv1a(text + "\0" + lang + "\0" + theme);
 }
 
 /** Store shiki HTML in the code cache. */

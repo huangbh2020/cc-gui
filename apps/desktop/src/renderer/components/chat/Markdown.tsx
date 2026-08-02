@@ -81,23 +81,26 @@ function resolveLang(tag: string): string {
 
 function ensureHighlighter(): Promise<ShikiHighlighter> {
   if (highlighterInstance) return Promise.resolve(highlighterInstance);
-  if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({
-      themes: ["github-light", "github-dark"],
-      langs: EAGER_LANGS,
-    }).then((hl) => {
-      highlighterInstance = hl;
-      return hl;
-    });
-  }
+  if (highlighterPromise) return highlighterPromise;
+  highlighterPromise = createHighlighter({
+    // github-dark-default (#0d1117 bg) matches the app's deep dark surface
+    // better than github-dark (#24292e), so code blocks blend into the
+    // stream instead of punching out as a brighter island. Its token
+    // palette is also brighter/more saturated, improving legibility.
+    themes: ["github-light", "github-dark-default"],
+    langs: EAGER_LANGS,
+  }).then((hl) => {
+    highlighterInstance = hl;
+    return hl;
+  });
   return highlighterPromise;
 }
 
 function currentTheme(): BundledTheme {
   if (typeof document !== "undefined") {
-    return document.documentElement.classList.contains("dark") ? "github-dark" : "github-light";
+    return document.documentElement.classList.contains("dark") ? "github-dark-default" : "github-light";
   }
-  return "github-dark";
+  return "github-dark-default";
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -157,7 +160,7 @@ const components: Components = {
     const isInline = !isFencedCode(className);
     if (isInline) {
       return (
-        <code className="rounded bg-surface-muted/80 px-1 py-0.5 font-mono [font-size:var(--chat-fs-xs)] text-accent">
+        <code className="rounded bg-surface-muted/80 px-1 py-0.5 font-mono [font-size:var(--chat-fs-xs)] text-content">
           {children}
         </code>
       );
@@ -185,7 +188,11 @@ const components: Components = {
     const html = useMemo(() => {
       if (!rawCode) return null;
 
-      const key = codeCacheKey(rawCode, lang);
+      // Theme is part of the cache key so a theme switch (light↔dark, or a
+      // theme-name change) invalidates stale HTML and re-highlights instead
+      // of serving the wrong palette.
+      const theme = currentTheme();
+      const key = codeCacheKey(rawCode, lang, theme);
       // Cache hit?
       const cached = getCodeHtml(key);
       if (cached) return { __html: cached, key };
@@ -198,7 +205,7 @@ const components: Components = {
           try {
             return highlighterInstance!.codeToHtml(rawCode, {
               lang: tryLang,
-              theme: currentTheme(),
+              theme,
               transformers: [transformerNotationDiff()],
             });
           } catch {
@@ -254,7 +261,7 @@ const components: Components = {
     return <ol className="my-1.5 list-decimal space-y-1 pl-5 marker:text-content-subtle">{children}</ol>;
   },
   blockquote({ children }) {
-    return <blockquote className="my-2 border-l-2 border-edge pl-3 text-content-muted">{children}</blockquote>;
+    return <blockquote className="my-2 border-l-2 border-edge pl-3 text-content">{children}</blockquote>;
   },
   table({ children }) {
     return (
@@ -264,10 +271,10 @@ const components: Components = {
     );
   },
   th({ children }) {
-    return <th className="border border-edge bg-surface-muted/50 px-2 py-1 text-left font-semibold text-content-muted">{children}</th>;
+    return <th className="border border-edge bg-surface-muted/50 px-2 py-1 text-left font-semibold text-content">{children}</th>;
   },
   td({ children }) {
-    return <td className="border border-edge px-2 py-1 text-content-muted">{children}</td>;
+    return <td className="border border-edge px-2 py-1 text-content">{children}</td>;
   },
   h1({ children }) {
     return <h1 className="mb-2 mt-3 font-bold text-content [font-size:var(--chat-fs-lg)]">{children}</h1>;
@@ -282,7 +289,9 @@ const components: Components = {
 
 export const Markdown = memo(function Markdown({ children }: { children: string }) {
   return (
-    <div className="leading-relaxed text-content [font-size:var(--chat-font-size)] [&>p]:my-1.5 [&:first-child]:mt-0 [&:last-child]:mb-0">
+    <div
+      className="text-content [font-size:var(--chat-font-size)] [line-height:var(--chat-line-height)] [font-weight:var(--chat-font-weight)] [&>p]:my-1.5 [&:first-child]:mt-0 [&:last-child]:mb-0"
+    >
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components}>
         {children}
       </ReactMarkdown>

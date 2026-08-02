@@ -32,12 +32,14 @@ export function DiffView({ diff }: { diff: ReturnType<typeof lineDiff> }) {
         // Fixed red/green diff colors that don't shift with the theme - the
         // accent/danger tokens change between light/dark (and track the
         // accent hue), but diff added/removed lines read best as stable,
-        // conventional red vs green in both themes.
+        // conventional red vs green in both themes. The 600 shade is used in
+        // light mode; dark mode lifts to 400 so the +/- lines stay bright and
+        // readable on the deep background (600 reads too dim on near-black).
         const opBg =
           d.op === "delete"
-            ? "bg-red-500/15 text-red-600"
+            ? "bg-red-500/15 text-red-600 dark:text-red-400"
             : d.op === "insert"
-            ? "bg-green-500/15 text-green-600"
+            ? "bg-green-500/15 text-green-600 dark:text-green-400"
             : "text-content-muted";
         return (
           <div key={i} className={cn("flex items-start whitespace-pre", opBg)}>
