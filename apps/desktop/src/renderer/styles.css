@@ -277,6 +277,37 @@ body,
   }
 }
 
+/* Empty-thread (home) welcome fade-up. Plays once on mount so the home
+   screen doesn't hard-cut in. Tailwind's arbitrary-animation syntax
+   `animate-[home-fade-up_160ms_ease-out]` references this name. Kept tiny
+   (6px) so it reads as polish, not a flourish. */
+@keyframes home-fade-up {
+  from {
+    transform: translateY(6px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Respect the OS reduced-motion preference: skip the home fade-up entirely.
+   Existing arbitrary-animation calls still apply the name, but the keyframes
+   are flattened to a no-op so the content shows instantly. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes home-fade-up {
+    from {
+      transform: none;
+      opacity: 1;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+}
+
 /* ───────────── Chat side gutter (responsive) ─────────────
  * The message stream + composer share a horizontal gutter that scales with
  * the chat pane's own width (NOT the viewport - the pane shrinks when the

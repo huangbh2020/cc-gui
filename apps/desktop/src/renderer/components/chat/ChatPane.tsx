@@ -38,8 +38,7 @@ import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor.js";
 import { ContentTagChip } from "./ContentTagChip.js";
 import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
-import { ProjectBranchIndicator } from "./ProjectBranchIndicator.js";
-import { EmptyThreadWelcome } from "./EmptyThreadWelcome.js";
+import { EmptyThreadWelcome, SuggestionCards } from "./EmptyThreadWelcome.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { StatusCapsule } from "./StatusCapsule.js";
 import { MessageTimeline, type UserItemIndexMap } from "./MessageTimeline.js";
@@ -1309,32 +1308,29 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           the box sits flush against the message area. When the session is
           empty the wrapper takes flex-1 and centers the box vertically. */}
       <div className={cn(
-        "px-[var(--chat-gutter)]",
+        "relative px-[var(--chat-gutter)]",
         empty
-          ? "flex flex-1 items-center justify-center"
+          ? "flex flex-1 items-center justify-center overflow-hidden"
           : "shrink-0 pb-3",
       )}>
-        <div className={cn("w-full", empty ? "max-w-3xl" : "mx-auto max-w-5xl pt-2")}>
-          {/* Empty-thread indicator: project name + current git branch (with a
-              branch switcher). Only on a brand-new/empty thread; hidden once
-              the conversation has messages. Non-git projects show project name
-              only. Rendered above the composer, centered. */}
-          {empty && projectPath && (
-            <div className="mb-2 flex justify-center">
-              <ProjectBranchIndicator projectPath={projectPath} projectName={projectName} />
-            </div>
-          )}
+        {/* Ambient accent glow behind the empty-state welcome. A soft radial
+            highlight anchored at the top center gives the home screen depth —
+            in dark mode it reads as a halo behind the brand badge; in light
+            mode the low alpha keeps it as a barely-there tint. Pointer-events
+            none so it never intercepts clicks. */}
+        {empty && (
+          <div
+            className="pointer-events-none absolute inset-0"
+            aria-hidden
+            style={{
+              background:
+                "radial-gradient(ellipse 80% 50% at 50% 0%, rgb(var(--accent)/0.07), transparent 70%)",
+            }}
+          />
+        )}
+        <div className={cn("relative w-full", empty ? "max-w-4xl" : "mx-auto max-w-5xl pt-2")}>
           {empty && (
-            <EmptyThreadWelcome
-              projectName={projectName}
-              disabled={inputBlocked}
-              onPickPrompt={(prompt) => {
-                // Insert the suggestion into the editor and focus it so the
-                // user can keep typing / send immediately.
-                editorRef.current?.setText(prompt);
-                setValue(prompt);
-              }}
-            />
+            <EmptyThreadWelcome projectName={projectName} />
           )}
           {/* Plan-approval card (ExitPlanMode) - the model drafted a plan in
               plan mode and is awaiting the user's approve/reject decision.
@@ -1525,6 +1521,18 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               )}
             </div>
           </div>
+          {/* Suggestion cards — rendered below the composer on an empty thread
+              (the title sits above it; see EmptyThreadWelcome). Splitting
+              around the input keeps the composer as the visual focus. */}
+          {empty && (
+            <SuggestionCards
+              disabled={inputBlocked}
+              onPickPrompt={(prompt) => {
+                editorRef.current?.setText(prompt);
+                setValue(prompt);
+              }}
+            />
+          )}
           {/* Content-tag preview popover. Fixed-positioned to the clicked
               chip's top-right; rendered outside the composer container so
               it isn't clipped by overflow/border-radius. Anchored only while

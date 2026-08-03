@@ -9,7 +9,14 @@
  *    that switches to the history view.
  *  - **history**: a compact, scrollable table of every finalized turn in this
  *    session — one row per turn with tokens / cost / duration / model, and a
- *    totals row at the bottom.
+ *    totals row at the bottom. No back button: once here the popover just
+ *    closes on outside click / blur (transparent backdrop) rather than
+ *    returning to the current view.
+ *
+ * Which view the popover opens on is set by `initialView` (default "current").
+ * The ContextRing hover tooltip's "查看详情" affordance passes "history" so
+ * it jumps straight to the per-turn table — the live breakdown is already
+ * what the tooltip just showed, so a redundant first screen is skipped.
  *
  * The data source is the store's `usageHistoryBySession` map (append-only,
  * per session, ephemeral — a restart starts empty, so the empty-state hint
@@ -23,12 +30,7 @@ import { fmtTokens, getContextBreakdown, warningColor } from "@renderer/lib/cont
 import type { ContextSnapshot } from "@contracts/runtime";
 import type { TurnUsageRecord } from "@renderer/stores/sessionStore.js";
 import { ContextTooltipBody } from "./ContextRing.js";
-import {
-  IconArrowLeft,
-  IconCalendarStats,
-  IconChartBar,
-  IconClock,
-} from "@renderer/lib/icons.js";
+import { IconCalendarStats, IconChartBar, IconClock } from "@renderer/lib/icons.js";
 
 type View = "current" | "history";
 
@@ -37,6 +39,7 @@ export function ContextStatsPopover({
   history,
   maxTokens,
   onClose,
+  initialView = "current",
 }: {
   snapshot: ContextSnapshot;
   history: TurnUsageRecord[];
@@ -44,8 +47,13 @@ export function ContextStatsPopover({
    *  Passed down from the live snapshot since history rows don't carry it. */
   maxTokens: number;
   onClose: () => void;
+  /** Which view the popover opens on. The ContextRing hover tooltip's
+   *  "查看详情" affordance passes "history" so it jumps straight to the
+   *  per-turn table (the live breakdown is already what the tooltip showed),
+   *  avoiding a redundant first screen. Defaults to "current". */
+  initialView?: View;
 }) {
-  const [view, setView] = useState<View>("current");
+  const [view, setView] = useState<View>(initialView);
   const breakdown = getContextBreakdown(snapshot);
 
   return (
@@ -70,11 +78,7 @@ export function ContextStatsPopover({
             onShowHistory={() => setView("history")}
           />
         ) : (
-          <HistoryView
-            history={history}
-            maxTokens={maxTokens}
-            onBack={() => setView("current")}
-          />
+          <HistoryView history={history} maxTokens={maxTokens} />
         )}
       </div>
     </>
@@ -139,11 +143,9 @@ function fmtDuration(ms: number): string {
 function HistoryView({
   history,
   maxTokens,
-  onBack,
 }: {
   history: TurnUsageRecord[];
   maxTokens: number;
-  onBack: () => void;
 }) {
   // Newest first so the most recent turn is on top without scrolling.
   const ordered = [...history].reverse();
@@ -168,19 +170,10 @@ function HistoryView({
 
   return (
     <div>
-      {/* Header: back button + title + count. */}
-      <div className="flex items-center gap-1.5 border-b border-edge/70 px-2 py-1.5">
-        <button
-          type="button"
-          onClick={onBack}
-          className={cn(
-            "inline-flex items-center rounded p-0.5 text-content-subtle transition-colors",
-            "hover:bg-surface-muted hover:text-content-muted",
-          )}
-          title="返回"
-        >
-          <IconArrowLeft size={13} />
-        </button>
+      {/* Header: title + count. No back button — the popover closes on
+          outside click / blur (transparent backdrop) rather than returning
+          to the current view. */}
+      <div className="flex items-center gap-1 border-b border-edge/70 px-2.5 py-1.5">
         <span className="flex items-center gap-1 text-[11px] font-semibold text-content">
           <IconChartBar size={12} className="opacity-80" />
           历史详情 · {history.length} 轮

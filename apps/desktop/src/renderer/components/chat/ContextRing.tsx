@@ -11,6 +11,8 @@ import { Tooltip } from "@renderer/components/ui/index.js";
 import {
   IconArrowBarToDown,
   IconArrowBarToUp,
+  IconChartBar,
+  IconChevronRight,
   IconCoins,
   IconDatabase,
   IconStack2,
@@ -22,16 +24,18 @@ import { ContextStatsPopover } from "./ContextStatsPopover.js";
  *
  * Renders as a small SVG ring (ZCode-style) whose filled arc length
  * represents `snapshot.pct` and whose color escalates with the warning
- * level (ok → accent, near-window → warning amber, critical → danger red).
+ * level (ok → muted, near-window → warning amber, critical → danger red).
  * The percentage sits beside the ring.
  *
- * Two interactions on the same element:
- *  - **hover**: a rich tooltip breaks the live usage down by token kind
- *    (input / cache / output / cost).
- *  - **click**: opens {@link ContextStatsPopover}, which shows the live
- *    breakdown plus a per-turn history view of every finalized turn's
- *    tokens/cost. The tooltip is force-hidden while the popover is open so
- *    the two surfaces never overlap.
+ * Hover-driven interaction (no click on the ring itself):
+ *  - **hover**: the ring gains a selected (accented) state and a rich
+ *    tooltip breaks the live usage down by token kind
+ *    (input / cache / output / cost). The tooltip is hoverable so the
+ *    pointer can move into it to click the "查看详情" affordance.
+ *  - **查看详情**: clicking it dismisses the tooltip and opens
+ *    {@link ContextStatsPopover} (live breakdown + per-turn history). The
+ *    tooltip is force-hidden while the popover is open so the two surfaces
+ *    never overlap.
  */
 export function ContextRing({
   snapshot,
@@ -52,27 +56,42 @@ export function ContextRing({
   const colorClass = warningColor(warning);
   const breakdown = getContextBreakdown(snapshot);
   const [open, setOpen] = useState(false);
+  // `tooltipOpen` tracks the base-ui tooltip's hover state so the trigger's
+  // selected styling stays in sync while the pointer is over the ring OR over
+  // the (hoverable) tooltip body.
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const selected = open || tooltipOpen;
 
   return (
     <div className="relative inline-flex">
-      <Tooltip.Root open={open ? false : undefined}>
+      {/* Always pass a boolean `open` (never undefined) so the tooltip stays
+          fully controlled and never flips between controlled/uncontrolled —
+          which would trip React's "uncontrolled → controlled" warning.
+          While the details popover (`open`) is up we force the tooltip closed
+          (false) so the two surfaces never overlap; otherwise it follows the
+          hover-driven `tooltipOpen`. */}
+      <Tooltip.Root
+        open={open ? false : tooltipOpen}
+        onOpenChange={(next) => {
+          if (!open) setTooltipOpen(next);
+        }}
+      >
         <Tooltip.Trigger
           delay={200}
-          // Button (not span) so the ring is keyboard-focusable and clickable.
-          // While the popover is open we force-close the tooltip (open=false)
-          // to avoid the two surfaces stacking.
+          // Button (not span) so the ring is keyboard-focusable; it carries
+          // the hover-driven "selected" affordance rather than a click action.
           render={
             <button
               type="button"
-              onClick={() => setOpen((v) => !v)}
               aria-label="上下文统计"
               title="上下文统计"
             />
           }
           className={cn(
-            "inline-flex cursor-default items-center gap-1 tabular-nums outline-none",
+            "inline-flex cursor-default items-center gap-1 rounded-sm px-0.5 tabular-nums outline-none transition-colors",
+            "hover:bg-surface-muted focus-visible:bg-surface-muted",
             colorClass,
-            open && "text-accent",
+            selected && "bg-surface-muted text-accent",
           )}
         >
           <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
@@ -100,9 +119,14 @@ export function ContextRing({
           <span className="text-[10px] font-medium leading-none">{pct}%</span>
         </Tooltip.Trigger>
         <Tooltip.Portal>
-          <Tooltip.Positioner side="top" sideOffset={8}>
+          <Tooltip.Positioner side="top" sideOffset={6}>
             <Tooltip.Popup className="min-w-[200px] max-w-[260px] p-0">
-              <ContextTooltipBody snapshot={snapshot} breakdown={breakdown} />
+              <ContextTooltipBody
+                snapshot={snapshot}
+                breakdown={breakdown}
+                historyCount={history.length}
+                onShowDetails={() => setOpen(true)}
+              />
             </Tooltip.Popup>
           </Tooltip.Positioner>
         </Tooltip.Portal>
@@ -113,6 +137,9 @@ export function ContextRing({
           history={history}
           maxTokens={snapshot.maxTokens}
           onClose={() => setOpen(false)}
+          // The hover tooltip already showed the live breakdown, so jumping
+          // straight to "history" avoids a redundant first screen.
+          initialView="history"
         />
       )}
     </div>
@@ -137,13 +164,30 @@ function rowIcon(key: string) {
   }
 }
 
-/** Shared rich body used by ContextRing and StatusCapsule. */
+/**
+ * Shared rich body used by ContextRing's hover tooltip and by the
+ * ContextStatsPopover's current view.
+ *
+ * When `onShowDetails` is provided (the ContextRing hover tooltip), a
+ * trailing "查看详情" affordance is rendered at the bottom — clicking it
+ * opens the full token-details popover. When omitted (the ContextStatsPopover
+ * reuses this body for its own current view), nothing extra is rendered, so
+ * the popover keeps its own dedicated history affordance.
+ */
 export function ContextTooltipBody({
   snapshot,
   breakdown,
+  historyCount,
+  onShowDetails,
 }: {
   snapshot: ContextSnapshot;
   breakdown: ReturnType<typeof getContextBreakdown>;
+  /** Number of finalized turns, shown as a badge on the details affordance.
+   *  Optional; only meaningful with `onShowDetails`. */
+  historyCount?: number;
+  /** Open the token-details (stats) popover. Optional; when absent, no
+   *  trailing affordance is rendered. */
+  onShowDetails?: () => void;
 }) {
   const colorClass = warningColor(snapshot.warning);
   return (
@@ -184,6 +228,27 @@ export function ContextTooltipBody({
       {snapshot.model && (
         <div className="mt-1.5 border-t border-edge/70 pt-1.5 text-[10px] text-content-subtle">
           模型 · {snapshot.model}
+        </div>
+      )}
+      {onShowDetails && (
+        <div className="mt-1.5 border-t border-edge/70 pt-1">
+          <button
+            type="button"
+            onClick={onShowDetails}
+            className={cn(
+              "flex w-full items-center gap-1.5 -mx-0.5 rounded px-0.5 py-1 text-left text-[11px] transition-colors",
+              "text-content-muted hover:bg-surface-muted hover:text-content",
+            )}
+          >
+            <IconChartBar size={12} className="shrink-0 opacity-70" />
+            <span className="min-w-0 flex-1 truncate">查看详情</span>
+            {historyCount != null && (
+              <span className="rounded-full bg-surface-muted px-1.5 py-0.5 text-[10px] tabular-nums text-content-subtle">
+                {historyCount} 轮
+              </span>
+            )}
+            <IconChevronRight size={12} className="shrink-0 opacity-50" />
+          </button>
         </div>
       )}
       {/* Keep fmtTokens referenced for potential future rows */}
