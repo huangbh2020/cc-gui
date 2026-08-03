@@ -76,8 +76,27 @@ pnpm package
 
 Pre-built binaries are published on [GitHub Releases](https://github.com/huangbh2020/mcode/releases):
 
-- **macOS**: `.dmg` (arm64 + x64) — unsigned; right-click → Open on first launch.
-- **Windows**: `.exe` NSIS installer (x64) — unsigned; SmartScreen will warn.
+- **macOS**: `.dmg` (arm64 + x64)
+- **Windows**: `.exe` NSIS installer (x64)
+
+> ⚠️ **Not code-signed.** Mcode is a free MIT project without a paid Apple Developer ID or a Windows code-signing certificate, so the installers are ad-hoc signed (macOS) / unsigned (Windows). Your OS will warn on first launch — this is expected and safe. See the workarounds below.
+
+#### First-launch notes
+
+**macOS** — Gatekeeper blocks the app with *"Mcode cannot be opened because Apple cannot check it for malicious software"* / *"cannot verify the developer"*:
+
+- **macOS 15 (Sequoia) and earlier**: right-click the app → **Open** → confirm in the dialog.
+- **macOS 26+**: right-click → Open no longer works. Open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+- **Terminal (works on all versions)**:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Mcode.app
+  ```
+- **Homebrew (no warning at all)**: `brew install --cask mcode` — the cask strips the quarantine attribute at install time.
+
+**Windows** — SmartScreen shows *"Windows protected your PC"* / *"Unknown publisher"*:
+
+- Click **More info** → **Run anyway**.
+- The installer (NSIS) is per-user and can be installed without administrator rights.
 
 ### Tech stack
 
@@ -169,8 +188,27 @@ pnpm package
 
 预编译二进制发布在 [GitHub Releases](https://github.com/huangbh2020/mcode/releases):
 
-- **macOS**:`.dmg`(arm64 + x64)——未签名,首次打开需右键 → 打开。
-- **Windows**:`.exe` NSIS 安装包(x64)——未签名,SmartScreen 会提示。
+- **macOS**:`.dmg`(arm64 + x64)
+- **Windows**:`.exe` NSIS 安装包(x64)
+
+> ⚠️ **未代码签名。** Mcode 是免费的 MIT 开源项目,没有付费的 Apple Developer ID 证书,也没有 Windows 代码签名证书,因此安装包仅做了 ad-hoc 签名(macOS)/未签名(Windows)。首次启动时系统会弹出安全提示,属正常现象,可放心使用。下面是首次启动的处理方法。
+
+#### 首次启动注意事项
+
+**macOS** —— Gatekeeper 会拦截并提示 *"无法打开 Mcode,因为无法验证开发者"* / *"Apple 无法检查其是否包含恶意软件"*:
+
+- **macOS 15(Sequoia)及更早版本**:右键点击应用 → **打开** → 在弹窗中确认。
+- **macOS 26 及以上**:右键 → 打开已失效。请打开 **系统设置 → 隐私与安全性**,滚动到底部,点击 **仍要打开**。
+- **终端命令(所有版本通用)**:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Mcode.app
+  ```
+- **Homebrew(完全不提示)**:`brew install --cask mcode` —— cask 在安装时会自动去除 quarantine 属性。
+
+**Windows** —— SmartScreen 会提示 *"Windows 已保护你的电脑"* / *"未知发布者"*:
+
+- 点击 **更多信息** → **仍要运行**。
+- 安装包(NSIS)为每用户安装,无需管理员权限。
 
 ### 技术栈
 

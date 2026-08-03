@@ -8,6 +8,23 @@ import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { initUpdater } from "@main/updater.js";
 import { is } from "@main/utils.js";
 import { logStartup } from "@main/lib/startupTimer.js";
+import { log } from "@main/lib/logger.js";
+
+// Global exception handlers — install BEFORE anything else. Without these, an
+// uncaughtException (e.g. from `new BrowserWindow`, or a require() of a native
+// module that fails to load) or an unhandledRejection (from the fire-and-forget
+// `void initDb()` / `void initTheme()` / `void initUpdater()` below) crashes
+// the main process silently. In a packaged build that looks exactly like "the
+// app starts in the background but no window ever appears": the window is
+// created with show:false and the ready-to-show -> show() path never completes
+// because the process is already dying. These handlers log the cause to
+// main.log so the failure is diagnosable instead of invisible.
+process.on("uncaughtException", (err) => {
+  log.error(`uncaughtException: ${err.stack ?? err}`);
+});
+process.on("unhandledRejection", (reason) => {
+  log.error(`unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason : String(reason)}`);
+});
 
 // Single-instance lock - only one GUI instance runs at a time.
 const gotLock = app.requestSingleInstanceLock();
@@ -17,11 +34,17 @@ if (!gotLock) {
 }
 
 app.on("second-instance", () => {
-  // Someone tried to run a second instance — focus our window instead.
+  // Someone tried to run a second instance — surface our existing window.
   const wins = BrowserWindow.getAllWindows();
   if (wins.length > 0) {
     const [win] = wins;
     if (win.isMinimized()) win.restore();
+    // show() is essential here: the main window is created with show:false
+    // and only revealed on ready-to-show. If the first launch's renderer is
+    // still loading (or stalled), the window may still be hidden, and bare
+    // focus() does NOT make a hidden window visible — so the user would see
+    // "clicking the shortcut does nothing" even though the process is alive.
+    win.show();
     win.focus();
   }
 });

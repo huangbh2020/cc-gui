@@ -143,6 +143,23 @@ export function createMainWindow(): BrowserWindow {
     mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
 
+  // Safety net: if ready-to-show never fires within 3s (e.g. the renderer's
+  // first paint is stuck because a script was blocked by CSP, or a native
+  // module failed to load and stalled page load), force the window visible.
+  // The whole "app runs in the background but shows no UI" class of bugs on
+  // packaged Windows builds comes from show:false + a ready-to-show that
+  // never arrives — this guarantee ensures the user at least sees the window
+  // (and, if it's blank, can open DevTools to find out why) instead of a
+  // phantom background process. Once the real ready-to-show fires it simply
+  // calls show() again, which is a no-op on an already-visible window.
+  const showFallback = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      log.warn("ready-to-show timed out after 3s — forcing window visible");
+      mainWindow.show();
+    }
+  }, 3000);
+  mainWindow.once("closed", () => clearTimeout(showFallback));
+
   return mainWindow;
 }
 
