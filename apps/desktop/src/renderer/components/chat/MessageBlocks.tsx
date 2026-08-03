@@ -146,14 +146,17 @@ function groupBlocks(blocks: Block[]): Segment[] {
   return out;
 }
 
-/** Render a collapsible chevron icon (▾ when open, ▸ when closed). */
-function Chevron({ open }: { open: boolean }) {
+/** Render a collapsible chevron icon (▾ when open, ▸ when closed). An optional
+ *  className is merged in (e.g. "ml-auto" to pin the arrow to the row's right
+ *  edge when a ticker sits between the tally and the chevron). */
+function Chevron({ open, className }: { open: boolean; className?: string }) {
   return (
     <IconChevronDown
       size={12}
       className={cn(
         "shrink-0 text-content-subtle transition-transform",
         !open && "-rotate-90",
+        className,
       )}
     />
   );
@@ -182,11 +185,17 @@ function ProceduralRunCard({
   blocks,
   beforeMap,
   defaultOpen = false,
+  turnActive = false,
   projectPath,
 }: {
   blocks: ProceduralBlock[];
   beforeMap?: BeforeContentMap;
   defaultOpen?: boolean;
+  /** Whether the owning turn is still streaming. Drives the current-operation
+   *  ticker on the header (right of the tool tally) so the user can see what
+   *  this group is executing right now. Clears when the turn ends so
+   *  historical cards never show a stale operation. */
+  turnActive?: boolean;
   projectPath?: string | null;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -198,6 +207,16 @@ function ProceduralRunCard({
     : toolBlocks.some((b) => b.status === "error")
       ? "error"
       : "done";
+
+  // The newest tool currently executing inside this group (drives the header
+  // ticker). Reverse scan picks the most recent running tool — matches the
+  // TurnPanel's own runningTool logic.
+  const runningTool = useMemo(() => {
+    for (let i = toolBlocks.length - 1; i >= 0; i--) {
+      if (toolBlocks[i].status === "running") return toolBlocks[i];
+    }
+    return null;
+  }, [toolBlocks]);
 
   // Tool-name tally in first-invocation order.
   const counts = new Map<string, number>();
@@ -224,10 +243,15 @@ function ProceduralRunCard({
         )}
         <span className="font-medium text-content-muted">{label}</span>
         {breakdown && <span className="truncate text-content-subtle">{breakdown}</span>}
-        <Chevron open={open} />
+        {/* Live current-operation ticker — only while the turn is streaming.
+            Sits right of the tool tally and rolls up like a slot machine as
+            the agent moves between commands. Rendered inside the <button>
+            (CurrentOpTicker emits only phrasing content). */}
+        {turnActive && <CurrentOpTicker op={runningTool} turnActive={turnActive} />}
+        <Chevron open={open} className="ml-auto" />
       </button>
       {open && (
-        <div className="space-y-1.5 py-1 pl-4">
+        <div className="space-y-1.5 py-1">
           {blocks.map((b, i) => (
             <BlockView key={i} block={b} beforeMap={beforeMap} projectPath={projectPath} />
           ))}
@@ -251,11 +275,15 @@ function PanelBody({
   blocks,
   beforeMap,
   onOpenPlan,
+  turnActive = false,
   projectPath,
 }: {
   blocks: Block[];
   beforeMap?: BeforeContentMap;
   onOpenPlan?: (plan: string) => void;
+  /** Whether the owning turn is still streaming. Forwarded to each
+   *  ProceduralRunCard so its header ticker can show the live operation. */
+  turnActive?: boolean;
   projectPath?: string | null;
 }) {
   const segments = groupBlocks(blocks);
@@ -272,7 +300,13 @@ function PanelBody({
             projectPath={projectPath}
           />
         ) : (
-          <ProceduralRunCard key={i} blocks={seg.blocks} beforeMap={beforeMap} projectPath={projectPath} />
+          <ProceduralRunCard
+            key={i}
+            blocks={seg.blocks}
+            beforeMap={beforeMap}
+            turnActive={turnActive}
+            projectPath={projectPath}
+          />
         ),
       )}
     </div>
@@ -294,10 +328,9 @@ function PanelBody({
  *  - The panel collapses ONLY when the turn ends (turn.done sets endedAt) —
  *    not when the final reply text starts streaming. The user can still
  *    re-expand by clicking.
- *  - The header is minimal: just "开始 HH:MM:SS · 用时 NN.Ns". An error
- *    anywhere in the turn surfaces an X before the label; running/completed
- *    states show no glyph (the live duration and the chevron already carry
- *    the state). */
+ *  - The header is minimal: just "开始 HH:MM:SS · 用时 NN.Ns". The live
+ *    duration and the chevron already carry the running/completed state, so
+ *    no status glyph is shown. */
 export function TurnPanel({
   blocks,
   beforeMap,
@@ -345,28 +378,12 @@ export function TurnPanel({
 
   const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
 
-  // Aggregate status: any running → running; else any error → error; else done.
-  const aggregateStatus: "running" | "done" | "error" = toolBlocks.some((b) => b.status === "running")
-    ? "running"
-    : toolBlocks.some((b) => b.status === "error")
-      ? "error"
-      : "done";
-
-  // The newest tool currently executing inside this panel (drives the ticker).
-  const runningTool = useMemo(() => {
-    for (let i = toolBlocks.length - 1; i >= 0; i--) {
-      if (toolBlocks[i].status === "running") return toolBlocks[i];
-    }
-    return null;
-  }, [toolBlocks]);
-
   // Live duration via the app-wide 1s clock. Frozen turns compute a static
   // value (endedAt - startedAt) and the useNow subscription is harmless
   // (returns the same value every tick). This mirrors TurnStatRow's approach.
   const now = useNow();
   const startedAt = turnMeta?.startedAt ?? now;
   const duration = Math.max(0, (turnMeta?.endedAt ?? now) - startedAt);
-  const live = turnMeta?.endedAt === undefined;
 
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
@@ -374,7 +391,6 @@ export function TurnPanel({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-1.5 border-b border-edge py-1.5 text-left text-[13px] text-content-subtle hover:bg-surface-muted/40"
       >
-        {aggregateStatus === "error" && <IconX size={12} className="shrink-0 text-danger" />}
         <span>开始</span>
         <span className="tabular-nums text-content-muted">{fmtClock(startedAt)}</span>
         <span className="text-content-subtle">·</span>
@@ -383,15 +399,19 @@ export function TurnPanel({
         <Chevron open={open} />
       </button>
       {open && (
-        <div className="space-y-1.5 py-2 pl-5">
-          {/* While streaming, surface the current operation as a live ticker
-              above the grouped body so the user sees what's happening now. */}
-          {live && runningTool && (
-            <div className="flex items-center gap-1.5 border-b border-edge pb-1 text-[11px] text-content-subtle">
-              <CurrentOpTicker op={runningTool} turnActive={turnActive} />
-            </div>
-          )}
-          <PanelBody blocks={blocks} beforeMap={beforeMap} onOpenPlan={onOpenPlan} projectPath={projectPath} />
+        <div className="space-y-1.5 py-2">
+          {/* The live current-operation ticker now lives on each
+              ProceduralRunCard's header (right of the "Bash ×2" tally), where
+              it belongs — so the user sees what EACH group is running, not a
+              single global line here. `turnActive` is forwarded down to drive
+              those tickers; they clear themselves when the turn ends. */}
+          <PanelBody
+            blocks={blocks}
+            beforeMap={beforeMap}
+            onOpenPlan={onOpenPlan}
+            turnActive={turnActive}
+            projectPath={projectPath}
+          />
         </div>
       )}
     </div>

@@ -57,6 +57,43 @@ export const DisplayModeSchema = z.enum(["single", "tabs"]);
 export type DisplayMode = z.infer<typeof DisplayModeSchema>;
 
 /**
+ * Setting key under which the user's preferred left-bar project view is
+ * persisted. `"flat"` (default) renders projects as a flat list; `"grouped"`
+ * clusters them under collapsible headers keyed by `Project.group`. Mirrors
+ * the displayMode pipeline (hydrated in sessionStore.init, written on toggle).
+ */
+export const UI_PROJECT_VIEW_SETTING_KEY = "ui.projectView";
+
+/** zod schema + TS union for the left-bar project view preference. */
+export const ProjectViewSchema = z.enum(["flat", "grouped"]);
+export type ProjectView = z.infer<typeof ProjectViewSchema>;
+
+/**
+ * Setting key under which per-group metadata (color + display order) is
+ * persisted as a JSON object keyed by group name. Groups are not a first-class
+ * DB entity — they're derived from `Project.group` — so their metadata lives
+ * here alongside the projects that reference them.
+ *
+ * Value shape: `Record<groupName, { color?: "R G B"|null, order?: number }>`.
+ * `color` follows the same "R G B" triplet convention as userMessageColor /
+ * accentColor (null = default theme color). `order` is ascending; groups
+ * missing from the blob fall back to first-appearance order. Stale entries
+ * for dissolved groups are harmless (filtered out on read by active groups).
+ */
+export const UI_PROJECT_GROUPS_SETTING_KEY = "ui.projectGroups";
+
+/** Metadata for a single project group. */
+export const ProjectGroupMetaSchema = z.object({
+  color: z.string().nullable().optional(),
+  order: z.number().optional(),
+});
+export type ProjectGroupMeta = z.infer<typeof ProjectGroupMetaSchema>;
+
+/** Per-group metadata map (groupName → { color, order }). */
+export const ProjectGroupsMetaSchema = z.record(z.string(), ProjectGroupMetaSchema);
+export type ProjectGroupsMeta = z.infer<typeof ProjectGroupsMetaSchema>;
+
+/**
  * Setting key under which the user's preferred chat content font size (px)
  * is persisted. Value is a numeric string like "14". Validated/clamped in
  * the renderer store action (12–20 px). Mirrors the displayMode pipeline.
@@ -357,6 +394,23 @@ export type CreateProjectInput = z.infer<typeof CreateProjectSchema>;
  * DB's ON DELETE CASCADE). */
 export const DeleteProjectSchema = z.object({ id: z.string() });
 export const ArchiveProjectSchema = z.object({ id: z.string(), archived: z.boolean() });
+/* Assign a project to a group (left-bar "grouped" view). `group` is null to
+ * remove the project from any group. Group names are free-form strings; the
+ * store trims and clamps the length before sending. */
+export const SetProjectGroupSchema = z.object({
+  id: z.string(),
+  group: z.string().max(50).nullable(),
+});
+export type SetProjectGroupInput = z.infer<typeof SetProjectGroupSchema>;
+/* Persist the user's drag-to-reorder. The renderer sends the full ordered
+ * list of project ids as they should appear; the main process writes
+ * sort_order = index for each row. Sending the whole list (rather than a
+ * from/to pair) keeps the operation atomic and avoids drift when rows were
+ * deleted (leaving gaps in sort_order). */
+export const ReorderProjectsSchema = z.object({
+  orderedIds: z.array(z.string()),
+});
+export type ReorderProjectsInput = z.infer<typeof ReorderProjectsSchema>;
 export const DeleteSessionSchema = z.object({ id: z.string() });
 export const ArchiveSessionSchema = z.object({ id: z.string(), archived: z.boolean() });
 
@@ -1244,6 +1298,10 @@ export interface RpcMap {
   "project.delete": (input: { id: string }) => Promise<void>;
   /** Set a project's archived flag (soft-delete; restorable). */
   "project.archive": (input: { id: string; archived: boolean }) => Promise<{ project: Project }>;
+  /** Assign a project to a group (left-bar "grouped" view); null removes it. */
+  "project.setGroup": (input: SetProjectGroupInput) => Promise<{ project: Project }>;
+  /** Persist a drag-to-reorder: writes sort_order = index for each id. */
+  "project.reorder": (input: ReorderProjectsInput) => Promise<void>;
   // Sessions (P2 persistence)
   "session.messages": (input: SessionMessagesInput) => Promise<{ messages: MessageRecord[] }>;
   "session.saveMessages": (input: SaveMessagesInput) => Promise<void>;
@@ -1386,6 +1444,8 @@ export const IPC = {
   PROJECT_SESSIONS: "project:sessions",
   PROJECT_DELETE: "project:delete",
   PROJECT_ARCHIVE: "project:archive",
+  PROJECT_SET_GROUP: "project:setGroup",
+  PROJECT_REORDER: "project:reorder",
   SESSION_DELETE: "session:delete",
   SESSION_ARCHIVE: "session:archive",
   SESSION_RENAME: "session:rename",

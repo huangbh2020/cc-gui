@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   fmtTokens,
@@ -5,6 +6,7 @@ import {
   warningColor,
 } from "@renderer/lib/contextWindow.js";
 import type { ContextSnapshot } from "@contracts/runtime";
+import type { TurnUsageRecord } from "@renderer/stores/sessionStore.js";
 import { Tooltip } from "@renderer/components/ui/index.js";
 import {
   IconArrowBarToDown,
@@ -13,6 +15,7 @@ import {
   IconDatabase,
   IconStack2,
 } from "@renderer/lib/icons.js";
+import { ContextStatsPopover } from "./ContextStatsPopover.js";
 
 /**
  * Compact circular context-occupancy indicator for the composer row.
@@ -20,10 +23,25 @@ import {
  * Renders as a small SVG ring (ZCode-style) whose filled arc length
  * represents `snapshot.pct` and whose color escalates with the warning
  * level (ok → accent, near-window → warning amber, critical → danger red).
- * The percentage sits beside the ring. Hover shows a rich tooltip breaking
- * the usage down by token kind (input / cache / output / cost).
+ * The percentage sits beside the ring.
+ *
+ * Two interactions on the same element:
+ *  - **hover**: a rich tooltip breaks the live usage down by token kind
+ *    (input / cache / output / cost).
+ *  - **click**: opens {@link ContextStatsPopover}, which shows the live
+ *    breakdown plus a per-turn history view of every finalized turn's
+ *    tokens/cost. The tooltip is force-hidden while the popover is open so
+ *    the two surfaces never overlap.
  */
-export function ContextRing({ snapshot }: { snapshot: ContextSnapshot }) {
+export function ContextRing({
+  snapshot,
+  history,
+}: {
+  snapshot: ContextSnapshot;
+  /** Finalized-turn usage records for the active session (ephemeral, from
+   *  the store's `usageHistoryBySession`). Empty until the first turn ends. */
+  history: TurnUsageRecord[];
+}) {
   const { pct, warning } = snapshot;
   // Geometry: 14px box, ring stroke 2.5 (so inner hole ~9px).
   const size = 14;
@@ -33,50 +51,71 @@ export function ContextRing({ snapshot }: { snapshot: ContextSnapshot }) {
   const dash = c * (Math.min(100, Math.max(0, pct)) / 100);
   const colorClass = warningColor(warning);
   const breakdown = getContextBreakdown(snapshot);
+  const [open, setOpen] = useState(false);
 
   return (
-    <Tooltip.Root>
-      <Tooltip.Trigger
-        delay={200}
-        // Render as span so we don't nest buttons inside the toolbar.
-        render={<span />}
-        className={cn(
-          "inline-flex cursor-default items-center gap-1 tabular-nums",
-          colorClass,
-        )}
-      >
-        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
-          <circle
-            cx={size / 2}
-            cy={size / 2}
-            r={r}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={stroke}
-            className="opacity-20"
-          />
-          <circle
-            cx={size / 2}
-            cy={size / 2}
-            r={r}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={stroke}
-            strokeLinecap="round"
-            strokeDasharray={`${dash} ${c - dash}`}
-            transform={`rotate(-90 ${size / 2} ${size / 2})`}
-          />
-        </svg>
-        <span className="text-[10px] font-medium leading-none">{pct}%</span>
-      </Tooltip.Trigger>
-      <Tooltip.Portal>
-        <Tooltip.Positioner side="top" sideOffset={8}>
-          <Tooltip.Popup className="min-w-[200px] max-w-[260px] p-0">
-            <ContextTooltipBody snapshot={snapshot} breakdown={breakdown} />
-          </Tooltip.Popup>
-        </Tooltip.Positioner>
-      </Tooltip.Portal>
-    </Tooltip.Root>
+    <div className="relative inline-flex">
+      <Tooltip.Root open={open ? false : undefined}>
+        <Tooltip.Trigger
+          delay={200}
+          // Button (not span) so the ring is keyboard-focusable and clickable.
+          // While the popover is open we force-close the tooltip (open=false)
+          // to avoid the two surfaces stacking.
+          render={
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              aria-label="上下文统计"
+              title="上下文统计"
+            />
+          }
+          className={cn(
+            "inline-flex cursor-default items-center gap-1 tabular-nums outline-none",
+            colorClass,
+            open && "text-accent",
+          )}
+        >
+          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={r}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={stroke}
+              className="opacity-20"
+            />
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={r}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={stroke}
+              strokeLinecap="round"
+              strokeDasharray={`${dash} ${c - dash}`}
+              transform={`rotate(-90 ${size / 2} ${size / 2})`}
+            />
+          </svg>
+          <span className="text-[10px] font-medium leading-none">{pct}%</span>
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Positioner side="top" sideOffset={8}>
+            <Tooltip.Popup className="min-w-[200px] max-w-[260px] p-0">
+              <ContextTooltipBody snapshot={snapshot} breakdown={breakdown} />
+            </Tooltip.Popup>
+          </Tooltip.Positioner>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+      {open && (
+        <ContextStatsPopover
+          snapshot={snapshot}
+          history={history}
+          maxTokens={snapshot.maxTokens}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </div>
   );
 }
 

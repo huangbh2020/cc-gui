@@ -1,0 +1,284 @@
+/**
+ * Context-stats popover anchored above the ContextRing in the composer row.
+ *
+ * Two stacked views toggled by an in-component `view` state (no second
+ * popover layer):
+ *
+ *  - **current**: reuses {@link ContextTooltipBody} for the live breakdown of
+ *    the active session's context window, plus a trailing "history" affordance
+ *    that switches to the history view.
+ *  - **history**: a compact, scrollable table of every finalized turn in this
+ *    session — one row per turn with tokens / cost / duration / model, and a
+ *    totals row at the bottom.
+ *
+ * The data source is the store's `usageHistoryBySession` map (append-only,
+ * per session, ephemeral — a restart starts empty, so the empty-state hint
+ * guides the user). Positioning mirrors {@link ActivityPopover}: an absolutely
+ * positioned panel right-aligned to the ring, popping above it; a transparent
+ * fixed backdrop handles outside-click dismissal.
+ */
+import { useState } from "react";
+import { cn } from "@renderer/lib/cn.js";
+import { fmtTokens, getContextBreakdown, warningColor } from "@renderer/lib/contextWindow.js";
+import type { ContextSnapshot } from "@contracts/runtime";
+import type { TurnUsageRecord } from "@renderer/stores/sessionStore.js";
+import { ContextTooltipBody } from "./ContextRing.js";
+import {
+  IconArrowLeft,
+  IconCalendarStats,
+  IconChartBar,
+  IconClock,
+} from "@renderer/lib/icons.js";
+
+type View = "current" | "history";
+
+export function ContextStatsPopover({
+  snapshot,
+  history,
+  maxTokens,
+  onClose,
+}: {
+  snapshot: ContextSnapshot;
+  history: TurnUsageRecord[];
+  /** Current window ceiling, used to render each history row's occupancy %.
+   *  Passed down from the live snapshot since history rows don't carry it. */
+  maxTokens: number;
+  onClose: () => void;
+}) {
+  const [view, setView] = useState<View>("current");
+  const breakdown = getContextBreakdown(snapshot);
+
+  return (
+    <>
+      {/* Fixed full-screen backdrop: clicking anywhere outside closes. Sits
+          below the panel (z-40) so the panel (z-50) still receives clicks. */}
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div
+        className={cn(
+          "absolute bottom-full right-0 z-50 mb-1 w-[380px]",
+          "overflow-hidden rounded-lg border border-edge bg-surface shadow-2xl",
+          "data-[starting-style]:opacity-0",
+        )}
+        // Stop-click so interacting with the panel doesn't hit the backdrop.
+        onClick={(e) => e.stopPropagation()}
+      >
+        {view === "current" ? (
+          <CurrentView
+            snapshot={snapshot}
+            breakdown={breakdown}
+            historyCount={history.length}
+            onShowHistory={() => setView("history")}
+          />
+        ) : (
+          <HistoryView
+            history={history}
+            maxTokens={maxTokens}
+            onBack={() => setView("current")}
+          />
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ───────── current view ───────── */
+
+function CurrentView({
+  snapshot,
+  breakdown,
+  historyCount,
+  onShowHistory,
+}: {
+  snapshot: ContextSnapshot;
+  breakdown: ReturnType<typeof getContextBreakdown>;
+  historyCount: number;
+  onShowHistory: () => void;
+}) {
+  return (
+    <div>
+      <ContextTooltipBody snapshot={snapshot} breakdown={breakdown} />
+      <div className="border-t border-edge/70">
+        <button
+          type="button"
+          onClick={onShowHistory}
+          className={cn(
+            "flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-[11px] transition-colors",
+            "text-content-muted hover:bg-surface-muted",
+          )}
+        >
+          <IconChartBar size={12} className="shrink-0 opacity-70" />
+          <span className="min-w-0 flex-1 truncate">历史详情</span>
+          <span className="rounded-full bg-surface-muted px-1.5 py-0.5 text-[10px] tabular-nums text-content-subtle">
+            {historyCount} 轮
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ───────── history view ───────── */
+
+/** Format a wall-clock ms as a short local time (HH:mm). */
+function fmtTime(ms: number): string {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+/** Format a duration in ms as e.g. "12s" or "1m 03s". */
+function fmtDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${m}m ${String(rem).padStart(2, "0")}s`;
+}
+
+function HistoryView({
+  history,
+  maxTokens,
+  onBack,
+}: {
+  history: TurnUsageRecord[];
+  maxTokens: number;
+  onBack: () => void;
+}) {
+  // Newest first so the most recent turn is on top without scrolling.
+  const ordered = [...history].reverse();
+  // Per-turn "input" isn't stored directly — derive it as the non-cached,
+  // non-output share of totalProcessedTokens (mirrors the live tooltip's
+  // `freshInput` definition in getContextBreakdown). Cache read/write are
+  // summed separately for the 合计 row.
+  const totals = history.reduce(
+    (acc, r) => {
+      const input = Math.max(
+        0,
+        r.totalProcessedTokens - r.outputTokens - r.cacheReadTokens - r.cacheCreationTokens,
+      );
+      acc.input += input;
+      acc.output += r.outputTokens;
+      acc.cacheRead += r.cacheReadTokens;
+      acc.cacheWrite += r.cacheCreationTokens;
+      return acc;
+    },
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  );
+
+  return (
+    <div>
+      {/* Header: back button + title + count. */}
+      <div className="flex items-center gap-1.5 border-b border-edge/70 px-2 py-1.5">
+        <button
+          type="button"
+          onClick={onBack}
+          className={cn(
+            "inline-flex items-center rounded p-0.5 text-content-subtle transition-colors",
+            "hover:bg-surface-muted hover:text-content-muted",
+          )}
+          title="返回"
+        >
+          <IconArrowLeft size={13} />
+        </button>
+        <span className="flex items-center gap-1 text-[11px] font-semibold text-content">
+          <IconChartBar size={12} className="opacity-80" />
+          历史详情 · {history.length} 轮
+        </span>
+      </div>
+
+      {ordered.length === 0 ? (
+        <div className="px-3 py-6 text-center text-[11px] text-content-subtle">
+          本轮结束后将显示历史
+        </div>
+      ) : (
+        <div className="max-h-80 overflow-y-auto">
+          <table className="w-full border-collapse text-[10px] tabular-nums">
+            <thead className="sticky top-0 bg-surface text-content-subtle">
+              <tr className="border-b border-edge/70">
+                <th className="px-1.5 py-1 text-left font-medium">轮次</th>
+                <th className="px-1 py-1 text-right font-medium">输入</th>
+                <th className="px-1 py-1 text-right font-medium">输出</th>
+                <th className="px-1 py-1 text-right font-medium">缓存读</th>
+                <th className="px-1 py-1 text-right font-medium">缓存写</th>
+                <th className="px-1 py-1 text-right font-medium">占用</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ordered.map((r, i) => {
+                const turnNo = history.length - i;
+                const pct =
+                  maxTokens > 0
+                    ? Math.min(100, Math.round((r.usedTokens / maxTokens) * 100))
+                    : 0;
+                const input = Math.max(
+                  0,
+                  r.totalProcessedTokens - r.outputTokens - r.cacheReadTokens - r.cacheCreationTokens,
+                );
+                return (
+                  <tr
+                    key={`${r.endedAt}-${i}`}
+                    className="border-b border-edge/30 hover:bg-surface-muted"
+                    title={
+                      `#${turnNo} · ${fmtTime(r.endedAt)} · ${fmtDuration(r.durationMs)}\n` +
+                      `处理 ${fmtTokens(r.totalProcessedTokens)} · 累计占用 ${fmtTokens(r.usedTokens)}\n` +
+                      (r.model ? `模型 ${r.model}` : "")
+                    }
+                  >
+                    <td className="whitespace-nowrap px-1.5 py-1 text-content-muted">#{turnNo}</td>
+                    <td className="whitespace-nowrap px-1 py-1 text-right text-content-muted">
+                      {fmtTokens(input)}
+                    </td>
+                    <td className="whitespace-nowrap px-1 py-1 text-right text-content-muted">
+                      {fmtTokens(r.outputTokens)}
+                    </td>
+                    <td className="whitespace-nowrap px-1 py-1 text-right text-content-muted">
+                      {r.cacheReadTokens > 0 ? fmtTokens(r.cacheReadTokens) : "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-1 py-1 text-right text-content-muted">
+                      {r.cacheCreationTokens > 0 ? fmtTokens(r.cacheCreationTokens) : "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-1 py-1 text-right text-content-muted">
+                      {pct}%
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot className="border-t border-edge/70 bg-surface-muted/50">
+              <tr>
+                <td className="px-1.5 py-1 font-medium text-content">合计</td>
+                <td className="whitespace-nowrap px-1 py-1 text-right font-medium text-content">
+                  {fmtTokens(totals.input)}
+                </td>
+                <td className="whitespace-nowrap px-1 py-1 text-right font-medium text-content">
+                  {fmtTokens(totals.output)}
+                </td>
+                <td className="whitespace-nowrap px-1 py-1 text-right font-medium text-content">
+                  {fmtTokens(totals.cacheRead)}
+                </td>
+                <td className="whitespace-nowrap px-1 py-1 text-right font-medium text-content">
+                  {fmtTokens(totals.cacheWrite)}
+                </td>
+                <td className="px-1 py-1 text-right text-content-subtle">—</td>
+              </tr>
+            </tfoot>
+          </table>
+
+          {/* Footer legend: time/duration/model aren't columns in the table —
+              surfaced here as a muted hint so the user knows they live in each
+              row's tooltip. */}
+          <div className="flex items-center gap-3 px-2 py-1 text-[9px] text-content-subtle">
+            <span className="inline-flex items-center gap-0.5">
+              <IconCalendarStats size={10} /> 时间 / 耗时
+            </span>
+            <span className="inline-flex items-center gap-0.5">
+              <IconClock size={10} /> 模型
+            </span>
+            <span className="ml-auto italic">悬停行查看明细</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

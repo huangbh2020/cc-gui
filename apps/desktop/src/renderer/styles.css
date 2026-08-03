@@ -327,10 +327,13 @@ body,
  * EditorContent host. */
 
 .composer-host .ProseMirror {
-  /* Match the old textarea sizing: it grew with content up to max-h-72. The
-     host provides the bounding box (border/padding live on the parent in the
-     JSX); here we only constrain the editable area's height + scrolling. */
-  min-height: 1.5rem;
+  /* The host provides the bounding box (border/padding live on the parent in
+     the JSX); here we only constrain the editable area's height + scrolling.
+     min-height reserves ~2 lines of space by default so the empty composer
+     doesn't read as a cramped single line and short prompts don't cause the
+     box to jump on the first keystroke. Content grows freely up to max-height,
+     then scrolls internally. */
+  min-height: 3rem; /* ~2 lines at text-sm leading-relaxed */
   max-height: 18rem; /* 288px — mirrors the textarea's max-h-72 */
   overflow-y: auto;
   word-break: break-word;
@@ -365,11 +368,12 @@ body,
   display: inline-flex;
   align-items: center;
   gap: 0.125rem;
-  border-radius: 0.25rem;
-  border: 1px solid rgb(var(--accent) / 0.4);
-  background: rgb(var(--accent) / 0.1);
-  padding: 0 0.25rem;
+  border-radius: 0.375rem;
+  border: 1px solid rgb(var(--accent) / 0.5);
+  background: rgb(var(--accent) / 0.25);
+  padding: 0.05rem 0.375rem;
   font-size: 0.85em;
+  font-weight: 600;
   color: rgb(var(--accent));
   white-space: nowrap;
 }

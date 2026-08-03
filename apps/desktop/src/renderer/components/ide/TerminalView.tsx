@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { ContextMenu } from "@base-ui/react/context-menu";
 import "@xterm/xterm/css/xterm.css";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { IconCopy, IconClipboard } from "@renderer/lib/icons.js";
 import type { ITheme } from "@xterm/xterm";
 
 export type TerminalSessionStatus = "starting" | "running" | "exited" | "error";
@@ -29,6 +31,20 @@ interface Props {
   onReady?: (handle: TerminalViewHandle) => void;
   className?: string;
 }
+
+/** Right-click menu styling — mirrors the file/git context menus (see
+ *  FileTree.MENU_POPUP_CLASS) so the terminal menu reads as the same control
+ *  family. Defined here to keep TerminalView self-contained. */
+const CTX_MENU_POPUP_CLASS = cn(
+  "z-50 min-w-[140px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
+  "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+  "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+  "transition-[transform,opacity] duration-100",
+);
+const CTX_MENU_ITEM_CLASS = cn(
+  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted",
+  "disabled:pointer-events-none disabled:opacity-40",
+);
 
 /** Zinc/emerald mirrors of styles.css tokens — xterm needs explicit hex. */
 function buildTheme(dark: boolean): ITheme {
@@ -141,6 +157,86 @@ export function TerminalView({
     onStatusChange?.(s, detail);
   };
 
+  // Tracks whether the user has an active text selection in the terminal, so
+  // the right-click menu can enable/disable the "复制" item and we can decide
+  // whether Cmd/Ctrl+C copies or falls through to the shell (SIGINT).
+  const [hasSelection, setHasSelection] = useState(false);
+
+  // Copy the current xterm selection to the clipboard. No-ops when nothing is
+  // selected — the menu item is disabled in that case, but the keyboard path
+  // (Ctrl+Shift+C) shares this handler and may be hit with no selection.
+  const copySelection = useCallback(async () => {
+    const term = termRef.current;
+    if (!term) return;
+    const text = term.getSelection();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      // Match VS Code: copying clears the selection so the user sees feedback.
+      term.clearSelection();
+    } catch {
+      // clipboard may be unavailable (sandbox); silently no-op so the
+      // terminal keeps working. Matches the rest of the app's clipboard usage.
+    }
+  }, []);
+
+  // Read the clipboard and write it into the active PTY. Mirrors the
+  // `runCommand` line-ending normalization in TerminalPanel: shells commit on
+  // "\r" (not "\n"), so bare "\n" from a pasted multi-line block would confuse
+  // PSReadLine/readline and run lines out of order. We normalize every
+  // newline to "\r" first. Silently no-ops when no PTY is running.
+  const pasteFromClipboard = useCallback(async () => {
+    let text: string;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      // clipboard read may be blocked; nothing we can do.
+      return;
+    }
+    if (!text) return;
+    const id = terminalIdRef.current;
+    if (!id || statusRef.current !== "running") return;
+    void api.terminal.write({
+      terminalId: id,
+      data: text.replace(/\r\n|\n|\r/g, "\r"),
+    });
+  }, []);
+
+  // Intercept copy/paste chords; everything else passes through to xterm so
+  // the shell still receives Ctrl+C (SIGINT), Ctrl+D (EOF), Ctrl+L (clear),
+  // etc. Return false to signal "handled, don't send to PTY".
+  const handleKeyEvent = useCallback(
+    (event: KeyboardEvent): boolean => {
+      const term = termRef.current;
+      if (!term) return true;
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod) return true;
+
+      // macOS: Cmd+C copies when there's a selection (otherwise it should
+      // type "c" into the shell). Win/Linux use Ctrl+Shift+C to avoid
+      // clobbering Ctrl+C (SIGINT).
+      const isCopy =
+        (event.metaKey && !event.ctrlKey && event.key.toLowerCase() === "c" && term.hasSelection()) ||
+        (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "c");
+      if (isCopy) {
+        void copySelection();
+        return false;
+      }
+
+      // Paste: Cmd+V (macOS) / Ctrl+Shift+V (Win/Linux).
+      const isPaste =
+        (event.metaKey && !event.ctrlKey && event.key.toLowerCase() === "v") ||
+        (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "v");
+      if (isPaste) {
+        void pasteFromClipboard();
+        return false;
+      }
+
+      return true;
+    },
+    [copySelection, pasteFromClipboard],
+  );
+
   // Create xterm once per sessionKey.
   useEffect(() => {
     disposedRef.current = false;
@@ -191,6 +287,17 @@ export function TerminalView({
         });
     });
 
+    // Keep `hasSelection` in sync so the right-click menu can toggle the
+    // "复制" item's disabled state. Cleared on copy (clearSelection) and on
+    // buffer resets (clear/restart) — xterm fires the change in both cases.
+    const selDisp = term.onSelectionChange(() => {
+      setHasSelection(term.hasSelection());
+    });
+
+    // Route copy/paste chords through our handlers (see handleKeyEvent) and
+    // pass everything else through to the PTY so Ctrl+C etc. still work.
+    term.attachCustomKeyEventHandler(handleKeyEvent);
+
     const handle: TerminalViewHandle = {
       clear: () => term.clear(),
       focus: () => term.focus(),
@@ -226,6 +333,7 @@ export function TerminalView({
     return () => {
       disposedRef.current = true;
       dataDisp.dispose();
+      selDisp.dispose();
       const id = terminalIdRef.current;
       terminalIdRef.current = null;
       if (id) {
@@ -408,12 +516,43 @@ export function TerminalView({
   }, [active, sessionKey]);
 
   return (
-    <div
-      ref={hostRef}
-      className={cn("h-full min-h-0 w-full overflow-hidden", className)}
-      data-terminal-session={sessionKey}
-      // xterm needs a non-zero box; parent supplies flex-1 min-h-0.
-      style={{ padding: "4px 6px 6px" }}
-    />
+    <ContextMenu.Root>
+      <ContextMenu.Trigger
+        render={
+          <div
+            ref={hostRef}
+            className={cn("h-full min-h-0 w-full overflow-hidden", className)}
+            data-terminal-session={sessionKey}
+            // xterm needs a non-zero box; parent supplies flex-1 min-h-0.
+            style={{ padding: "4px 6px 6px" }}
+          />
+        }
+      />
+      <ContextMenu.Portal>
+        <ContextMenu.Positioner>
+          <ContextMenu.Popup className={CTX_MENU_POPUP_CLASS}>
+            <ContextMenu.Item
+              className={CTX_MENU_ITEM_CLASS}
+              disabled={!hasSelection}
+              onClick={() => void copySelection()}
+            >
+              <span className="shrink-0">
+                <IconCopy size={12} />
+              </span>
+              <span>复制</span>
+            </ContextMenu.Item>
+            <ContextMenu.Item
+              className={CTX_MENU_ITEM_CLASS}
+              onClick={() => void pasteFromClipboard()}
+            >
+              <span className="shrink-0">
+                <IconClipboard size={12} />
+              </span>
+              <span>粘贴</span>
+            </ContextMenu.Item>
+          </ContextMenu.Popup>
+        </ContextMenu.Positioner>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
   );
 }

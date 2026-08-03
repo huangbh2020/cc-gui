@@ -150,20 +150,36 @@ export function buildCustomEnv(cfg: ApiConfig): NonNullable<Options["env"]> {
   // ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro[1m]). Non-selected tiers use
   // the bare name — background requests are short-context by nature.
   //
-  // We do NOT auto-fill unbound tiers: a hand-written DeepSeek config (the
-  // reference that works) leaves fable/subagent unset, and Claude Code
-  // gracefully falls back to its built-in model names for background requests
-  // under those tiers. Auto-filling with the selected role's model previously
-  // caused routing mismatches (haiku channel receiving a `deepseek-v4-pro[1m]`
-  // it doesn't serve).
+  // We do NOT auto-fill unbound MODEL tiers (haiku/sonnet/opus/fable): a
+  // hand-written DeepSeek config (the reference that works) leaves fable
+  // unset, and Claude Code gracefully falls back to its built-in model names
+  // for background requests under those tiers. Auto-filling with the selected
+  // role's model previously caused routing mismatches (haiku channel
+  // receiving a `deepseek-v4-pro[1m]` it doesn't serve).
+  //
+  // Subagent is the exception — see the fallback block below.
   const selectedSupports1m = Boolean(cfg.roles[cfg.selectedRole]?.supports1m);
 
   for (const key of CUSTOM_MODEL_ROLES) {
     const binding: RoleBinding | undefined = cfg.roles[key];
     const rawModel = binding?.requestModel?.trim();
-    if (!rawModel) continue; // unbound tier — leave the SDK default untouched
+    if (!rawModel) continue; // unbound MODEL tier — leave the SDK default untouched
     const use1m = key === cfg.selectedRole && selectedSupports1m;
     env[ROLE_ENV_VAR[key]] = use1m ? with1MSuffix(rawModel) : rawModel;
+  }
+
+  // Subagent fallback — the one UNBOUND tier we DO auto-fill. When the user
+  // hasn't bound a dedicated `subagent` model, the built-in Task tool falls
+  // back to its hardcoded default (e.g. `claude-opus-4-8`). That default only
+  // exists on Anthropic's own endpoint; on a third-party gateway it produces
+  // "no available channel for model claude-opus-4-8" 503s and kills the
+  // sub-agent before it can do anything. So when subagent is unbound we route
+  // it to the SAME model the foreground turn uses (the active role's resolved
+  // model, never carrying the `[1m]` suffix — sub-agent calls are short-
+  // context). A binding, if present, always wins over this fallback.
+  if (!env.CLAUDE_CODE_SUBAGENT_MODEL) {
+    const fallback = resolveActiveModel(cfg)?.replace(/\[1m\]$/i, "");
+    if (fallback) env.CLAUDE_CODE_SUBAGENT_MODEL = fallback;
   }
 
   // Legacy haiku alias: older Claude Code builds read ANTHROPIC_SMALL_FAST_MODEL

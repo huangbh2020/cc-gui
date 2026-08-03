@@ -35,6 +35,10 @@ const api = {
       ipcRenderer.invoke(IPC.PROJECT_DELETE, input)) as RpcMap["project.delete"],
     archive: ((input) =>
       ipcRenderer.invoke(IPC.PROJECT_ARCHIVE, input)) as RpcMap["project.archive"],
+    setGroup: ((input) =>
+      ipcRenderer.invoke(IPC.PROJECT_SET_GROUP, input)) as RpcMap["project.setGroup"],
+    reorder: ((input) =>
+      ipcRenderer.invoke(IPC.PROJECT_REORDER, input)) as RpcMap["project.reorder"],
   },
   session: {
     messages: ((input) =>

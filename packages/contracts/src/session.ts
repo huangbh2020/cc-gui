@@ -34,6 +34,15 @@ export interface Project {
   /** Soft-delete flag: archived projects are hidden from the main tree and
    *  live in the "archived" section; they can be restored or hard-deleted. */
   archived: boolean;
+  /** Optional user-assigned group name. Projects sharing the same non-null
+   *  group are clustered under a collapsible group header in the left bar's
+   *  "grouped" view. null/undefined in the flat view or when ungrouped. */
+  group?: string | null;
+  /** User-reorderable position within the left bar. Lower sorts first;
+   *  created_at is the tiebreaker for projects with equal sort_order (e.g.
+   *  pre-migration rows, which all default to 0). New projects are appended
+   *  with MAX(sort_order)+1 so they land at the end. */
+  sortOrder: number;
   createdAt: number;
   updatedAt: number;
 }

@@ -4,6 +4,8 @@ import {
   CreateProjectSchema,
   DeleteProjectSchema,
   ArchiveProjectSchema,
+  SetProjectGroupSchema,
+  ReorderProjectsSchema,
   DeleteSessionSchema,
   ArchiveSessionSchema,
   ProjectSessionsSchema,
@@ -23,12 +25,17 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
       name: input.name,
       path: input.path,
       archived: false,
+      // Placeholder — ProjectRepo.create overwrites this with MAX+1; the
+      // re-read below returns the authoritative row (with the real sort_order).
+      sortOrder: 0,
       createdAt: now,
       updatedAt: now,
     };
     ProjectRepo.create(project);
-    log.info(`project created: ${project.name} (${project.path})`);
-    return { project };
+    const created = ProjectRepo.get(project.id);
+    if (!created) throw new Error(`project not found after create: ${project.id}`);
+    log.info(`project created: ${created.name} (${created.path})`);
+    return { project: created };
   });
 
   ipcMain.handle(IPC.PROJECT_LIST, () => {
@@ -63,6 +70,23 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     if (!project) throw new Error(`project not found after archive: ${input.id}`);
     log.info(`project ${input.archived ? "archived" : "restored"}: ${input.id}`);
     return { project };
+  });
+
+  // Assign a project to a group (left-bar "grouped" view). null removes it.
+  ipcMain.handle(IPC.PROJECT_SET_GROUP, (_evt, raw) => {
+    const input = SetProjectGroupSchema.parse(raw);
+    ProjectRepo.setGroup(input.id, input.group);
+    const project = ProjectRepo.get(input.id);
+    if (!project) throw new Error(`project not found after setGroup: ${input.id}`);
+    log.info(`project group set: ${input.id} -> ${input.group ?? "(none)"}`);
+    return { project };
+  });
+
+  // Persist a drag-to-reorder: writes sort_order = index for each id.
+  ipcMain.handle(IPC.PROJECT_REORDER, (_evt, raw) => {
+    const input = ReorderProjectsSchema.parse(raw);
+    ProjectRepo.reorder(input.orderedIds);
+    log.info(`projects reordered: ${input.orderedIds.length} items`);
   });
 
   // Hard-delete a session (cascades to its messages via DB FK).

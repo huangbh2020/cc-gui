@@ -48,6 +48,9 @@ import type {
 import { ProjectRepo, SettingRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
+import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
+import { resolveProtocol } from "@contracts/customModel";
+import type { ApiConfig } from "@contracts/customModel";
 import { log } from "@main/lib/logger.js";
 
 // Lazy-load simple-git so the CJS module stays out of the main-process startup
@@ -99,6 +102,60 @@ function findContainingProject(repoPath: string): string | null {
   const projects = ProjectRepo.list();
   const proj = projects.find((p) => pathWithin(p.path, repoPath));
   return proj?.path ?? null;
+}
+
+/** Resolve a custom-model config for an LLM-driven git operation (commit
+ *  message / conflict resolution), activating the OpenAI→Anthropic bridge when
+ *  the config speaks the OpenAI wire protocol.
+ *
+ *  The live-turn pipeline (`RuntimeManager.sendTurn`) does this rewrite, but the
+ *  git IPC handlers bypass it — they call `buildCustomEnv(cfg)` directly. For an
+ *  `openai`-protocol config that meant `ANTHROPIC_BASE_URL` pointed at the raw
+ *  OpenAI endpoint, the Claude binary POSTed Anthropic-format `/v1/messages` at
+ *  it, the endpoint 404'd, and the binary reported "selected model may not
+ *  exist" — the exact failure seen with gateways like MiniMax-M3.
+ *
+ *  Mirrors RuntimeManager: acquire a bridge (shared & ref-counted via
+ *  BridgeRegistry) and rewrite `baseUrl` to its local URL so the rest of the
+ *  pipeline is protocol-blind. The caller MUST release the bridge when done
+ *  (returned as `releaseBridge`, a no-op for anthropic-protocol configs).
+ *
+ *  Returns `{ config, releaseBridge }` where `config` is the (possibly
+ *  rewritten) `ApiConfig` to feed into `buildCustomEnv`, and `releaseBridge`
+ *  drops the registry reference once the query has finished. */
+async function resolveModelForGitOp(
+  customModelId: string,
+  role: string | undefined,
+): Promise<
+  | { ok: true; config: ApiConfig; releaseBridge: () => void }
+  | { ok: false; error: string }
+> {
+  const cfg = CustomModelStore.resolveApiConfig(customModelId, role);
+  if (!cfg) {
+    return { ok: false, error: "找不到指定的模型配置" };
+  }
+
+  if (resolveProtocol(cfg.protocol) === "openai") {
+    try {
+      const handle = await BridgeRegistry.acquire(customModelId, cfg);
+      return {
+        ok: true,
+        // Rewrite baseUrl to the local bridge so buildCustomEnv/the binary see
+        // an Anthropic-compatible endpoint on localhost — identical to what
+        // RuntimeManager does for a live turn. Everything downstream (auth env
+        // vars, ANTHROPIC_MODEL, the [1m] suffix) is unaffected by the rewrite.
+        config: { ...cfg, baseUrl: handle.localUrl },
+        releaseBridge: () => BridgeRegistry.release(customModelId),
+      };
+    } catch (err) {
+      const msg = (err as Error).message || String(err);
+      log.warn(`resolveModelForGitOp: bridge acquire failed for ${customModelId}: ${msg}`);
+      return { ok: false, error: `启动 OpenAI 协议桥接失败: ${msg}` };
+    }
+  }
+
+  // Anthropic-protocol config: pass through unchanged, nothing to release.
+  return { ok: true, config: cfg, releaseBridge: () => {} };
 }
 
 /* ───────────────────────── repo discovery ───────────────────────── */
@@ -498,22 +555,29 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
 
       // 3. Resolve the model config. If a customModelId is given, use that
       //    config's env + model; otherwise fall back to the built-in model.
+      //    OpenAI-protocol configs get their bridge activated here too (mirrors
+      //    RuntimeManager) — without it the binary POSTs Anthropic-format
+      //    requests at a raw OpenAI endpoint and reports "selected model may
+      //    not exist". See resolveModelForGitOp.
       const { query } = await import("@anthropic-ai/claude-agent-sdk");
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 60000); // 60s timeout
 
+      let releaseBridge: (() => void) | undefined;
       try {
         let model: string | undefined;
         let env: import("@anthropic-ai/claude-agent-sdk").Options["env"];
 
         if (input.customModelId) {
-          const cfg = CustomModelStore.resolveApiConfig(
+          const resolved = await resolveModelForGitOp(
             input.customModelId,
             input.customModelRole ?? undefined,
           );
-          if (!cfg) {
-            return { ok: false, error: "找不到指定的模型配置" };
+          if (!resolved.ok) {
+            return { ok: false, error: resolved.error };
           }
+          releaseBridge = resolved.releaseBridge;
+          const cfg = resolved.config;
           model = resolveActiveModel(cfg);
           env = buildCustomEnv(cfg);
         }
@@ -561,6 +625,10 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
         return { ok: true, message };
       } finally {
         clearTimeout(timer);
+        // Release the OpenAI bridge if one was acquired for this op (no-op for
+        // anthropic-protocol configs). Holds a server alive only as long as the
+        // query needs it; the registry closes the socket once the count hits 0.
+        releaseBridge?.();
       }
     } catch (err) {
       const msg = (err as Error).message || String(err);
@@ -627,23 +695,27 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
         `仓库 ${input.repoPath} 在合并后产生了 ${conflicted.length} 个冲突文件。` +
         `请逐一解决冲突并输出每个文件的完整最终内容。\n\n${filesBlock}`;
 
-      // 4. Resolve the model config (optional custom endpoint).
+      // 4. Resolve the model config (optional custom endpoint). OpenAI-protocol
+      //    configs activate the bridge here too (see resolveModelForGitOp).
       const { query } = await import("@anthropic-ai/claude-agent-sdk");
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 120000); // 120s — conflicts can be large
 
+      let releaseBridge: (() => void) | undefined;
       try {
         let model: string | undefined;
         let env: import("@anthropic-ai/claude-agent-sdk").Options["env"];
 
         if (input.customModelId) {
-          const cfg = CustomModelStore.resolveApiConfig(
+          const resolved = await resolveModelForGitOp(
             input.customModelId,
             input.customModelRole ?? undefined,
           );
-          if (!cfg) {
-            return { ok: false, error: "找不到指定的模型配置" };
+          if (!resolved.ok) {
+            return { ok: false, error: resolved.error };
           }
+          releaseBridge = resolved.releaseBridge;
+          const cfg = resolved.config;
           model = resolveActiveModel(cfg);
           env = buildCustomEnv(cfg);
         }
@@ -731,6 +803,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
         };
       } finally {
         clearTimeout(timer);
+        releaseBridge?.();
       }
     } catch (err) {
       const msg = (err as Error).message || String(err);

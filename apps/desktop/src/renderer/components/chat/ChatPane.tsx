@@ -113,7 +113,6 @@ function fmtDuration(ms: number): string {
  *  Rendered larger than the body text and separated from the content below by
  *  a hairline border so it reads as a distinct turn header. */
 function TurnStatRow({ meta }: { meta: TurnMeta }) {
-  const live = meta.endedAt === undefined;
   // Only subscribe to the global ticker while the turn is still running -
   // frozen turns compute a static duration and pay nothing.
   const now = useNow();
@@ -127,9 +126,6 @@ function TurnStatRow({ meta }: { meta: TurnMeta }) {
       <span className="text-content-subtle">·</span>
       <span>用时</span>
       <span className="tabular-nums text-content-muted">{fmtDuration(duration)}</span>
-      {live && (
-        <IconLoader2 size={13} className="ml-0.5 animate-spin text-accent" />
-      )}
     </div>
   );
 }
@@ -1107,8 +1103,12 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
             )}
             {/* Text replies (and plan / turn-files / error blocks) stay
                 visible below the panel. hideTurnStat suppresses the
-                per-message stat row since the TurnPanel header already
-                shows the turn's 开始/用时 - avoiding a duplicate timing line. */}
+                per-message stat row ONLY when a TurnPanel is rendered
+                (hasProcess) — its header already shows the turn's 开始/用时,
+                so a second timing line above the reply would be redundant.
+                For pure-text turns (no tools) there's no panel, so we let the
+                first reply message show its own TurnStatRow — otherwise the
+                "开始 · 用时" stat would vanish once the turn ends. */}
             {item.textMsgs.map((msg, idx) => (
               <MessageRow
                 key={msg.id}
@@ -1116,7 +1116,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 isStreamingTail={item.isStreamingTail && idx === item.textMsgs.length - 1}
                 isTurnTail={item.isTurnTail}
                 beforeMap={beforeMap}
-                hideTurnStat
+                hideTurnStat={hasProcess}
                 onOpenPlan={onOpenPlan}
                 projectPath={projectPath}
               />
@@ -1133,14 +1133,28 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     [beforeMap, sessionBusy, editingMessageId, lastUserMessageId, handleEditSubmit, sessionId, projectPath],
   );
 
-  // Footer content rendered after all message items. Both the plan card and
-  // the per-turn modified-files card used to live here as session-global
-  // singletons; both now render INLINE in the stream as per-turn blocks
-  // (kind: "plan" and kind: "turn-files" — see MessageBlocks + the store's
-  // plan.update / turn.files handlers). There is nothing left to render in
-  // the footer, so it stays null. Kept as a stable null to avoid churning
-  // the LegendList prop on every render.
-  const listFooter = null;
+  // Footer rendered after all message items. The plan card and per-turn
+  // modified-files card used to live here as session-global singletons; both
+  // now render INLINE in the stream as per-turn blocks (kind: "plan" and
+  // kind: "turn-files"). The footer's sole remaining job: show a loading
+  // spinner when the main agent's turn has ended (turn.done cleared
+  // isRunning) but backgrounded subagents are still running. While the main
+  // turn is in flight the stream carries its own spinner (pendingTurn /
+  // turnActive), so we stay out of the way then. Memoized so LegendList sees
+  // a stable element reference across renders that don't change the busy
+  // state (avoids needless list re-renders).
+  const listFooter = useMemo(() => {
+    if (isRunning || !hasRunningSubagents) return null;
+    return (
+      <div className="px-[var(--chat-gutter)]">
+        <div className="mx-auto max-w-5xl">
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <IconLoader2 size={12} className="animate-spin text-accent" />
+          </div>
+        </div>
+      </div>
+    );
+  }, [isRunning, hasRunningSubagents]);
 
   return (
     <div className="relative flex h-full flex-col" data-chat-root>
@@ -1593,9 +1607,12 @@ const MessageRow = memo(function MessageRow({
    *  the editor column via openPlanDrawer. */
   onOpenPlan?: (plan: string) => void;
   /** Suppress the per-turn "开始 · 用时" stat row. Set when this row is a
-   *  textMsg inside a turnGroup - the TurnPanel header already shows the
+   *  textMsg inside a turnGroup AND a TurnPanel is rendered for that turn
+   *  (i.e. the turn had tool calls) - the panel header already shows the
    *  turn's timing, so a second stat line above the reply would be
-   *  redundant. Defaults to false (standalone single items keep their own). */
+   *  redundant. Left false for pure-text turns (no panel) so the first reply
+   *  message still shows its own stat row. Defaults to false (standalone
+   *  single items keep their own). */
   hideTurnStat?: boolean;
   /** Project root for resolving file paths mentioned in the message text /
    *  shown on tool cards. Session-scoped so backgrounded tabs resolve to

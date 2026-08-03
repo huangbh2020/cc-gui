@@ -39,6 +39,8 @@ interface ProjectRow {
   name: string;
   path: string;
   archived: number;
+  group: string | null;
+  sort_order: number;
   created_at: number;
   updated_at: number;
 }
@@ -49,6 +51,10 @@ function rowToProject(r: ProjectRow): Project {
     name: r.name,
     path: r.path,
     archived: !!r.archived,
+    // Normalize empty string / undefined (pre-migration rows) to null so the
+    // renderer only ever sees null | <non-empty group name>.
+    group: r.group && r.group.length > 0 ? r.group : null,
+    sortOrder: r.sort_order ?? 0,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -56,16 +62,37 @@ function rowToProject(r: ProjectRow): Project {
 
 export const ProjectRepo = {
   create(p: Project): void {
-    getDb().run(
-      "INSERT INTO projects (id, name, path, archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-      [v(p.id), v(p.name), v(p.path), v(p.archived ? 1 : 0), v(p.createdAt), v(p.updatedAt)],
+    const db = getDb();
+    // Append the new project at the end: MAX(sort_order)+1. COALESCE handles
+    // the empty-table case (MAX returns NULL → -1 → next is 0). Computed here
+    // (not passed in) so callers don't have to reason about ordering.
+    const nextOrderStmt = db.prepare(
+      "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM projects",
+    );
+    nextOrderStmt.step();
+    const nextOrder = (nextOrderStmt.getAsObject() as { next: number }).next;
+    nextOrderStmt.free();
+    db.run(
+      "INSERT INTO projects (id, name, path, archived, `group`, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        v(p.id),
+        v(p.name),
+        v(p.path),
+        v(p.archived ? 1 : 0),
+        v(p.group ?? null),
+        v(nextOrder),
+        v(p.createdAt),
+        v(p.updatedAt),
+      ],
     );
     persist();
   },
 
   list(): Project[] {
     const db = getDb();
-    const stmt = db.prepare("SELECT * FROM projects ORDER BY created_at ASC");
+    const stmt = db.prepare(
+      "SELECT * FROM projects ORDER BY sort_order ASC, created_at ASC",
+    );
     const out: Project[] = [];
     while (stmt.step()) out.push(rowToProject(stmt.getAsObject() as unknown as ProjectRow));
     stmt.free();
@@ -97,6 +124,40 @@ export const ProjectRepo = {
       v(Date.now()),
       v(id),
     ]);
+    persist();
+  },
+
+  /** Assign a project to a group. Pass null to remove it from any group.
+   *  `group` is a column name in SQLite so it must be backtick-quoted. */
+  setGroup(id: string, group: string | null): void {
+    getDb().run("UPDATE projects SET `group` = ?, updated_at = ? WHERE id = ?", [
+      v(group),
+      v(Date.now()),
+      v(id),
+    ]);
+    persist();
+  },
+
+  /** Rewrite sort_order for every id in `orderedIds` (index = position).
+   *  Accepts the full ordered list so the operation is idempotent and
+   *  self-healing — gaps from prior deletes collapse on the next reorder.
+   *  Unknown ids in the input are skipped (the UPDATE matches nothing); ids
+   *  absent from the input keep their old sort_order. Mirrors the
+   *  MessageRepo.replaceAll transaction pattern. */
+  reorder(orderedIds: string[]): void {
+    const db = getDb();
+    db.run("BEGIN");
+    try {
+      const stmt = db.prepare("UPDATE projects SET sort_order = ? WHERE id = ?");
+      for (let i = 0; i < orderedIds.length; i++) {
+        stmt.run([v(i), v(orderedIds[i])]);
+      }
+      stmt.free();
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      throw err;
+    }
     persist();
   },
 };

@@ -143,8 +143,8 @@ const SkillPill = Mention.extend({
   renderText: ({ node }) => `/${node.attrs.label ?? node.attrs.id ?? ""}`,
   HTMLAttributes: {
     class: cn(
-      "skill-pill inline-flex items-center gap-0.5 rounded border border-accent/40 bg-accent/10 px-1 py-0 align-baseline",
-      "text-[0.85em] text-accent",
+      "skill-pill inline-flex items-center gap-0.5 rounded-md border border-accent/50 bg-accent/25 px-1.5 py-0.5 align-baseline shadow-sm",
+      "text-[0.85em] font-semibold text-accent",
     ),
   },
 });
@@ -191,7 +191,7 @@ export const ComposerEditor = forwardRef<
       attributes: {
         class: cn(
           "composer-prose outline-none",
-          "min-h-[1.5rem] leading-relaxed",
+          "min-h-[3rem] leading-relaxed",
         ),
         "aria-label": placeholder,
         "data-placeholder": placeholder,

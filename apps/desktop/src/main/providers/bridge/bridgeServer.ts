@@ -167,6 +167,12 @@ async function handleMessages(
   // Anthropic requests can be served from a streaming OpenAI response (we'd
   // just collect the deltas). For the POC we forward stream as-is.
   openaiReq.stream = true;
+  // OpenAI only includes `usage` in the final streaming chunk when explicitly
+  // asked; without it the bridge never sees token counts, so the context ring
+  // in the composer stays empty. Most OpenAI-compatible endpoints honor this
+  // flag; those that don't simply omit usage and the ring degrades to its
+  // (empty) fallback — same as before.
+  openaiReq.stream_options = { include_usage: true };
 
   const upstreamUrl = buildUpstreamUrl(upstream.baseUrl);
   const jsonBody = JSON.stringify(openaiReq);

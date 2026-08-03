@@ -34,7 +34,12 @@ import {
   UI_GIT_COLLAPSED_REPOS_SETTING_KEY,
   UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY,
   UI_PANE_WIDTHS_SETTING_KEY,
+  UI_PROJECT_VIEW_SETTING_KEY,
+  UI_PROJECT_GROUPS_SETTING_KEY,
   type DisplayMode,
+  type ProjectView,
+  type ProjectGroupsMeta,
+  type ProjectGroupMeta,
   type RightPanelTab,
   type IdeEditorMode,
   type GitDiffOpenMode,
@@ -295,6 +300,15 @@ export interface SessionState {
   openTabs: string[];
   /** How the center pane renders. Persisted in the `settings` table. */
   displayMode: DisplayMode;
+  /** How the left bar renders projects. `"flat"` (default) is a plain list;
+   *  `"grouped"` clusters them under collapsible headers keyed by
+   *  `Project.group`. Persisted in the `settings` table. */
+  projectView: ProjectView;
+  /** Per-group metadata (color + display order), keyed by group name.
+   *  Persisted as a JSON blob in the `settings` table. Groups themselves
+   *  aren't a DB entity (they're derived from `Project.group`), so their
+   *  metadata lives here. */
+  groupMeta: ProjectGroupsMeta;
   /** Chat content font size in px (12–20). Persisted in the `settings`
    *  table. Applied to <html> as the --chat-font-size CSS var by
    *  lib/appearance.ts so it cascades into the message rows + markdown. */
@@ -609,6 +623,12 @@ export interface SessionState {
   reorderTab: (from: number, to: number) => void;
   deleteProject: (id: string) => Promise<void>;
   archiveProject: (id: string, archived: boolean) => Promise<void>;
+  /** Assign a project to a group (left-bar "grouped" view). Pass null to
+   *  remove it from any group. */
+  setProjectGroup: (id: string, group: string | null) => Promise<void>;
+  /** Persist a drag-to-reorder. `orderedIds` is the full visible project id
+   *  list in the new order. */
+  reorderProjects: (orderedIds: string[]) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   archiveSession: (id: string, archived: boolean) => Promise<void>;
   /** Rename a session (persist a user-edited title). Updates the row in
@@ -679,6 +699,17 @@ export interface SessionState {
   /** Update the center-pane display mode. Persists to the `settings`
    *  table so the choice survives restart. */
   setDisplayMode: (mode: DisplayMode) => Promise<void>;
+  /** Toggle the left-bar project view between flat and grouped. Persists
+   *  to the `settings` table so the choice survives restart. */
+  setProjectView: (mode: ProjectView) => Promise<void>;
+  /** Set a group's color ("R G B" triplet or null for default). */
+  setGroupColor: (name: string, rgb: string | null) => void;
+  /** Persist a new group order (full ordered name list). */
+  setGroupOrder: (orderedNames: string[]) => void;
+  /** Migrate group metadata when a group is renamed. */
+  renameGroupMeta: (oldName: string, newName: string) => void;
+  /** Write the current groupMeta to the settings blob. */
+  persistGroupMeta: (meta: ProjectGroupsMeta) => void;
   /** Update the chat content font size (clamped to 12–20 px). Persists to
    *  the `settings` table. */
   setChatFontSize: (px: number) => Promise<void>;
@@ -1829,6 +1860,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   openTabs: [],
   // Persisted in `settings` table; init() overwrites from the DB.
   displayMode: "single",
+  // Persisted in `settings` table; init() overwrites from the DB. Default
+  // "flat" so existing users see no change until they opt into grouping.
+  projectView: "flat",
+  // Per-group metadata (color + order). Empty until init() hydrates from the
+  // `ui.projectGroups` JSON blob; groups not present here fall back to default
+  // color and first-appearance order.
+  groupMeta: {},
   // Persisted in `settings` table; init() overwrites from the DB. Defaults
   // mirror the CSS var defaults in styles.css (14px = text-sm).
   chatFontSize: 14,
@@ -1936,6 +1974,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       console.error("setting.get(displayMode) failed:", err);
+    }
+
+    // projectView determines whether the left bar renders projects as a flat
+    // list or clustered under group headers. Needed before first paint so the
+    // tree mounts in the right shape.
+    try {
+      const { value } = await api.setting.get({ key: UI_PROJECT_VIEW_SETTING_KEY });
+      if (value === "flat" || value === "grouped") {
+        set({ projectView: value });
+      }
+    } catch (err) {
+      console.error("setting.get(projectView) failed:", err);
+    }
+
+    // groupMeta (per-group color + order) — parsed from the ui.projectGroups
+    // JSON blob. Defensive parse: a malformed blob leaves the default {}.
+    try {
+      const { value } = await api.setting.get({ key: UI_PROJECT_GROUPS_SETTING_KEY });
+      if (value) {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          set({ groupMeta: parsed as ProjectGroupsMeta });
+        }
+      }
+    } catch (err) {
+      console.error("setting.get(projectGroups) failed:", err);
     }
 
     // Fetch the project list and chat font size in parallel - both are needed
@@ -3580,6 +3644,101 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: DISPLAY_MODE_SETTING_KEY, value: mode });
     } catch (err) {
       console.error("setting.set(displayMode) failed:", err);
+    }
+  },
+
+  /** Toggle the left-bar project view between flat and grouped. Same
+   *  immediate-flip + fire-and-forget-persist pattern as setDisplayMode. */
+  setProjectView: async (mode) => {
+    set({ projectView: mode });
+    try {
+      await api.setting.set({ key: UI_PROJECT_VIEW_SETTING_KEY, value: mode });
+    } catch (err) {
+      console.error("setting.set(projectView) failed:", err);
+    }
+  },
+
+  /** Write the current groupMeta to the settings blob (fire-and-forget). */
+  persistGroupMeta: (meta) => {
+    try {
+      void api.setting.set({
+        key: UI_PROJECT_GROUPS_SETTING_KEY,
+        value: JSON.stringify(meta),
+      });
+    } catch (err) {
+      console.error("setting.set(projectGroups) failed:", err);
+    }
+  },
+
+  /** Set a group's color. `rgb` is a "R G B" triplet or null (default). */
+  setGroupColor: (name, rgb) => {
+    const meta = get().groupMeta;
+    const next: ProjectGroupsMeta = {
+      ...meta,
+      [name]: { ...meta[name], color: rgb },
+    };
+    set({ groupMeta: next });
+    get().persistGroupMeta(next);
+  },
+
+  /** Persist a new group order. `orderedNames` is the full group-name list in
+   *  the desired order; index becomes each group's `order`. */
+  setGroupOrder: (orderedNames) => {
+    const meta = get().groupMeta;
+    const next: ProjectGroupsMeta = { ...meta };
+    orderedNames.forEach((name, i) => {
+      next[name] = { ...next[name], order: i };
+    });
+    set({ groupMeta: next });
+    get().persistGroupMeta(next);
+  },
+
+  /** Migrate a group's metadata when it's renamed (color + order follow). */
+  renameGroupMeta: (oldName, newName) => {
+    const meta = get().groupMeta;
+    if (!meta[oldName]) return;
+    const { [oldName]: entry, ...rest } = meta;
+    const next: ProjectGroupsMeta = { ...rest, [newName]: entry };
+    set({ groupMeta: next });
+    get().persistGroupMeta(next);
+  },
+
+  /** Assign a project to a group (left-bar "grouped" view). Pass null to
+   *  remove it. The returned project replaces the stale copy in state. */
+  setProjectGroup: async (id, group) => {
+    const { project } = await api.project.setGroup({ id, group });
+    set((s) => ({ projects: s.projects.map((p) => (p.id === id ? project : p)) }));
+  },
+
+  /** Persist a drag-to-reorder. The renderer sends the full ordered id list
+   *  (across the current view); here we optimistically reorder the in-memory
+   *  `projects` array to match (keeping each project object reference stable
+   *  so consumers keyed on identity don't re-render), then fire-and-forget
+   *  the DB write. Projects not present in `orderedIds` (e.g. archived rows
+   *  filtered out of the drag view) keep their relative position at the end. */
+  reorderProjects: async (orderedIds) => {
+    set((s) => {
+      const byId = new Map(s.projects.map((p) => [p.id, p]));
+      const next: Project[] = [];
+      const seen = new Set<string>();
+      for (const id of orderedIds) {
+        const p = byId.get(id);
+        if (p && !seen.has(id)) {
+          next.push(p);
+          seen.add(id);
+        }
+      }
+      // Append any projects not in orderedIds (archived / filtered out) so
+      // they aren't dropped from state.
+      for (const p of s.projects) {
+        if (!seen.has(p.id)) next.push(p);
+      }
+      return { projects: next };
+    });
+    try {
+      await api.project.reorder({ orderedIds });
+    } catch (err) {
+      console.error("project.reorder failed:", err);
     }
   },
 

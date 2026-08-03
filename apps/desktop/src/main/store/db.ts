@@ -134,17 +134,26 @@ function migrate(database: Database): void {
   // TurnFileEntry[]; null after a rewind or for sessions that never edited.
   addColumnIfMissing(database, "sessions", "turn_files", "TEXT");
   addColumnIfMissing(database, "projects", "archived", "INTEGER NOT NULL DEFAULT 0");
+  // Optional user-assigned group name for the left-bar "grouped" view. NULL
+  // means the project is ungrouped; the renderer treats "" / undefined as null.
+  addColumnIfMissing(database, "projects", "group", "TEXT");
+  // User-reorderable position (left-bar drag-to-reorder). Defaults to 0 so
+  // pre-migration rows fall back to created_at ordering; new projects get
+  // MAX(sort_order)+1 so they append to the end.
+  addColumnIfMissing(database, "projects", "sort_order", "INTEGER NOT NULL DEFAULT 0");
 }
 
 /** Add a column only if it isn't already present. SQLite has no ADD COLUMN IF
- * NOT EXISTS, so we check pragma_table_info first. */
+ * NOT EXISTS, so we check pragma_table_info first. The column and table names
+ * are double-quoted so SQLite keywords (e.g. `group`) work as identifiers —
+ * without the quotes, `ADD COLUMN group TEXT` is a syntax error. */
 function addColumnIfMissing(database: Database, table: string, column: string, def: string): void {
   const stmt = database.prepare(`SELECT name FROM pragma_table_info(?) WHERE name = ?`);
   stmt.bind([table, column]);
   const exists = stmt.step();
   stmt.free();
   if (!exists) {
-    database.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+    database.run(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${def}`);
   }
 }
 

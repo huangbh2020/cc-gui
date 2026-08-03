@@ -659,8 +659,48 @@ export class SdkMessageAdapter {
           }
         }
 
-        // TaskCreate / TaskUpdate → todo.update
-        if (b.name === "TaskCreate") {
+        // TodoWrite is claude's canonical todo tool: it writes the WHOLE
+        // list at once (every item with its current status), so a single
+        // call both adds and flips items to completed/in_progress. We
+        // replace the entire task list from its input. TaskCreate/TaskUpdate
+        // below are a different (Agent SDK task) tool that mutates
+        // incrementally — kept for compatibility, but TodoWrite is what the
+        // chat agent actually uses, and without this branch completed
+        // tasks never surfaced to the activity capsule.
+        if (b.name === "TodoWrite") {
+          const rawTodos = (b.input as Record<string, unknown> | undefined)?.todos;
+          if (Array.isArray(rawTodos)) {
+            const norm = rawTodos
+              .map((item): TodoUpdateEvent["todos"][number] | null => {
+                if (!item || typeof item !== "object") return null;
+                const obj = item as Record<string, unknown>;
+                const content = readStr(obj.content);
+                if (!content) return null;
+                const rawStatus = readStr(obj.status);
+                const status =
+                  rawStatus === "completed"
+                    ? "completed"
+                    : rawStatus === "in_progress"
+                      ? "in_progress"
+                      : "pending";
+                const rawPriority = readStr(obj.priority);
+                const priority =
+                  rawPriority === "high"
+                    ? "high"
+                    : rawPriority === "low"
+                      ? "low"
+                      : "medium";
+                return { content, status, priority };
+              })
+              .filter((x): x is TodoUpdateEvent["todos"][number] => x !== null);
+            this.state.tasks = norm;
+            this.ctx.emit({
+              type: "todo.update",
+              sessionId: this.sessionId,
+              todos: [...this.state.tasks],
+            });
+          }
+        } else if (b.name === "TaskCreate") {
           const subject = readStr((b.input as Record<string, unknown> | undefined)?.subject);
           if (subject) {
             this.state.tasks.push({ content: subject, status: "pending", priority: "medium" });

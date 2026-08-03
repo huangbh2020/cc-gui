@@ -140,6 +140,8 @@ export {
   IconArrowBarToDown,
   IconArrowBarToUp,
   IconStack2,
+  IconChartBar,
+  IconCalendarStats,
   // Editing / actions
   IconPencil,
   IconReplace,

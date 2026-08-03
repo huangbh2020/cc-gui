@@ -1,5 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { cloneElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
+import {
+  DndContext,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DraggableAttributes,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconFolder,
@@ -14,9 +32,14 @@ import {
   IconX,
   IconPencil,
   IconCopy,
+  IconList,
+  IconStack2,
+  IconArrowRight,
+  IconPalette,
 } from "@renderer/lib/icons.js";
 import { Button, ConfirmDialog, Dialog, Input } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
+import { hexToTriplet, tripletToHex } from "@renderer/lib/colorUtils.js";
 import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Project, Session } from "@contracts/session";
@@ -77,6 +100,14 @@ export function LeftBar() {
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   const runningBySession = useSessionStore((s) => s.runningBySession);
   const renameSession = useSessionStore((s) => s.renameSession);
+  const projectView = useSessionStore((s) => s.projectView);
+  const setProjectView = useSessionStore((s) => s.setProjectView);
+  const setProjectGroup = useSessionStore((s) => s.setProjectGroup);
+  const reorderProjects = useSessionStore((s) => s.reorderProjects);
+  const groupMeta = useSessionStore((s) => s.groupMeta);
+  const setGroupColor = useSessionStore((s) => s.setGroupColor);
+  const setGroupOrder = useSessionStore((s) => s.setGroupOrder);
+  const renameGroupMeta = useSessionStore((s) => s.renameGroupMeta);
 
   // Resolve a session's owning project (for the "open project folder" menu
   // action). Falls back to undefined if the session's project isn't loaded.
@@ -163,6 +194,24 @@ export function LeftBar() {
     | null
   >(null);
 
+  // ── Project grouping state (left-bar "grouped" view).
+  // `projectCtxMenu` is the right-click menu on a project row; the submenu of
+  // existing groups + "新建分组" + "移出分组" lives inside it. `groupDialog`
+  // drives the small dialog for creating a new group (or renaming one — both
+  // flows share the same input UI, distinguished by `mode`). `collapsedGroups`
+  // is in-memory expand state for the group headers, mirroring
+  // `expandedProjects` for project rows.
+  const [projectCtxMenu, setProjectCtxMenu] = useState<
+    | { project: Project; x: number; y: number }
+    | null
+  >(null);
+  const [groupDialog, setGroupDialog] = useState<
+    | { mode: "create"; projectId: string }
+    | { mode: "rename"; groupName: string }
+    | null
+  >(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
   // Split into active vs archived. Active projects show in the tree;
   // archived projects (whole-project archive) show as their own rows in
   // the archived bin, while archived SESSIONS under still-active projects
@@ -177,6 +226,174 @@ export function LeftBar() {
     .filter((g) => g.sessions.length > 0);
   const archivedCount = archivedProjects.length + archivedGroups.reduce((n, g) => n + g.sessions.length, 0);
 
+  // ── Grouped view buckets. In "grouped" mode the active tree clusters
+  // projects under collapsible headers keyed by `Project.group`. Groups are
+  // ordered by first appearance (activeProjects is already created_at-ASC);
+  // ungrouped projects (group == null) render in a trailing flat section.
+  // Memoized so the bucketing only re-runs when the project list changes.
+  const { groupedProjects, ungroupedProjects, knownGroups } = useMemo(() => {
+    const grouped = new Map<string, Project[]>();
+    const ungrouped: Project[] = [];
+    for (const p of activeProjects) {
+      const g = p.group && p.group.length > 0 ? p.group : null;
+      if (g == null) {
+        ungrouped.push(p);
+      } else {
+        const arr = grouped.get(g);
+        if (arr) arr.push(p);
+        else grouped.set(g, [p]);
+      }
+    }
+    // Reorder groups by stored `order` (from groupMeta); groups absent from
+    // meta keep their first-appearance order (stable fallback). Entries are
+    // rebuilt into a new Map so iteration reflects the sorted order.
+    const ordered = [...grouped.entries()].sort((a, b) => {
+      const oa = groupMeta[a[0]]?.order ?? Number.MAX_SAFE_INTEGER;
+      const ob = groupMeta[b[0]]?.order ?? Number.MAX_SAFE_INTEGER;
+      if (oa !== ob) return oa - ob;
+      return 0; // equal order (incl. both absent) → preserve insertion order
+    });
+    const sorted = new Map(ordered);
+    return {
+      groupedProjects: sorted,
+      ungroupedProjects: ungrouped,
+      knownGroups: Array.from(sorted.keys()),
+    };
+  }, [activeProjects, groupMeta]);
+
+  // ── Drag-to-reorder. A single SortableContext covers every visible
+  // project (flat list OR all groups flattened in display order). sortable
+  // ids are namespaced ("proj:<id>" / "group:<name>") so project ids never
+  // collide with group-header droppables. `displayOrder` is the flattened
+  // visible order used by onDragEnd to compute from/to indices.
+  const displayOrder = useMemo(() => {
+    if (projectView === "flat") return activeProjects;
+    const out: Project[] = [];
+    for (const projs of groupedProjects.values()) out.push(...projs);
+    out.push(...ungroupedProjects);
+    return out;
+  }, [projectView, activeProjects, groupedProjects, ungroupedProjects]);
+
+  // Sortable ids: projects always; group headers too in grouped view (so
+  // groups can be dragged to reorder among themselves). Both are namespaced
+  // ("proj:<id>" / "group:<name>") so they never collide.
+  const sortableItems = useMemo(() => {
+    const ids = displayOrder.map((p) => `proj:${p.id}`);
+    if (projectView === "grouped") {
+      for (const g of groupedProjects.keys()) ids.push(`group:${g}`);
+    }
+    return ids;
+  }, [displayOrder, projectView, groupedProjects]);
+
+  // Sensors: a 6px movement activates a drag (less is a click, so taps on the
+  // project row still expand/collapse). Touch gets a short delay so a scroll
+  // isn't hijacked. Mirrors SessionTabs.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 120, tolerance: 8 } }),
+  );
+
+  const findProjectById = useCallback(
+    (id: string) => activeProjects.find((p) => p.id === id),
+    [activeProjects],
+  );
+
+  // Live cross-group reassignment while dragging. Fires as the pointer moves
+  // over a different group's project or header; setProjectGroup is a no-op if
+  // the group hasn't changed (guarded here) so we don't thrash the IPC.
+  const onDragOver = useCallback(
+    (e: DragOverEvent) => {
+      const { active, over } = e;
+      if (!over) return;
+      const activeId = String(active.id);
+      const overId = String(over.id);
+      if (!activeId.startsWith("proj:")) return;
+      const pid = activeId.slice(5);
+      const proj = findProjectById(pid);
+      if (!proj) return;
+
+      if (overId.startsWith("group:")) {
+        const groupName = overId.slice(6);
+        if (proj.group !== groupName) void setProjectGroup(pid, groupName);
+      } else if (overId.startsWith("proj:")) {
+        const overProj = findProjectById(overId.slice(5));
+        const targetGroup = overProj?.group ?? null;
+        if ((proj.group ?? null) !== targetGroup) {
+          void setProjectGroup(pid, targetGroup);
+        }
+      }
+    },
+    [findProjectById, setProjectGroup],
+  );
+
+  // Final position commit on drop. Two branches: group-on-group reorders the
+  // group list (persists group order); project-on-project reorders projects.
+  // Project-dropped-on-group reassignment is handled live in onDragOver.
+  const onDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      const { active, over } = e;
+      if (!over || active.id === over.id) return;
+      const activeId = String(active.id);
+      const overId = String(over.id);
+      // Group reorder
+      if (activeId.startsWith("group:") && overId.startsWith("group:")) {
+        const names = Array.from(groupedProjects.keys());
+        const from = names.indexOf(activeId.slice(6));
+        const to = names.indexOf(overId.slice(6));
+        if (from === -1 || to === -1 || from === to) return;
+        setGroupOrder(arrayMove(names, from, to));
+        return;
+      }
+      // Project reorder
+      if (!activeId.startsWith("proj:") || !overId.startsWith("proj:")) return;
+      const ids = displayOrder.map((p) => p.id);
+      const from = ids.indexOf(activeId.slice(5));
+      const to = ids.indexOf(overId.slice(5));
+      if (from === -1 || to === -1 || from === to) return;
+      const next = arrayMove(ids, from, to);
+      void reorderProjects(next);
+    },
+    [displayOrder, reorderProjects, groupedProjects, setGroupOrder],
+  );
+
+  // Shared <ProjectNode> renderer. Hoisted as a callback so both the flat and
+  // grouped views render identical rows (and the group node can embed it).
+  // Bound to onContextMenu to open the project-grouping context menu.
+  const renderProjectNode = useCallback(
+    (p: Project) => (
+      <SortableProjectNode key={p.id} projectId={p.id}>
+        <ProjectNode
+          project={p}
+          sessions={sessionsByProject[p.id] ?? []}
+          hasMore={!!sessionsHasMoreByProject[p.id]}
+          total={sessionsTotalByProject[p.id] ?? 0}
+          expanded={!!expandedProjects[p.id]}
+          isActiveProject={p.id === activeProjectId}
+          activeSessionId={activeSessionId}
+          runningBySession={runningBySession}
+          onToggleExpand={() => toggleProjectExpanded(p.id)}
+          onNewSession={() => void startSession(p.id)}
+          onLoadMore={() => void loadMoreSessions(p.id)}
+          onSelectSession={(sid) => void openTab(sid)}
+          onDelete={() => {
+            setConfirmDelete({ kind: "project", id: p.id, name: p.name });
+          }}
+          onArchiveSession={(sid) => void archiveSession(sid, true)}
+          onDeleteSession={(s) => void deleteSession(s.id)}
+          registerNode={registerNode}
+          onContextSession={(session, x, y) => setCtxMenu({ session, x, y })}
+          onContextProject={(x, y) => setProjectCtxMenu({ project: p, x, y })}
+        />
+      </SortableProjectNode>
+    ),
+    [
+      sessionsByProject, sessionsHasMoreByProject, sessionsTotalByProject,
+      expandedProjects, activeProjectId, activeSessionId, runningBySession,
+      toggleProjectExpanded, startSession, loadMoreSessions, openTab,
+      archiveSession, deleteSession, registerNode,
+    ],
+  );
+
   return (
     <div className="flex h-full flex-col px-2 py-2 [font-size:var(--right-panel-font-size)]">
       {/* Header */}
@@ -184,51 +401,120 @@ export function LeftBar() {
         <h3 className="font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--rp-fs-md)]">
           项目
         </h3>
-        <button
-          onClick={() => void addProject()}
-          className={cn(
-            "flex items-center rounded px-1 py-0.5 text-content-muted transition-all",
-            // Always visible when there are no projects so the user has a
-            // clear entry point to add one (no empty placeholder row anymore).
-            projects.length === 0
-              ? "opacity-100 hover:text-accent"
-              : "opacity-0 hover:text-accent group-hover:opacity-100",
-          )}
-          title="打开一个文件夹作为项目"
-        >
-          <IconPlus size={12} />
-        </button>
+        <div className="flex items-center gap-1">
+          {/* View-mode toggle: flat list vs grouped under headers. Hover-
+              revealed (mirrors the add-project button below) to keep the
+              header clean; the active segment still highlights on hover so
+              the current mode is discoverable. */}
+          <div
+            className={cn(
+              "flex items-center rounded border border-edge transition-all",
+              "opacity-0 group-hover:opacity-100",
+            )}
+            role="group"
+            aria-label="项目视图模式"
+          >
+            <button
+              onClick={() => void setProjectView("flat")}
+              className={cn(
+                "flex items-center rounded-l px-1 py-0.5 transition-colors",
+                projectView === "flat"
+                  ? "bg-surface-muted text-content"
+                  : "text-content-subtle hover:bg-surface-muted/50 hover:text-content",
+              )}
+              title="常规视图（平铺列表）"
+              aria-pressed={projectView === "flat"}
+            >
+              <IconList size={13} />
+            </button>
+            <button
+              onClick={() => void setProjectView("grouped")}
+              className={cn(
+                "flex items-center rounded-r border-l border-edge px-1 py-0.5 transition-colors",
+                projectView === "grouped"
+                  ? "bg-surface-muted text-content"
+                  : "text-content-subtle hover:bg-surface-muted/50 hover:text-content",
+              )}
+              title="分组视图（按分组折叠）"
+              aria-pressed={projectView === "grouped"}
+            >
+              <IconStack2 size={13} />
+            </button>
+          </div>
+          <button
+            onClick={() => void addProject()}
+            className={cn(
+              "flex items-center rounded px-1 py-0.5 text-content-muted transition-all",
+              // Always visible when there are no projects so the user has a
+              // clear entry point to add one (no empty placeholder row anymore).
+              projects.length === 0
+                ? "opacity-100 hover:text-accent"
+                : "opacity-0 hover:text-accent group-hover:opacity-100",
+            )}
+            title="打开一个文件夹作为项目"
+          >
+            <IconPlus size={12} />
+          </button>
+        </div>
       </div>
 
-      {/* Project → session tree */}
+      {/* Project → session tree. A single DndContext wraps both view modes:
+          flat list reorders in place; grouped view reorders within the
+          flattened display order AND supports cross-group drag-to-reassign
+          (handled live in onDragOver). Group headers are droppable targets
+          (not draggable) so dropping a project on a header moves it there. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {projects.length === 0 ? null : (
-          <ul className="space-y-0.5">
-            {activeProjects.map((p) => (
-              <ProjectNode
-                key={p.id}
-                project={p}
-                sessions={sessionsByProject[p.id] ?? []}
-                hasMore={!!sessionsHasMoreByProject[p.id]}
-                total={sessionsTotalByProject[p.id] ?? 0}
-                expanded={!!expandedProjects[p.id]}
-                isActiveProject={p.id === activeProjectId}
-                activeSessionId={activeSessionId}
-                runningBySession={runningBySession}
-                onToggleExpand={() => toggleProjectExpanded(p.id)}
-                onNewSession={() => void startSession(p.id)}
-                onLoadMore={() => void loadMoreSessions(p.id)}
-                onSelectSession={(sid) => void openTab(sid)}
-                onDelete={() => {
-                  setConfirmDelete({ kind: "project", id: p.id, name: p.name });
-                }}
-                onArchiveSession={(sid) => void archiveSession(sid, true)}
-                onDeleteSession={(s) => void deleteSession(s.id)}
-                registerNode={registerNode}
-                onContextSession={(session, x, y) => setCtxMenu({ session, x, y })}
-              />
-            ))}
-          </ul>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragOver={onDragOver}
+            onDragEnd={onDragEnd}
+          >
+            <SortableContext items={sortableItems} strategy={verticalListSortingStrategy}>
+              {projectView === "flat" ? (
+                <ul className="space-y-0.5">
+                  {activeProjects.map((p) => renderProjectNode(p))}
+                </ul>
+              ) : (
+                <ul className="space-y-0.5">
+                  {Array.from(groupedProjects.entries()).map(([groupName, projs]) => (
+                    <GroupNode
+                      key={groupName}
+                      groupName={groupName}
+                      projects={projs}
+                      groupColor={groupMeta[groupName]?.color ?? null}
+                      collapsed={!!collapsedGroups[groupName]}
+                      onToggle={() =>
+                        setCollapsedGroups((s) => ({ ...s, [groupName]: !s[groupName] }))
+                      }
+                      onRenameGroup={() =>
+                        setGroupDialog({ mode: "rename", groupName })
+                      }
+                      onDeleteGroup={() => {
+                        // Removing a group nulls every member's group field.
+                        projs.forEach((p) => void setProjectGroup(p.id, null));
+                      }}
+                      onSetColor={(rgb) => setGroupColor(groupName, rgb)}
+                      renderProject={renderProjectNode}
+                    />
+                  ))}
+                  {ungroupedProjects.length > 0 && (
+                    <>
+                      {/* Separator label only when there are also groups above;
+                          a lone ungrouped section looks like the flat list. */}
+                      {groupedProjects.size > 0 && (
+                        <li className="px-1 py-0.5 text-content-subtle [font-size:var(--rp-fs-md)]">
+                          未分组
+                        </li>
+                      )}
+                      {ungroupedProjects.map((p) => renderProjectNode(p))}
+                    </>
+                  )}
+                </ul>
+              )}
+            </SortableContext>
+          </DndContext>
         )}
       </div>
 
@@ -323,6 +609,30 @@ export function LeftBar() {
         }}
       />
 
+      {/* Right-click context menu for project rows. Hosts the "移动到分组"
+          actions (existing groups + 新建分组 + 移出分组). */}
+      <ProjectContextMenu
+        ctxMenu={projectCtxMenu}
+        knownGroups={knownGroups}
+        onClose={() => setProjectCtxMenu(null)}
+        onMoveToGroup={(pid, group) => {
+          void setProjectGroup(pid, group);
+          setProjectCtxMenu(null);
+        }}
+        onCreateGroup={(pid) => {
+          setGroupDialog({ mode: "create", projectId: pid });
+          setProjectCtxMenu(null);
+        }}
+        onRemoveFromGroup={(pid) => {
+          void setProjectGroup(pid, null);
+          setProjectCtxMenu(null);
+        }}
+        onOpenFolder={(p) => {
+          void api.shell.openPath({ path: p.path });
+          setProjectCtxMenu(null);
+        }}
+      />
+
       {/* Rename dialog (shared by the context menu). */}
       <RenameDialog
         renaming={renaming}
@@ -330,6 +640,29 @@ export function LeftBar() {
         onSubmit={async (id, title) => {
           await renameSession(id, title);
           setRenaming(null);
+        }}
+      />
+
+      {/* Group dialog — shared by "新建分组" (create, targets a project) and
+          "重命名分组" (rename, targets every project in the group). Both
+          flows collect a trimmed non-empty name then dispatch setProjectGroup.
+          On rename we walk every member so the whole group moves at once. */}
+      <GroupDialog
+        state={groupDialog}
+        onClose={() => setGroupDialog(null)}
+        onSubmit={async (name) => {
+          const st = groupDialog;
+          if (!st) return;
+          if (st.mode === "create") {
+            await setProjectGroup(st.projectId, name);
+          } else {
+            // Rename: move every member of the old group to the new name, and
+            // migrate the group's metadata (color + order) to the new name.
+            const members = activeProjects.filter((p) => p.group === st.groupName);
+            await Promise.all(members.map((p) => setProjectGroup(p.id, name)));
+            renameGroupMeta(st.groupName, name);
+          }
+          setGroupDialog(null);
         }}
       />
 
@@ -382,6 +715,20 @@ interface ProjectNodeProps {
   registerNode: (id: string, el: HTMLLIElement | null) => void;
   /** Open the right-click context menu for a session at the given coords. */
   onContextSession: (session: Session, x: number, y: number) => void;
+  /** Open the right-click context menu for this project row. */
+  onContextProject: (x: number, y: number) => void;
+  /** dnd-kit sortable injection: ref for the root <li>, applied by the
+   *  SortableProjectNode wrapper so this row participates in drag-to-reorder.
+   *  Undefined when rendered outside a SortableContext. */
+  sortableRef?: (el: HTMLLIElement | null) => void;
+  /** dnd-kit transform/opacity style for the root <li>. */
+  sortableStyle?: React.CSSProperties;
+  /** dnd-kit pointer listeners spread onto the row <div> (the drag handle).
+   *  Buttons inside stopPropagation on pointerDown so they never start a drag. */
+  sortableListeners?: Record<string, unknown>;
+  sortableAttributes?: DraggableAttributes;
+  /** When true the row is the active drag source — dims it for feedback. */
+  isDragging?: boolean;
 }
 
 function ProjectNode(props: ProjectNodeProps) {
@@ -390,18 +737,29 @@ function ProjectNode(props: ProjectNodeProps) {
     runningBySession,
     onToggleExpand, onNewSession, onLoadMore, onSelectSession,
     onDelete, onArchiveSession, onDeleteSession,
-    registerNode, onContextSession,
+    registerNode, onContextSession, onContextProject,
+    sortableRef, sortableStyle, sortableListeners, sortableAttributes, isDragging,
   } = props;
   const loaded = sessions.length;
 
   return (
-    <li>
+    <li
+      ref={sortableRef}
+      style={sortableStyle}
+    >
       <div
+        {...sortableAttributes}
+        {...sortableListeners}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onContextProject(e.clientX, e.clientY);
+        }}
         className={cn(
           "group flex items-center gap-1 rounded px-1 py-1 [font-size:var(--right-panel-font-size)]",
           isActiveProject
             ? "bg-surface-muted text-content"
             : "text-content-muted hover:bg-surface-muted/50",
+          isDragging && "opacity-50",
         )}
       >
         {/* Expand / collapse toggle */}
@@ -832,6 +1190,366 @@ function RenameDialog({ renaming, onClose, onSubmit }: RenameDialogProps) {
             </Button>
             <Button variant="primary" size="sm" onClick={submit} disabled={!trimmed}>
               保存
+            </Button>
+          </div>
+          <Dialog.Close />
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+/* ── Group node (grouped view) ──
+ * A collapsible header that clusters its member projects. Mirrors the
+ * archived bin's group-header layout but is interactive: click toggles
+ * collapse, hover reveals rename/delete actions. Member projects render via
+ * the shared `renderProject` callback so rows are identical to the flat view. */
+
+interface GroupNodeProps {
+  groupName: string;
+  projects: Project[];
+  /** Per-group color as "R G B" triplet, or null for the default. */
+  groupColor: string | null;
+  collapsed: boolean;
+  onToggle: () => void;
+  onRenameGroup: () => void;
+  onDeleteGroup: () => void;
+  onSetColor: (rgb: string | null) => void;
+  renderProject: (p: Project) => React.ReactNode;
+}
+
+/** Preset swatches for the group color picker (mirrors ACCENT_PRESETS). */
+const GROUP_COLOR_PRESETS: { name: string; triplet: string; hex: string }[] = [
+  { name: "翠绿", triplet: "5 150 105", hex: "#059669" },
+  { name: "天蓝", triplet: "2 132 199", hex: "#0284c7" },
+  { name: "靛蓝", triplet: "67 56 202", hex: "#4338ca" },
+  { name: "紫罗兰", triplet: "124 58 237", hex: "#7c3aed" },
+  { name: "玫瑰红", triplet: "225 29 72", hex: "#e11d48" },
+  { name: "琥珀", triplet: "217 119 6", hex: "#d97706" },
+];
+
+function GroupNode({
+  groupName, projects, groupColor, collapsed,
+  onToggle, onRenameGroup, onDeleteGroup, onSetColor, renderProject,
+}: GroupNodeProps) {
+  // The header is both a drop target (dropping a project here reassigns its
+  // group) AND a sortable item (groups can be dragged to reorder among
+  // themselves). useSortable provides both behaviors.
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging, isOver } =
+    useSortable({ id: `group:${groupName}` });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    ...(isDragging ? { zIndex: 10 } : undefined),
+  };
+  const colorHex = groupColor ? tripletToHex(groupColor) : null;
+  return (
+    <li ref={setNodeRef} style={style} {...attributes}>
+      <div
+        {...listeners}
+        className={cn(
+          "group flex items-center gap-1 rounded px-1 py-0.5 [font-size:var(--rp-fs-md)]",
+          "text-content-subtle hover:bg-surface-muted/50",
+          isOver && "bg-surface-muted ring-1 ring-accent/40",
+          isDragging && "opacity-50",
+        )}
+      >
+        <button
+          onClick={onToggle}
+          className="flex w-3 shrink-0 items-center justify-center"
+          title={collapsed ? "展开" : "折叠"}
+        >
+          <IconChevronRight
+            size={10}
+            className={cn("transition-transform", !collapsed && "rotate-90")}
+          />
+        </button>
+        <button
+          onClick={onToggle}
+          className="flex min-w-0 flex-1 items-center gap-1 text-left font-medium"
+        >
+          <IconStack2
+            size={13}
+            className="shrink-0"
+            style={colorHex ? { color: colorHex } : undefined}
+          />
+          <span className="truncate">{groupName}</span>
+          <span className="text-content-subtle/70">({projects.length})</span>
+        </button>
+        {/* Color picker — hover-revealed palette button. The button's tint
+            reflects the current group color so it doubles as an indicator. */}
+        <Menu.Root>
+          <Menu.Trigger
+            title="设置颜色"
+            className="flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors hover:bg-surface-hover group-hover:opacity-100"
+          >
+            <IconPalette size={12} style={colorHex ? { color: colorHex } : undefined} />
+          </Menu.Trigger>
+          <Menu.Portal>
+            <Menu.Positioner align="end">
+              <Menu.Popup
+                className={cn(
+                  "z-50 min-w-[180px] origin-top-left rounded-md border border-edge bg-surface py-1 shadow-2xl",
+                  "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+                  "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+                  "transition-[transform,opacity] duration-100",
+                )}
+              >
+                <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-content-subtle">
+                  分组颜色
+                </div>
+                <div className="flex flex-wrap gap-1.5 px-3 py-1">
+                  {GROUP_COLOR_PRESETS.map((p) => (
+                    <Menu.Item
+                      key={p.triplet}
+                      onClick={() => onSetColor(p.triplet)}
+                      className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-full border-2 transition-transform hover:scale-110 data-[highlighted]:scale-110"
+                      style={{
+                        backgroundColor: p.hex,
+                        borderColor: groupColor === p.triplet ? "var(--color-content)" : "var(--color-edge)",
+                      }}
+                      title={`${p.name} · ${p.hex.toUpperCase()}`}
+                    >
+                      {groupColor === p.triplet && (
+                        <IconCheck size={12} className="text-white drop-shadow" />
+                      )}
+                    </Menu.Item>
+                  ))}
+                </div>
+                <div className="my-1 h-px bg-edge" />
+                <div className="flex items-center gap-2 px-3 py-1">
+                  <span className="text-xs text-content-muted">自定义</span>
+                  <input
+                    type="color"
+                    value={colorHex ?? "#808080"}
+                    onChange={(e) => {
+                      const triplet = hexToTriplet(e.target.value);
+                      if (triplet) onSetColor(triplet);
+                    }}
+                    className="h-6 w-8 cursor-pointer rounded border border-edge bg-transparent p-0.5"
+                  />
+                </div>
+                <Menu.Item
+                  onClick={() => onSetColor(null)}
+                  disabled={!groupColor}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-content-muted data-[highlighted]:bg-surface-muted disabled:opacity-40"
+                >
+                  恢复默认
+                </Menu.Item>
+              </Menu.Popup>
+            </Menu.Positioner>
+          </Menu.Portal>
+        </Menu.Root>
+        <button
+          onClick={onRenameGroup}
+          className="flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors hover:text-accent group-hover:opacity-100"
+          title="重命名分组"
+        >
+          <IconPencil size={12} />
+        </button>
+        <HoverIconButton onClick={onDeleteGroup} title="解散分组（不删除项目）" danger>
+          <IconX size={12} />
+        </HoverIconButton>
+      </div>
+      {!collapsed && (
+        <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-edge/50 pl-2">
+          {projects.map((p) => renderProject(p))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/* ── Sortable wrapper for a project row ──
+ * Hooks ProjectNode into the DndContext: useSortable provides the ref, the
+ * transform (visual reorder during drag), and the pointer listeners that make
+ * the row a drag handle. These are injected into ProjectNode via its optional
+ * sortable* props so the row markup stays in one place. Mirrors SessionTabs'
+ * SortableTab. The id is namespaced ("proj:<id>") to avoid colliding with
+ * group-header droppables ("group:<name>"). */
+function SortableProjectNode({
+  projectId,
+  children,
+}: {
+  projectId: string;
+  children: React.ReactElement<ProjectNodeProps>;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: `proj:${projectId}` });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    ...(isDragging ? { zIndex: 10 } : undefined),
+  };
+  return cloneElement(children, {
+    sortableRef: setNodeRef,
+    sortableStyle: style,
+    sortableListeners: listeners,
+    sortableAttributes: attributes,
+    isDragging,
+  });
+}
+
+/* ── Project right-click context menu ──
+ * Hosts the "移动到分组" actions: a flat list of existing groups (click to
+ * assign), "新建分组…" (opens the group dialog), and "移出分组" (only when
+ * the project is currently grouped). Plus an "open in file manager" entry
+ * for parity with the session context menu. */
+
+interface ProjectContextMenuProps {
+  ctxMenu: { project: Project; x: number; y: number } | null;
+  knownGroups: string[];
+  onClose: () => void;
+  onMoveToGroup: (projectId: string, group: string) => void;
+  onCreateGroup: (projectId: string) => void;
+  onRemoveFromGroup: (projectId: string) => void;
+  onOpenFolder: (project: Project) => void;
+}
+
+function ProjectContextMenu({
+  ctxMenu, knownGroups, onClose,
+  onMoveToGroup, onCreateGroup, onRemoveFromGroup, onOpenFolder,
+}: ProjectContextMenuProps) {
+  const anchor = useMemo(() => {
+    const x = ctxMenu?.x ?? 0;
+    const y = ctxMenu?.y ?? 0;
+    return {
+      getBoundingClientRect: () => ({
+        x, y, top: y, left: x, bottom: y, right: x, width: 0, height: 0, toJSON: () => ({}),
+      }),
+    };
+  }, [ctxMenu?.x, ctxMenu?.y]);
+
+  const project = ctxMenu?.project;
+  const currentGroup = project?.group && project.group.length > 0 ? project.group : null;
+
+  const itemClass = cn(
+    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs outline-none select-none",
+    "text-content-muted data-[highlighted]:bg-surface-muted",
+  );
+
+  return (
+    <Menu.Root open={!!ctxMenu} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <Menu.Portal>
+        <Menu.Positioner anchor={anchor} side="bottom" align="start">
+          <Menu.Popup
+            className={cn(
+              "z-50 min-w-[180px] origin-top-left rounded-md border border-edge bg-surface py-1 shadow-2xl",
+              "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+              "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+              "transition-[transform,opacity] duration-100",
+            )}
+          >
+            {/* Section: move to an existing group. Each row shows the group
+                name with a check on the currently-assigned one. */}
+            {knownGroups.length > 0 && (
+              <>
+                <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-content-subtle">
+                  移动到分组
+                </div>
+                {knownGroups.map((g) => (
+                  <Menu.Item
+                    key={g}
+                    onClick={() => project && onMoveToGroup(project.id, g)}
+                    className={itemClass}
+                  >
+                    <IconStack2 size={14} className="shrink-0" />
+                    <span className="flex-1 truncate">{g}</span>
+                    {currentGroup === g && <IconCheck size={13} className="shrink-0 text-accent" />}
+                  </Menu.Item>
+                ))}
+                <Menu.Separator className="my-1 h-px bg-edge" />
+              </>
+            )}
+            <Menu.Item
+              onClick={() => project && onCreateGroup(project.id)}
+              className={itemClass}
+            >
+              <IconPlus size={14} className="shrink-0" />
+              新建分组…
+            </Menu.Item>
+            {currentGroup && (
+              <Menu.Item
+                onClick={() => project && onRemoveFromGroup(project.id)}
+                className={itemClass}
+              >
+                <IconArrowRight size={14} className="shrink-0 rotate-45" />
+                移出分组
+              </Menu.Item>
+            )}
+            <Menu.Separator className="my-1 h-px bg-edge" />
+            <Menu.Item
+              onClick={() => project && onOpenFolder(project)}
+              className={itemClass}
+            >
+              <IconFolder size={14} className="shrink-0" />
+              在文件管理器中打开
+            </Menu.Item>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
+  );
+}
+
+/* ── Group dialog (create / rename) ──
+ * One input, one submit. In "create" mode the parent LeftBar dispatches
+ * setProjectGroup(projectId, name); in "rename" mode it walks every member.
+ * Empty/whitespace-only input is rejected by disabling submit (mirrors
+ * RenameDialog). */
+
+interface GroupDialogProps {
+  state: { mode: "create"; projectId: string } | { mode: "rename"; groupName: string } | null;
+  onClose: () => void;
+  onSubmit: (name: string) => Promise<void>;
+}
+
+function GroupDialog({ state, onClose, onSubmit }: GroupDialogProps) {
+  const [value, setValue] = useState("");
+
+  useEffect(() => {
+    if (state?.mode === "rename") setValue(state.groupName);
+    else setValue("");
+  }, [state]);
+
+  const trimmed = value.trim();
+  const submit = () => {
+    if (!state || !trimmed) return;
+    void onSubmit(trimmed);
+  };
+
+  return (
+    <Dialog.Root open={!!state} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Backdrop />
+        <Dialog.Popup className="w-[420px] max-w-[90vw] p-4">
+          <Dialog.Title>{state?.mode === "rename" ? "重命名分组" : "新建分组"}</Dialog.Title>
+          <Dialog.Description className="mt-1">
+            {state?.mode === "rename"
+              ? "为分组设置一个新名称，分组内所有项目会一起移动。"
+              : "输入分组名称，将该项目归入新分组。"}
+          </Dialog.Description>
+
+          <div className="mt-4">
+            <Input
+              value={value}
+              autoFocus
+              placeholder="分组名称"
+              onChange={(e) => setValue((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); submit(); }
+                if (e.key === "Escape") { e.preventDefault(); onClose(); }
+              }}
+              onFocus={(e) => (e.target as HTMLInputElement).select()}
+            />
+          </div>
+
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              取消
+            </Button>
+            <Button variant="primary" size="sm" onClick={submit} disabled={!trimmed}>
+              {state?.mode === "rename" ? "保存" : "创建"}
             </Button>
           </div>
           <Dialog.Close />

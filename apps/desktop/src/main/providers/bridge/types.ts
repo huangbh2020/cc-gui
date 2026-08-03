@@ -113,6 +113,9 @@ export interface OpenAIRequest {
   messages: OpenAIMessage[];
   max_tokens?: number;
   stream?: boolean;
+  /** OpenAI only emits `usage` in a streaming response when this is set to
+   *  `{ include_usage: true }`. Without it the token ring shows nothing. */
+  stream_options?: { include_usage?: boolean };
   temperature?: number;
   top_p?: number;
   stop?: string[];
