@@ -383,6 +383,14 @@ export type OpenPathInput = z.infer<typeof OpenPathSchema>;
 export const ShowItemInFolderSchema = z.object({ path: z.string() });
 export type ShowItemInFolderInput = z.infer<typeof ShowItemInFolderSchema>;
 
+/** Open a file with the OS's default associated application (e.g. .docx in
+ *  Word, .pdf in Preview). Accepts any path that resolves inside a known,
+ *  non-archived project root - the same containment rule as
+ *  `shell.showItemInFolder`. Used by the editor's "unsupported file" pane to
+ *  let the user open binary files the editor can't preview. */
+export const OpenFileSchema = z.object({ path: z.string() });
+export type OpenFileInput = z.infer<typeof OpenFileSchema>;
+
 /** List a project's sessions with optional pagination + archived filter.
  *  The left-bar tree loads the first `limit` (default 5) non-archived threads
  *  and appends the next page on "load more"; the archived bin requests
@@ -600,6 +608,18 @@ export const FileReadSchema = z.object({
   filePath: z.string(),
 });
 export type FileReadInput = z.infer<typeof FileReadSchema>;
+
+/** Read a file as base64-encoded binary, returned as a `data:` URL ready for an
+ *  `<img src=...>`. Used by the editor's image preview pane. Same
+ *  project-root path-traversal guard as `file:readFile`. The `mimeType` is
+ *  derived from the extension on the main side so the renderer doesn't have to.
+ *  On refusal / failure returns `{ dataUrl: "" }` so the renderer can show a
+ *  friendly error instead of throwing. */
+export const FileReadBinarySchema = z.object({
+  /** Absolute path. Must resolve inside a known project root. */
+  filePath: z.string(),
+});
+export type FileReadBinaryInput = z.infer<typeof FileReadBinarySchema>;
 
 /** One entry returned by `file.listDir`. `path` is the absolute filesystem
  *  path (already validated to sit inside a project root); `name` is the base
@@ -1250,6 +1270,8 @@ export interface RpcMap {
   "theme.set": (input: SetThemeInput) => Promise<GetThemeResult>;
   // File read (on-demand diff rendering)
   "file.readFile": (input: FileReadInput) => Promise<{ content: string }>;
+  /** Read a binary file as a base64 data URL (image preview). Same path guard. */
+  "file.readBinary": (input: FileReadBinaryInput) => Promise<{ dataUrl: string }>;
   /** List one level of a directory (non-recursive), scoped to a project root. */
   "file.listDir": (input: FileListDirInput) => Promise<{ entries: FileTreeEntry[] }>;
   /** Recursive file search under a project root (composer @ / add-context). */
@@ -1326,6 +1348,9 @@ export interface RpcMap {
   /** Reveal a file or directory in the OS file manager, selecting it. Accepts
    *  any path that resolves inside a known project root (not just the root). */
   "shell.showItemInFolder": (input: ShowItemInFolderInput) => Promise<void>;
+  /** Open a file with the OS's default associated application. Accepts any
+   *  path that resolves inside a known project root (not just the root). */
+  "shell.openFile": (input: OpenFileInput) => Promise<void>;
   /** Native multi-file picker (project-external files allowed). Returns the
    *  selected absolute paths; empty array when the user cancels. */
   "dialog.pickFiles": (input: DialogPickFilesInput) => Promise<{ paths: string[] }>;
@@ -1381,6 +1406,8 @@ export const IPC = {
   THEME_SET: "theme:set",
   // File read (on-demand diff rendering)
   FILE_READ: "file:readFile",
+  // File read as base64 data URL (image preview)
+  FILE_READ_BINARY: "file:readBinary",
   // File tree listing + writing (P4 IDE right panel)
   FILE_LIST_DIR: "file:listDir",
   FILE_SEARCH: "file:search",
@@ -1419,6 +1446,8 @@ export const IPC = {
   SHELL_OPEN_PATH: "shell:openPath",
   // Reveal a file/dir inside a project root in the OS file manager (selects it)
   SHELL_SHOW_ITEM_IN_FOLDER: "shell:showItemInFolder",
+  // Open a file inside a project root with the OS default application
+  SHELL_OPEN_FILE: "shell:openFile",
   // Native multi-file picker (project-external files allowed) for the composer
   DIALOG_PICK_FILES: "dialog:pickFiles",
   // Skill discovery for the composer `/` menu (scans ~/.claude/skills + project)

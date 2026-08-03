@@ -1,6 +1,6 @@
 import { forwardRef } from "react";
 import { cn } from "@renderer/lib/cn.js";
-import { IconClipboard, IconFile, IconSparkles, IconX } from "@renderer/lib/icons.js";
+import { IconClipboard, IconFile, IconX } from "@renderer/lib/icons.js";
 import type { ContentTag } from "@renderer/lib/contentTag.js";
 
 /**
@@ -28,7 +28,6 @@ export const ContentTagChip = forwardRef<
   }
 >(function ContentTagChip({ tag, open, onToggle, onRemove }, ref) {
   const isFile = tag.kind === "file";
-  const isSkill = tag.kind === "skill";
   return (
     <span
       ref={ref}
@@ -39,33 +38,24 @@ export const ContentTagChip = forwardRef<
           : "border-accent/40 bg-accent/10 text-accent hover:border-accent/70 hover:bg-accent/20",
       )}
     >
-      {isSkill ? (
-        // A skill tag has no previewable content — its body is display-only,
-        // so clicking it does nothing (onToggle is a no-op for skill kinds).
-        <span className="flex items-center gap-1" title={`Skill: /${tag.preview}`}>
-          <IconSparkles size={12} className="opacity-80" />
-          <span className="max-w-[160px] truncate font-normal">/{tag.preview}</span>
-        </span>
-      ) : (
-        <button
-          type="button"
-          onClick={onToggle}
-          title={isFile ? (tag.filePath ?? tag.preview) : open ? "收起预览" : "查看内容"}
-          className="flex items-center gap-1"
-        >
-          {isFile ? (
-            <IconFile size={12} className="opacity-80" />
-          ) : (
-            <IconClipboard size={12} className="opacity-80" />
-          )}
-          <span className="max-w-[160px] truncate font-normal">{tag.preview}</span>
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={onToggle}
+        title={isFile ? (tag.filePath ?? tag.preview) : open ? "收起预览" : "查看内容"}
+        className="flex items-center gap-1"
+      >
+        {isFile ? (
+          <IconFile size={12} className="opacity-80" />
+        ) : (
+          <IconClipboard size={12} className="opacity-80" />
+        )}
+        <span className="max-w-[160px] truncate font-normal">{tag.preview}</span>
+      </button>
       <button
         type="button"
         onClick={onRemove}
-        title={isSkill ? "删除此 skill" : "删除此附件"}
-        aria-label={isSkill ? "删除此 skill" : "删除此附件"}
+        title="删除此附件"
+        aria-label="删除此附件"
         className="ml-0.5 flex h-4 w-4 items-center justify-center rounded text-accent/70 transition-colors hover:bg-accent/30 hover:text-accent"
       >
         <IconX size={11} />

@@ -17,7 +17,7 @@
 import type { IpcMain } from "electron";
 import { shell } from "electron";
 import { resolve, sep } from "node:path";
-import { IPC, OpenPathSchema, ShowItemInFolderSchema } from "@contracts/ipc";
+import { IPC, OpenPathSchema, ShowItemInFolderSchema, OpenFileSchema } from "@contracts/ipc";
 import { ProjectRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 
@@ -67,5 +67,26 @@ export function registerShellHandlers(ipcMain: IpcMain): void {
     // showItemInFolder opens the containing folder and selects the item. It
     // has no error return; on failure the OS simply does nothing.
     shell.showItemInFolder(input.path);
+  });
+
+  ipcMain.handle(IPC.SHELL_OPEN_FILE, async (_evt, raw) => {
+    const input = OpenFileSchema.parse(raw);
+    // Same containment rule as showItemInFolder: the path must resolve inside
+    // a known, non-archived project root. This lets the editor's unsupported
+    // file pane open .docx/.pdf/etc. in the OS default app without letting
+    // the renderer open arbitrary locations.
+    const within = ProjectRepo.list()
+      .filter((p) => !p.archived)
+      .some((p) => pathWithin(p.path, input.path));
+    if (!within) {
+      log.warn(`shell.openFile refused (outside project root): ${input.path}`);
+      return;
+    }
+    // openPath opens a file with its default application (or the folder in
+    // the file manager for a directory). Returns an error string on failure.
+    const err = await shell.openPath(input.path);
+    if (err) {
+      log.warn(`shell.openFile failed for "${input.path}": ${err}`);
+    }
   });
 }

@@ -7,7 +7,7 @@ import { extname } from "@renderer/lib/path.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { ideDirtyTracker } from "./OpenTabsBar.js";
-import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3 } from "@renderer/lib/icons.js";
+import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3, IconPhotoOff } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { Markdown } from "../chat/Markdown.js";
 // Side-effect import: configures Monaco's worker environment + local instance
@@ -80,6 +80,8 @@ export function FileEditor({
         : "edit";
 
   const markdown = isMarkdown(filePath);
+  const image = isImage(filePath);
+  const unsupported = isUnsupported(filePath);
 
   return (
     <div className="flex h-full flex-col">
@@ -90,6 +92,8 @@ export function FileEditor({
         canDiff={diffBefore != null && !historyOnly}
         onToggleMode={() => setViewMode(filePath, effectiveMode === "edit" ? "diff" : "edit")}
         isMarkdown={markdown}
+        isImage={image}
+        isUnsupported={unsupported}
         onTogglePreview={() =>
           setViewMode(filePath, effectiveMode === "preview" ? "edit" : "preview")
         }
@@ -100,7 +104,13 @@ export function FileEditor({
         {effectiveMode === "diff" && diffBefore != null ? (
           <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
         ) : effectiveMode === "preview" ? (
-          <MarkdownPreviewPane filePath={filePath} projectPath={projectPath} />
+          image ? (
+            <ImagePreviewPane filePath={filePath} />
+          ) : unsupported ? (
+            <UnsupportedPane filePath={filePath} />
+          ) : (
+            <MarkdownPreviewPane filePath={filePath} projectPath={projectPath} />
+          )
         ) : (
           <EditPane filePath={filePath} />
         )}
@@ -118,6 +128,8 @@ function EditorToolbar({
   canDiff,
   onToggleMode,
   isMarkdown,
+  isImage,
+  isUnsupported,
   onTogglePreview,
   editorMode,
   onToggleEditorMode,
@@ -128,10 +140,16 @@ function EditorToolbar({
   canDiff: boolean;
   onToggleMode: () => void;
   isMarkdown: boolean;
+  isImage: boolean;
+  isUnsupported: boolean;
   onTogglePreview: () => void;
   editorMode: "tabs" | "replace";
   onToggleEditorMode: () => void;
 }) {
+  // Files that default to a read-only preview pane (markdown rendered, image
+  // displayed, or an unsupported-type notice). These get a Preview/Edit toggle
+  // so the user can still drop into the raw Monaco editor if they want.
+  const hasPreviewToggle = isMarkdown || isImage || isUnsupported;
   // Show the path relative to the project root when possible (cleaner in the
   // narrow toolbar); fall back to the full path.
   const rel =
@@ -159,10 +177,13 @@ function EditorToolbar({
             {mode === "edit" ? "Diff" : "Edit"}
           </button>
         )}
-        {/* Markdown preview/edit toggle - only for .md files. In preview mode
-            the button switches to the source editor; in edit/diff mode it
-            switches to the rendered preview. */}
-        {isMarkdown && (
+        {/* Preview/Edit toggle - for files that default to a read-only preview
+            pane (Markdown rendered, image displayed, or an unsupported-type
+            notice). In preview mode the button switches to the source editor;
+            in edit/diff mode it switches to the rendered preview. For binary
+            files (image/unsupported) "Edit" shows raw content as Monaco sees
+            it (garbled for non-utf-8) - kept as an escape hatch, not the norm. */}
+        {hasPreviewToggle && (
           <button
             type="button"
             onClick={onTogglePreview}
@@ -375,6 +396,125 @@ function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; proj
   );
 }
 
+/* ───────────────────────── Image preview ───────────────────────── */
+
+/** Read-only image preview. Fetches the file as a base64 `data:` URL via the
+ *  `file.readBinary` IPC (the main process reads the bytes and enforces the
+ *  project-root path guard), then renders it in an `<img>`. Centered, with a
+ *  checkerboard backdrop so transparent PNGs read clearly. Zoom-to-fit by
+ *  default; clicking toggles 1:1 (natural size) with scroll.
+ *
+ *  Uses a data URL (not a custom protocol or `file://`) so it works under the
+ *  production CSP (`img-src 'self' data:`) with no extra privilege grants.
+ *  No dirty tracking - images are read-only. */
+function ImagePreviewPane({ filePath }: { filePath: string }) {
+  const [natural, setNatural] = useState(false);
+  // null = loading, "" = error/empty, non-empty = valid data URL
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDataUrl(null);
+    setNatural(false);
+    api.file
+      .readBinary({ filePath })
+      .then(({ dataUrl: url }) => {
+        if (!cancelled) setDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setDataUrl("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [filePath]);
+
+  // Loading state.
+  if (dataUrl === null) {
+    return (
+      <div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-content-subtle">
+        <IconLoader2 size={12} className="animate-spin" />
+        读取图片…
+      </div>
+    );
+  }
+  // Error / empty (refused or unreadable).
+  if (!dataUrl) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+        <IconPhotoOff size={32} className="text-content-subtle" />
+        <p className="text-[12px] font-medium text-content-muted">图片加载失败</p>
+        <p className="max-w-[320px] text-[11px] leading-relaxed text-content-subtle">
+          无法预览此图片文件,可能已损坏或格式不受支持
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="h-full overflow-auto bg-surface"
+      style={{
+        backgroundImage:
+          "linear-gradient(45deg, var(--color-surface-muted) 25%, transparent 25%), linear-gradient(-45deg, var(--color-surface-muted) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, var(--color-surface-muted) 75%), linear-gradient(-45deg, transparent 75%, var(--color-surface-muted) 75%)",
+        backgroundSize: "16px 16px",
+        backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0",
+      }}
+    >
+      <div
+        className="flex min-h-full min-w-full items-center justify-center p-6"
+        onClick={() => setNatural((n) => !n)}
+        title={natural ? "点击适应窗口" : "点击查看原始尺寸"}
+      >
+        <img
+          src={dataUrl}
+          alt={filePath}
+          className={cn(
+            "transition-shadow",
+            natural ? "cursor-zoom-out" : "cursor-zoom-in",
+            "max-h-full max-w-full object-contain shadow-lg",
+          )}
+          style={natural ? { maxHeight: "none", maxWidth: "none" } : undefined}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ───────────────────────── Unsupported-file pane ───────────────────────── */
+
+/** Friendly "can't preview" pane for binary file types the editor can't handle
+ *  (Office docs, archives, binaries, audio/video, fonts, PDF). Shows the file
+ *  type, a short explanation, and an "open externally" hint. Read-only, no
+ *  Monaco - loading these as utf-8 would show garbled bytes. */
+function UnsupportedPane({ filePath }: { filePath: string }) {
+  const ext = extname(filePath).replace(/^\./, "").toUpperCase() || "未知";
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-surface-muted text-content-subtle">
+        <IconPhotoOff size={28} />
+      </div>
+      <div className="space-y-1">
+        <p className="text-[13px] font-medium text-content">
+          无法预览 {ext} 文件
+        </p>
+        <p className="max-w-[360px] text-[11px] leading-relaxed text-content-subtle">
+          此文件类型不支持在编辑器中预览。它是二进制格式,无法以文本方式显示。
+          你可以在资源管理器中用关联程序打开它。
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => void api.shell.openFile({ path: filePath })}
+        className="flex items-center gap-1.5 rounded-md border border-edge bg-surface px-3 py-1.5 text-[12px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+        title="用系统默认程序打开"
+      >
+        在系统中打开
+      </button>
+    </div>
+  );
+}
+
 /* ───────────────────────── Diff pane ───────────────────────── */
 
 /** Side-by-side diff: `before` vs `after` (or current on-disk content when
@@ -544,6 +684,91 @@ export function useMonacoTheme(): string {
 function isMarkdown(filePath: string): boolean {
   const ext = extname(filePath);
   return ext === ".md" || ext === ".markdown";
+}
+
+/** True for image files the editor can preview via the `app-resource://`
+ *  protocol (binary files served from the main process). SVG is text but also
+ *  renders as an image, so it's included. */
+function isImage(filePath: string): boolean {
+  switch (extname(filePath)) {
+    case ".png":
+    case ".jpg":
+    case ".jpeg":
+    case ".gif":
+    case ".bmp":
+    case ".ico":
+    case ".webp":
+    case ".svg":
+    case ".tif":
+    case ".tiff":
+    case ".avif":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** True for binary file types the editor can neither edit (Monaco is text-only)
+ *  nor meaningfully preview (no built-in renderer). These get a friendly
+ *  "can't preview" pane instead of garbled Monaco content. Covers Office docs,
+ *  archives, binaries, audio/video, and databases. */
+function isUnsupported(filePath: string): boolean {
+  switch (extname(filePath)) {
+    // Office documents
+    case ".doc":
+    case ".docx":
+    case ".rtf":
+    case ".xls":
+    case ".xlsx":
+    case ".ppt":
+    case ".pptx":
+    case ".odt":
+    case ".ods":
+    case ".odp":
+    // Archives
+    case ".zip":
+    case ".gz":
+    case ".tar":
+    case ".tgz":
+    case ".rar":
+    case ".7z":
+    case ".bz2":
+    case ".xz":
+    // Binaries / compiled
+    case ".exe":
+    case ".dll":
+    case ".so":
+    case ".dylib":
+    case ".bin":
+    case ".class":
+    case ".jar":
+    case ".wasm":
+    // Audio / video
+    case ".mp3":
+    case ".mp4":
+    case ".webm":
+    case ".avi":
+    case ".mov":
+    case ".ogg":
+    case ".flac":
+    case ".wav":
+    case ".m4a":
+    // Databases
+    case ".db":
+    case ".sqlite":
+    case ".sqlite3":
+    // Fonts
+    case ".woff":
+    case ".woff2":
+    case ".ttf":
+    case ".otf":
+    case ".eot":
+    // PDF (no built-in viewer; could add one later)
+    case ".pdf":
+      return true;
+    default:
+      return false;
+  }
 }
 
 /** Map a file extension to a Monaco language id. Covers the common cases;

@@ -75,6 +75,7 @@ export {
   IconFileText,
   IconFilePlus,
   IconFileSearch,
+  IconPhotoOff,
   IconFileCode,
   IconFileCode2,
   IconFileSettings,

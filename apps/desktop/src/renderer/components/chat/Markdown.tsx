@@ -168,10 +168,13 @@ const useInCode = () => useContext(CodeContext);
 /**
  * Build the react-markdown component overrides. `projectPath` is threaded in
  * so the `text` override can resolve relative file paths mentioned in prose
- * against the owning project root. The overrides are memoised per
- * `projectPath` value.
+ * against the owning project root. `skillRe` (optional) lets the `text`
+ * override turn matching `/name` occurrences into styled inline skill pills.
  */
-function buildComponents(projectPath: string | null | undefined): Components {
+function buildComponents(
+  projectPath: string | null | undefined,
+  skillRe: RegExp | null,
+): Components {
   return {
   // Inline code - styled inline, no highlighting needed.
   code({ className, children }) {
@@ -303,25 +306,35 @@ function buildComponents(projectPath: string | null | undefined): Components {
   h3({ children }) {
     return <h3 className="mb-1 mt-2 font-semibold text-content [font-size:var(--chat-font-size)]">{children}</h3>;
   },
-  // Text override: scan leaf text nodes for file-path-like tokens and wrap
-  // matches in a clickable <FileLink>. Skipped inside code spans/blocks via
-  // CodeContext. This is synchronous + allocation-light (a regex split) so it
-  // is safe to run on every text node during streaming; the expensive path
-  // (IPC resolution) happens only on click inside <FileLink>.
+  // Text override: scan leaf text nodes for file-path-like tokens AND inline
+  // skill pills, wrapping matches in <FileLink> / styled <span> respectively.
+  // Skipped inside code spans/blocks via CodeContext. Synchronous +
+  // allocation-light (regex splits) so it's safe to run on every text node
+  // during streaming; the expensive path (IPC resolution) happens only on
+  // click inside <FileLink>.
   text({ children }) {
     if (useInCode()) return <>{children}</>;
     // react-markdown passes string children for text nodes; non-string
     // (numbers/elements) pass through untouched.
     if (typeof children !== "string") return <>{children}</>;
     const segs = splitTextByPathTokens(children);
-    if (segs.length <= 1 && segs[0]?.kind === "text") return <>{children}</>;
+    // No file links and no skills → render verbatim.
+    if (
+      (segs.length <= 1 && segs[0]?.kind === "text") &&
+      (!skillRe || !skillRe.test(children))
+    ) {
+      // Reset lastIndex (test() advances it on a global regex).
+      if (skillRe) skillRe.lastIndex = 0;
+      return <>{children}</>;
+    }
+    if (skillRe) skillRe.lastIndex = 0;
     return (
       <>
         {segs.map((seg, i) =>
-          seg.kind === "text" ? (
-            <span key={i}>{seg.text}</span>
-          ) : (
+          seg.kind === "path" ? (
             <FileLink key={i} token={seg.token} projectPath={projectPath} />
+          ) : (
+            <SkillAwareText key={i} text={seg.text} skillRe={skillRe} />
           ),
         )}
       </>
@@ -330,9 +343,37 @@ function buildComponents(projectPath: string | null | undefined): Components {
   };
 }
 
+/** Render a plain-text segment, splitting out `/skillName` occurrences into
+ *  styled inline pills when `skillRe` is provided. Plain text segments without
+ *  a skill match render as a bare string (no wrapper span) to match the
+ *  pre-skill behavior. */
+function SkillAwareText({ text, skillRe }: { text: string; skillRe: RegExp | null }) {
+  if (!skillRe) return <>{text}</>;
+  skillRe.lastIndex = 0;
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let idx = 0;
+  while ((m = skillRe.exec(text)) !== null) {
+    const start = m.index;
+    const name = m[1];
+    if (start > last) parts.push(text.slice(last, start));
+    parts.push(
+      <span key={`s${idx++}`} className="skill-pill-inline" title={`Skill: /${name}`}>
+        ✦/{name}
+      </span>,
+    );
+    last = start + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  if (parts.length <= 1) return <>{parts.length ? parts[0] : text}</>;
+  return <>{parts}</>;
+}
+
 export const Markdown = memo(function Markdown({
   children,
   projectPath,
+  skillNames,
 }: {
   children: string;
   /** Project root used to resolve relative/incomplete file paths mentioned in
@@ -341,8 +382,25 @@ export const Markdown = memo(function Markdown({
    *  project path (not necessarily the active project) so backgrounded tabs
    *  resolve correctly. */
   projectPath?: string | null;
+  /** Names of skills embedded inline in this text (from the rich-text
+   *  composer). Matching `/name` occurrences are rendered as styled inline
+   *  pills so they read the same in the stream as they did in the composer.
+   *  Absent for assistant messages and plain-text user messages. */
+  skillNames?: ReadonlyArray<string>;
 }) {
-  const components = useMemo(() => buildComponents(projectPath), [projectPath]);
+  // Build a single regex matching any known `/skillName` at its boundary.
+  // Sorted longest-first so a skill named `pdf` doesn't shadow `pdf-generator`.
+  const skillRe = useMemo(() => {
+    if (!skillNames || skillNames.length === 0) return null;
+    const escaped = skillNames
+      .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .sort((a, b) => b.length - a.length);
+    return new RegExp(`/(${escaped.join("|")})(?![A-Za-z0-9_-])`, "g");
+  }, [skillNames]);
+  const components = useMemo(
+    () => buildComponents(projectPath, skillRe),
+    [projectPath, skillRe],
+  );
   return (
     <div
       className="text-content [font-size:var(--chat-font-size)] [line-height:var(--chat-line-height)] [font-weight:var(--chat-font-weight)] [&>p]:my-1.5 [&:first-child]:mt-0 [&:last-child]:mb-0"

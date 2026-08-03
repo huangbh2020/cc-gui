@@ -22,11 +22,9 @@ import type { FileSearchEntry } from "@contracts/ipc";
 import {
   type ContentTag,
   appendUniqueFileTags,
-  appendUniqueSkillTag,
   composePromptWithTags,
   makeContentTag,
   makeFileTag,
-  makeSkillTag,
   shouldPromoteToTag,
   FILE_DRAG_MIME,
 } from "@renderer/lib/contentTag.js";
@@ -36,6 +34,7 @@ import { ComposerToolbar } from "./ComposerToolbar.js";
 import { QuestionPrompt } from "./QuestionPrompt.js";
 import { ApprovalPrompt } from "./ApprovalPrompt.js";
 import { PlanApprovalPrompt } from "./PlanApprovalPrompt.js";
+import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor.js";
 import { ContentTagChip } from "./ContentTagChip.js";
 import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
@@ -596,7 +595,9 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // no message is being edited.
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const virtualListRef = useRef<LegendListRef>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Rich-text editor handle (replaces the old <textarea> ref). Exposes
+  // focus/serialize/insertSkill/etc. — see ComposerEditor.tsx.
+  const editorRef = useRef<ComposerEditorHandle>(null);
   /** Guards the one-shot "scroll to bottom on session open" effect. Reset to
    *  false on mount (keyed by sessionId upstream, so a switch re-mounts us).
    *  Set true after the first successful scroll so streaming appends after that
@@ -651,20 +652,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // Used by MessageTimeline to compute which user message is active.
   const [virtualScrollTop, setVirtualScrollTop] = useState(0);
 
-  // Auto-resize the textarea to fit its content. Resets height to "auto"
-  // first so scrollHeight measures the full content, then sets an explicit
-  // pixel height. The textarea must NOT be `flex-1` — a flex item's height
-  // is driven by the flex algorithm and would override this inline height,
-  // leaving the outer box stuck while a scrollbar appears inside. With a
-  // content-driven height (capped by max-h-72 on the element), the outer
-  // border grows with the text.
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [value]);
-
   /** Detect an @ or / trigger token at the caret and drive the inline picker.
    *  - `@` (mention): must be at line start or preceded by whitespace.
    *  - `/` (slash): same boundary rule. Query = chars after the trigger up to
@@ -696,7 +683,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           const kind: "mention" | "slash" = ch === "@" ? "mention" : "slash";
           if (pickerKind !== kind) {
             triggerStartRef.current = i - 1;
-            const rect = textareaRef.current?.getBoundingClientRect();
+            const rect = editorRef.current?.getRect();
             if (rect) setPickerAnchor(rect);
             setPickerKind(kind);
           }
@@ -711,34 +698,33 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     [inputBlocked, pickerKind],
   );
 
-  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const v = e.target.value;
-    const caret = e.target.selectionStart ?? v.length;
-    setValue(v);
-    recomputePicker(v, caret);
+  /** Content-change handler from the rich-text editor. The editor reports its
+   *  plain-text-with-skills representation; we keep a mirror in `value` (for
+   *  empty-state checks + enqueue) and re-run trigger detection. */
+  const handleChange = (text: string) => {
+    setValue(text);
+    const caret = editorRef.current?.getCaretOffset() ?? -1;
+    if (caret >= 0) recomputePicker(text, caret);
   };
 
-  /** Remove the trigger token (`@query` or `/query`) from the textarea. */
+  /** Remove the trigger token (`@query` or `/query`) from the editor. */
   const clearTriggerToken = useCallback(() => {
     const start = triggerStartRef.current;
-    const el = textareaRef.current;
-    if (start === null || !el) {
+    if (start === null || !editorRef.current) {
       setPickerKind(null);
       return;
     }
-    const caret = el.selectionStart ?? value.length;
-    const next = value.slice(0, start) + value.slice(caret);
-    setValue(next);
+    const caret = editorRef.current.getCaretOffset();
+    if (caret < 0) {
+      setPickerKind(null);
+      return;
+    }
+    editorRef.current.deleteTextRange(start, caret);
+    setValue((v) => v.slice(0, start) + v.slice(caret));
     setPickerKind(null);
     triggerStartRef.current = null;
-    // Restore focus + caret to the trigger position.
-    requestAnimationFrame(() => {
-      const t = textareaRef.current;
-      if (!t) return;
-      t.focus();
-      t.setSelectionRange(start, start);
-    });
-  }, [value]);
+    requestAnimationFrame(() => editorRef.current?.setCaretOffset(start));
+  }, []);
 
   /** Add files (from mention or attach picker) as file tags. */
   const addFileTags = useCallback(
@@ -753,10 +739,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   /** Add a skill (from the `/` picker) as an atomic skill tag. Unlike
    *  text-insertion, a skill tag can be removed only as a whole (via its ×
    *  button) and survives as a standalone block in the message stream. */
-  const addSkillTag = useCallback((skill: SkillInfo) => {
-    setTags((prev) => appendUniqueSkillTag(prev, skill));
-  }, []);
-
   // Drain the per-session "add to chat" queue. Other surfaces (e.g. the
   // file-tree context menu) push absolute paths into the queue via
   // `enqueueChatFile`; this effect materializes them as file-reference tags
@@ -785,23 +767,34 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     [addFileTags, clearTriggerToken],
   );
 
-  /** Slash picker confirm: drop the `/query` token and add a skill tag (an
-   *  atomic chip above the textarea), mirroring how `@` mention picks become
-   *  file tags. The tag survives as a standalone block in the message stream
-   *  and is removable only as a whole via its × button. The full `/name`
-   *  invocation is injected into the prompt by composePromptWithTags on Send. */
+  /** Slash picker confirm: replace the `/query` trigger token in the editor
+   *  with an inline skill pill (an atomic, non-editable node), then continue
+   *  typing after it. The pill is `/name` when serialized, sent in place. */
   const handleSlashPick = useCallback(
     (skill: SkillInfo) => {
-      addSkillTag(skill);
-      clearTriggerToken();
+      const start = triggerStartRef.current;
+      if (start === null || !editorRef.current) {
+        setPickerKind(null);
+        return;
+      }
+      const caret = editorRef.current.getCaretOffset();
+      if (caret < 0) {
+        setPickerKind(null);
+        return;
+      }
+      editorRef.current.insertSkill(skill, start, caret);
+      setPickerKind(null);
+      triggerStartRef.current = null;
+      // Refresh the mirrored text so empty-state / enqueue stay in sync.
+      setValue(editorRef.current.getTextWithSkills());
     },
-    [addSkillTag, clearTriggerToken],
+    [],
   );
 
   /** Open the attach picker from the bottom-left + button. */
   const openAttachPicker = useCallback(() => {
     if (inputBlocked) return;
-    const rect = textareaRef.current?.getBoundingClientRect();
+    const rect = editorRef.current?.getRect();
     if (rect) setAttachAnchor(rect);
     setAttachPickerQuery("");
     setAttachPickerOpen(true);
@@ -811,21 +804,16 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     (files: FileSearchEntry[]) => {
       addFileTags(files);
       setAttachPickerOpen(false);
-      requestAnimationFrame(() => textareaRef.current?.focus());
+      requestAnimationFrame(() => editorRef.current?.focus());
     },
     [addFileTags],
   );
 
-  /** Intercept pastes that are long or multi-line and promote them to a
-   *  content-tag chip instead of dumping the text into the textarea. Short
-   *  single-line pastes pass through normally. Prevents a giant log / stack
-   *  trace from burying the input area. */
-  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const text = e.clipboardData.getData("text");
-    if (!shouldPromoteToTag(text)) return; // let the default paste happen
-    e.preventDefault();
+  /** Promote a bulky paste to a content-tag chip. Forwarded to the editor,
+   *  which calls this instead of inserting long/multi-line text inline. */
+  const handlePromotePaste = useCallback((text: string) => {
     setTags((prev) => [...prev, makeContentTag(text)]);
-  };
+  }, []);
 
   // Recompute the "jump to bottom" button visibility from the live scroll
   // state. Returns true if the list is near the bottom (button hidden), false
@@ -886,20 +874,26 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   };
 
   const handleSend = () => {
-    const text = value.trim();
-    // Nothing to send if both the textarea and the tag list are empty.
+    // Serialize the editor: text has skill pills inlined as `/name` at their
+    // positions; skillNames records which pills were embedded.
+    const { text: editorText, skillNames } = editorRef.current?.serialize() ?? {
+      text: value.trim(),
+      skillNames: [],
+    };
+    const text = editorText.trim();
+    // Nothing to send if both the editor and the tag list are empty.
     if (!text && tags.length === 0) return;
     // Don't allow sending while a turn (or a backgrounded subagent from a
     // prior turn) is still in flight — the stop button is the only valid
     // action in that state.
     if (sessionBusy) return;
-    // Compose the final prompt: typed text + each tag's content as a
-    // delimited block (see composePromptWithTags).
+    // Compose the final prompt: editor text (with `/name` inline) + each tag's
+    // content as a delimited block (see composePromptWithTags).
     const prompt = composePromptWithTags(text, tags);
     if (!prompt) return;
     // Forward the tags as attachments so the sent user message keeps the
     // same chip-card presentation in the stream as it had in the composer.
-    // displayText = just the typed text; the attachment content is shown
+    // displayText = just the editor text; the attachment content is shown
     // via the cards, so we must NOT also inline it into the text block
     // (the full prompt, with attachments inlined, is still sent to the SDK).
     const attachments = tags.map((t) => ({
@@ -912,7 +906,9 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
       prompt,
       attachments.length > 0 ? attachments : undefined,
       attachments.length > 0 ? text : undefined,
+      skillNames.length > 0 ? skillNames : undefined,
     );
+    editorRef.current?.clear();
     setValue("");
     setTags([]);
     setOpenTagId(null);
@@ -924,7 +920,11 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
    *  so a drained queue item flows through the normal sendPrompt path and the
    *  user message looks identical to a live send. No-op when not busy. */
   const handleEnqueue = () => {
-    const text = value.trim();
+    const { text: editorText, skillNames } = editorRef.current?.serialize() ?? {
+      text: value.trim(),
+      skillNames: [],
+    };
+    const text = editorText.trim();
     if (!text && tags.length === 0) return;
     // Only meaningful while busy — when idle, Enter/click routes to handleSend.
     if (!sessionBusy) return;
@@ -940,20 +940,20 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
       prompt,
       displayText: text,
       attachments: attachments.length > 0 ? attachments : undefined,
+      skillNames: skillNames.length > 0 ? skillNames : undefined,
     });
+    editorRef.current?.clear();
     setValue("");
     setTags([]);
     setOpenTagId(null);
     setAnchorRect(null);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      // While busy, Enter enqueues the prompt; when idle, it sends.
-      if (sessionBusy) handleEnqueue();
-      else handleSend();
-    }
+  /** Enter handler wired into the editor: sends when idle, enqueues when busy.
+   *  Shift+Enter inserts a newline and never reaches here (handled by Tiptap). */
+  const handleEnter = () => {
+    if (sessionBusy) handleEnqueue();
+    else handleSend();
   };
 
   /** Submit an inline-edited user message. Reconstructs the full prompt from
@@ -984,12 +984,18 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
       attachmentKind: t.kind,
       filePath: t.filePath,
     }));
+    // Preserve the original message's skill pills (if any) so the edited
+    // message keeps rendering them as inline pills after resend. The text
+    // editor only edits prose; skills survive as /name text + this list.
+    const textBlock = msg.blocks.find((b) => b.kind === "text");
+    const skillsUsed = textBlock?.skillNames;
     void editAndResendMessage(
       sessionId,
       msg.id,
       prompt,
       attachments.length > 0 ? attachments : undefined,
       attachments.length > 0 ? text : undefined,
+      skillsUsed,
     );
   };
 
@@ -1244,8 +1250,10 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               projectName={projectName}
               disabled={inputBlocked}
               onPickPrompt={(prompt) => {
+                // Insert the suggestion into the editor and focus it so the
+                // user can keep typing / send immediately.
+                editorRef.current?.setText(prompt);
                 setValue(prompt);
-                requestAnimationFrame(() => textareaRef.current?.focus());
               }}
             />
           )}
@@ -1376,9 +1384,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                     tag={tag}
                     open={openTagId === tag.id}
                     onToggle={() => {
-                      // Skill tags have no content to preview — they're atomic
-                      // `/name` invocations, so the body click is a no-op.
-                      if (tag.kind === "skill") return;
                       setOpenTagId((cur) => {
                         if (cur === tag.id) return null; // closing
                         // Opening: capture this chip's box so the popover can
@@ -1397,13 +1402,9 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 ))}
               </div>
             )}
-            <textarea
-              ref={textareaRef}
-              value={value}
-              onChange={handleChange}
-              onPaste={handlePaste}
-              onKeyDown={handleKeyDown}
-              rows={2}
+            <ComposerEditor
+              ref={editorRef}
+              editable={!textareaLocked}
               placeholder={
                 textareaLocked
                   ? "Claude is working…"
@@ -1411,10 +1412,12 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                     ? "排队输入…  (Enter 加入队列)"
                     : "发送消息…  (@ 引用文件 · / 命令)"
               }
-              disabled={textareaLocked}
+              onChange={handleChange}
+              onEnter={handleEnter}
+              onPromotePaste={handlePromotePaste}
+              shouldPromotePaste={shouldPromoteToTag}
               className={cn(
-                "max-h-72 min-h-[52px] resize-none bg-transparent px-3 pt-2.5 text-sm leading-relaxed text-content outline-none",
-                "placeholder:text-content-subtle disabled:opacity-60",
+                "px-3 pt-2.5 text-sm leading-relaxed text-content",
                 tags.length > 0 && "pt-1.5",
               )}
             />

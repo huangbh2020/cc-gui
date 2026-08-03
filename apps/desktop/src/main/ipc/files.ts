@@ -19,10 +19,11 @@
  */
 import type { IpcMain } from "electron";
 import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   IPC,
   FileReadSchema,
+  FileReadBinarySchema,
   FileListDirSchema,
   FileSearchSchema,
   FileWriteSchema,
@@ -130,6 +131,49 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
       // than throwing into the renderer.
       log.warn(`file.readFile failed for ${input.filePath}: ${(err as Error).message}`);
       return { content: "" };
+    }
+  });
+
+  /* ── file:readBinary - read a binary file as a base64 data URL (images) ── */
+  /** MIME types for the binary/image extensions we expect to serve as data
+   *  URLs. Unknown extensions fall back to application/octet-stream (the <img>
+   *  will fail to render and the pane shows its error state - intended). */
+  const BINARY_MIME: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    bmp: "image/bmp",
+    ico: "image/x-icon",
+    webp: "image/webp",
+    svg: "image/svg+xml",
+    tif: "image/tiff",
+    tiff: "image/tiff",
+    avif: "image/avif",
+  };
+  ipcMain.handle(IPC.FILE_READ_BINARY, async (_evt, raw) => {
+    const input = FileReadBinarySchema.parse(raw);
+    const projects = ProjectRepo.list();
+    const root = projects.find((p) => pathWithin(p.path, input.filePath));
+    if (!root) {
+      log.warn(`file.readBinary refused - path outside any project root: ${input.filePath}`);
+      return { dataUrl: "" };
+    }
+    try {
+      const buf = await readFile(input.filePath);
+      const ext = extOf(basename(input.filePath));
+      const mime = BINARY_MIME[ext] ?? "application/octet-stream";
+      // For SVG (text/XML), decode to a utf-8 string and embed directly - avoids
+      // base64 bloat and renders identically in <img>.
+      if (mime === "image/svg+xml") {
+        const text = buf.toString("utf-8");
+        return { dataUrl: `data:${mime};utf8,${encodeURIComponent(text)}` };
+      }
+      const b64 = buf.toString("base64");
+      return { dataUrl: `data:${mime};base64,${b64}` };
+    } catch (err) {
+      log.warn(`file.readBinary failed for ${input.filePath}: ${(err as Error).message}`);
+      return { dataUrl: "" };
     }
   });
 

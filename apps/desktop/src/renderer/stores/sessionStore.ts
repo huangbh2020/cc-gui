@@ -52,13 +52,48 @@ function isMarkdownPath(filePath: string): boolean {
   return lower.endsWith(".md") || lower.endsWith(".markdown");
 }
 
+/** True for image files the editor previews via the `app-resource://` protocol.
+ *  Mirrors `isImage()` in FileEditor.tsx - kept here so `openFileInIde` can
+ *  default images into preview mode without importing the component. SVG is
+ *  text but renders as an image, so it's included. */
+function isImagePath(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  return [
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
+    ".svg", ".tif", ".tiff", ".avif",
+  ].some((ext) => lower.endsWith(ext));
+}
+
+/** True for binary file types the editor can neither edit nor preview (Office
+ *  docs, archives, binaries, audio/video, fonts, PDF). Mirrors `isUnsupported()`
+ *  in FileEditor.tsx. These default to preview mode so the user sees the
+ *  "can't preview" notice instead of garbled Monaco content. */
+function isUnsupportedPath(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  return [
+    ".doc", ".docx", ".rtf", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".odt", ".ods", ".odp",
+    ".zip", ".gz", ".tar", ".tgz", ".rar", ".7z", ".bz2", ".xz",
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".jar", ".wasm",
+    ".mp3", ".mp4", ".webm", ".avi", ".mov", ".ogg", ".flac", ".wav", ".m4a",
+    ".db", ".sqlite", ".sqlite3",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".pdf",
+  ].some((ext) => lower.endsWith(ext));
+}
+
 /** A single content block within a message (mirrors how claude structures output). */
 export type Block =
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; /** Names of skill pills embedded inline in
+    *  this text (from the rich-text composer). The Markdown renderer uses this
+    *  to render the corresponding `/name` occurrences as styled pills so they
+    *  read the same in the stream as they did in the composer. Empty/absent
+    *  for plain-text messages. */
+    skillNames?: string[] }
   | { kind: "thinking"; text: string }
   | { kind: "tool_use"; toolCallId: string; toolName: string; input: unknown; status: "running" | "done" | "error"; result?: unknown }
   | { kind: "error"; message: string }
-  | { kind: "attachment"; preview: string; content: string; attachmentKind?: "paste" | "file" | "skill"; filePath?: string }
+  | { kind: "attachment"; preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }
   | {
       kind: "plan";
       /** Stable id for the in-turn live plan block — "current" while the turn
@@ -153,6 +188,8 @@ export interface QueuedPrompt {
   prompt: string;
   displayText: string;
   attachments?: PromptAttachment[];
+  /** Names of skill pills embedded in the queued text (for stream rendering). */
+  skillNames?: string[];
 }
 
 /** Attachment payload shared by sendPrompt and the queue (kept loose here so
@@ -160,7 +197,7 @@ export interface QueuedPrompt {
 export interface PromptAttachment {
   preview: string;
   content: string;
-  attachmentKind?: "paste" | "file" | "skill";
+  attachmentKind?: "paste" | "file";
   filePath?: string;
 }
 
@@ -581,13 +618,17 @@ export interface SessionState {
   renameSession: (id: string, title: string) => Promise<void>;
   sendPrompt: (
     prompt: string,
-    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file" | "skill"; filePath?: string }[],
+    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }[],
     /** Text shown in the user message's text block. Defaults to `prompt`,
      *  but when attachments are present the caller passes just the typed
      *  text (without the inlined attachment content) so the card + text
      *  don't duplicate the same payload. The full `prompt` (with
      *  attachments inlined) is still what gets sent to the SDK. */
     displayText?: string,
+    /** Names of skill pills embedded inline in the text (for stream rendering
+     *  — the Markdown renderer turns the matching `/name` occurrences into
+     *  styled pills). Absent for plain-text messages. */
+    skillsUsed?: string[],
   ) => Promise<void>;
   /** Edit a previously-sent user message in place and resend it. Truncates
    *  the session's message history at the target message (removing it and
@@ -601,8 +642,9 @@ export interface SessionState {
     sessionId: string,
     messageId: string,
     newPrompt: string,
-    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file" | "skill"; filePath?: string }[],
+    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }[],
     displayText?: string,
+    skillsUsed?: string[],
   ) => Promise<void>;
   interrupt: () => Promise<void>;
   ingestEvent: (e: RuntimeEvent) => void;
@@ -2791,7 +2833,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  sendPrompt: async (prompt, attachments, displayText) => {
+  sendPrompt: async (prompt, attachments, displayText, skillsUsed) => {
     const sessionId = get().activeSessionId;
     if (!sessionId || !prompt.trim()) return;
     // Per-thread guard: only block this thread from sending if IT is running.
@@ -2800,11 +2842,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // 1. immediately show the user's message. Attachments (pasted content
     //    promoted to cards in the composer) render as attachment blocks
-    //    ABOVE the typed text, mirroring the composer's chip-above-textarea
+    //    ABOVE the typed text, mirroring the composer's chip-above-editor
     //    layout. The text block shows only the typed text (displayText) —
     //    the full `prompt` (with attachments inlined via
     //    composePromptWithTags) is what the SDK receives, but showing it
     //    here too would duplicate the attachment content as plain text.
+    //    `skillsUsed` records which `/name` occurrences in the text are skill
+    //    pills, so the stream can render them as styled inline pills.
     const blocks: Block[] = [];
     if (attachments) {
       for (const a of attachments) {
@@ -2817,7 +2861,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         });
       }
     }
-    blocks.push({ kind: "text", text: displayText ?? prompt });
+    blocks.push({
+      kind: "text",
+      text: displayText ?? prompt,
+      skillNames: skillsUsed && skillsUsed.length > 0 ? skillsUsed : undefined,
+    });
     const userMsg: ChatMessage = {
       id: `u_${Date.now()}`,
       sessionId,
@@ -2888,7 +2936,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  editAndResendMessage: async (sessionId, messageId, newPrompt, attachments, displayText) => {
+  editAndResendMessage: async (sessionId, messageId, newPrompt, attachments, displayText, skillsUsed) => {
     if (!sessionId || !newPrompt.trim()) return;
     // The session must be idle - editing while a turn is running would
     // race the truncation against live event ingestion.
@@ -2919,7 +2967,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         });
       }
     }
-    blocks.push({ kind: "text", text: displayText ?? newPrompt });
+    blocks.push({
+      kind: "text",
+      text: displayText ?? newPrompt,
+      skillNames: skillsUsed && skillsUsed.length > 0 ? skillsUsed : undefined,
+    });
     const userMsg: ChatMessage = {
       id: `u_${Date.now()}`,
       sessionId,
@@ -3944,7 +3996,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // and fires sendTurn. If that turn later ends with another queued item,
     // its turn.done handler will call drainPromptQueueIfIdle again — so the
     // whole queue drains one item per turn, in order.
-    void s.sendPrompt(head.prompt, head.attachments, head.displayText);
+    void s.sendPrompt(head.prompt, head.attachments, head.displayText, head.skillNames);
   },
 
   /* ─────────────────── IDE right-panel actions ─────────────────── */
@@ -4001,11 +4053,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // A review/diff request is an explicit intent -> force diff mode (don't
     // leave a stale "edit" the user may have toggled for a different purpose).
     if (opts?.diff) viewMode[filePath] = "diff";
-    // Markdown files default to "preview" on FIRST open (no prior view-mode for
-    // this file). Re-opening respects the user's earlier choice (e.g. they
-    // switched to "edit") since the entry already exists. A diff request above
-    // takes precedence over this default.
-    else if (!(filePath in prevViewMode) && isMarkdownPath(filePath)) {
+    // Files that render as a read-only preview default to "preview" on FIRST
+    // open (no prior view-mode for this file): Markdown (rendered), images
+    // (<img> via app-resource://), and unsupported binary types (Office docs,
+    // archives, etc. - shown as a "can't preview" notice). Re-opening respects
+    // the user's earlier choice (e.g. they switched to "edit") since the entry
+    // already exists. A diff request above takes precedence over this default.
+    else if (
+      !(filePath in prevViewMode) &&
+      (isMarkdownPath(filePath) || isImagePath(filePath) || isUnsupportedPath(filePath))
+    ) {
       viewMode[filePath] = "preview";
     }
     // A before-snapshot passed by a turn-files card (works for HISTORICAL

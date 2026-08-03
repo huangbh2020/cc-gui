@@ -319,3 +319,59 @@ body,
   }
 }
 
+/* ───────────── Composer rich-text editor (Tiptap) ─────────────
+ * The composer's contenteditable replaces a plain <textarea>. These rules give
+ * it the same look as the old textarea (font, padding) and add the two things a
+ * textarea had for free: a placeholder when empty, and a max-height beyond
+ * which the box scrolls internally. Tiptap renders a .ProseMirror inside the
+ * EditorContent host. */
+
+.composer-host .ProseMirror {
+  /* Match the old textarea sizing: it grew with content up to max-h-72. The
+     host provides the bounding box (border/padding live on the parent in the
+     JSX); here we only constrain the editable area's height + scrolling. */
+  min-height: 1.5rem;
+  max-height: 18rem; /* 288px — mirrors the textarea's max-h-72 */
+  overflow-y: auto;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* Placeholder: Tiptap uses :empty before any input. We mirror the old
+   textarea's muted placeholder color. Only shown when the editor is focused
+   and empty (avoids a flicker of placeholder on blur). */
+.composer-host .ProseMirror.is-empty.is-focused::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  color: var(--color-content-subtle, rgb(var(--content-subtle)));
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+/* Skill pills rendered by the editor. The class is applied via the node's
+   HTMLAttributes; this just adds the leading sparkles glyph and makes the
+   pill read as an inline chip. Atom nodes are non-editable by nature, so no
+   extra contenteditable suppression is needed. */
+.composer-host .skill-pill::before {
+  content: "✦ ";
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+/* Inline skill pills in the message stream (rendered by the Markdown
+   preprocessor). Same visual language as the composer pills. */
+.skill-pill-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  border-radius: 0.25rem;
+  border: 1px solid rgb(var(--accent) / 0.4);
+  background: rgb(var(--accent) / 0.1);
+  padding: 0 0.25rem;
+  font-size: 0.85em;
+  color: rgb(var(--accent));
+  white-space: nowrap;
+}
+
+

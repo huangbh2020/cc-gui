@@ -22,7 +22,6 @@ import {
   IconWorldWww,
   IconWorldSearch,
   IconHelpCircle,
-  IconSparkles,
 } from "@renderer/lib/icons.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import type { Block, TurnMeta } from "@renderer/stores/sessionStore.js";
@@ -438,7 +437,11 @@ const BlockView = memo(function BlockView({
       // already guarded without sacrificing live markdown formatting.
       // eslint-disable-next-line react-hooks/rules-of-hooks
       const deferredText = useDeferredValue(block.text);
-      return <Markdown projectPath={projectPath}>{deferredText}</Markdown>;
+      return (
+        <Markdown projectPath={projectPath} skillNames={block.skillNames}>
+          {deferredText}
+        </Markdown>
+      );
     }
 
     case "thinking":
@@ -499,19 +502,16 @@ const BlockView = memo(function BlockView({
 });
 export { BlockView };
 
-/** A pasted-content, file-reference, or skill attachment shown as a chip-like
- *  card in the message stream. Mirrors the composer's ContentTagChip visual
- *  language (accent theme color) so an attachment reads the same before and
- *  after sending.
+/** A pasted-content or file-reference attachment shown as a chip-like card in
+ *  the message stream. Mirrors the composer's ContentTagChip visual language
+ *  (accent theme color) so an attachment reads the same before and after
+ *  sending.
  *
  *  - Paste attachments (attachmentKind="paste" or undefined): clipboard icon,
  *    collapsed = one-line preview, expanded = full content + Copy button.
  *  - File attachments (attachmentKind="file"): file icon, collapsed = file
  *    name, expanded = the full file path (the `@path` reference sent to the
  *    model). No Copy button — a path is short enough to read inline.
- *  - Skill attachments (attachmentKind="skill"): sparkles icon, static
- *    non-expandable chip showing `/name`. No content to expand — a skill is
- *    just an invocation command.
  *
  *  Unlike the composer's TagPopover (fixed-positioned to the chip), this
  *  expands inline — the message stream is the stable anchor here, so a
@@ -524,31 +524,12 @@ function AttachmentCard({
 }: {
   preview: string;
   content: string;
-  attachmentKind?: "paste" | "file" | "skill";
+  attachmentKind?: "paste" | "file";
   filePath?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const isFile = attachmentKind === "file";
-  const isSkill = attachmentKind === "skill";
-
-  // A skill attachment is an atomic, non-expandable block: it carries only a
-  // `/name` invocation, so there's nothing to expand. Render it as a static
-  // chip that mirrors the composer's skill chip, so it reads the same before
-  // and after sending.
-  if (isSkill) {
-    return (
-      <div className="[font-size:var(--chat-fs-sm)]">
-        <span
-          title={`Skill: ${content}`}
-          className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[11px] text-accent"
-        >
-          <IconSparkles size={12} className="opacity-80" />
-          <span className="max-w-[220px] truncate">{content}</span>
-        </span>
-      </div>
-    );
-  }
 
   const handleCopy = async () => {
     try {

@@ -110,6 +110,11 @@ const api = {
         IPC.SHELL_SHOW_ITEM_IN_FOLDER,
         input,
       )) as RpcMap["shell.showItemInFolder"],
+    /** Open a file inside a project root with the OS default application
+     *  (e.g. .docx in Word, .pdf in Preview). Used by the editor's
+     *  unsupported-file pane. */
+    openFile: ((input) =>
+      ipcRenderer.invoke(IPC.SHELL_OPEN_FILE, input)) as RpcMap["shell.openFile"],
   },
 
   /** Filesystem operations for the IDE right panel + diff rendering. Every
@@ -118,6 +123,9 @@ const api = {
   file: {
     readFile: ((input) =>
       ipcRenderer.invoke(IPC.FILE_READ, input)) as RpcMap["file.readFile"],
+    /** Read a binary file as a base64 data URL (image preview). */
+    readBinary: ((input) =>
+      ipcRenderer.invoke(IPC.FILE_READ_BINARY, input)) as RpcMap["file.readBinary"],
     /** List one level of a directory (non-recursive) for the file tree. */
     listDir: ((input) =>
       ipcRenderer.invoke(IPC.FILE_LIST_DIR, input)) as RpcMap["file.listDir"],
