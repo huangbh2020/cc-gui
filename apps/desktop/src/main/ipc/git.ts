@@ -48,6 +48,7 @@ import type {
 import { ProjectRepo, SettingRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
+import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { resolveProtocol } from "@contracts/customModel";
 import type { ApiConfig } from "@contracts/customModel";
@@ -582,6 +583,11 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
           env = buildCustomEnv(cfg);
         }
 
+        // Resolve the real on-disk binary path (unpacks from asar in a packaged
+        // app). Without this, the SDK hands spawn() an app.asar-internal path
+        // and the launch fails with ENOTDIR. Null in dev (SDK resolves itself).
+        const binaryPath = resolveSdkBinaryPath();
+
         const q = query({
           prompt: userPrompt,
           options: {
@@ -594,6 +600,13 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
             systemPrompt: COMMIT_GEN_SYSTEM_PROMPT,
             settingSources: ["project", "local"],
             includePartialMessages: false,
+            // Point the SDK at the real on-disk binary. Without this, the SDK
+            // resolves the claude binary to a path INSIDE app.asar and
+            // child_process.spawn fails with ENOTDIR (asar is a file, not a
+            // directory). Dev mode returns null and the SDK resolves node_modules
+            // itself. Same fix ClaudeAgentSdkProvider applies — see
+            // resolveSdkBinaryPath.ts for the full rationale.
+            ...(binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {}),
           },
         });
 
@@ -720,6 +733,9 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
           env = buildCustomEnv(cfg);
         }
 
+        // Resolve the real on-disk binary path (see generateCommitMessage).
+        const binaryPath = resolveSdkBinaryPath();
+
         const q = query({
           prompt: userPrompt,
           options: {
@@ -730,6 +746,9 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
             systemPrompt: CONFLICT_RESOLVE_SYSTEM_PROMPT,
             settingSources: ["project", "local"],
             includePartialMessages: false,
+            // See generateCommitMessage above — must override the asar-internal
+            // path in a packaged app or spawn fails with ENOTDIR.
+            ...(binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {}),
           },
         });
 

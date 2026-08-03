@@ -19,6 +19,7 @@ import {
 import type { ApiConfig } from "@contracts/customModel";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
+import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import { log } from "@main/lib/logger.js";
 
 /** Probe timeout — a healthy endpoint should answer the init handshake within
@@ -108,6 +109,11 @@ async function probeEndpoint(
     // betas is intentionally NOT set — 1M is declared via the suffix, not via
     // the anthropic-beta header.
     const probedModel = resolveActiveModel(cfg);
+    // Resolve the real on-disk binary path. Without this, the SDK resolves the
+    // claude binary to a path INSIDE app.asar in a packaged app and spawn()
+    // fails with ENOTDIR (asar is a file, not a directory). Dev returns null
+    // and the SDK resolves node_modules itself. Same fix the provider applies.
+    const binaryPath = resolveSdkBinaryPath();
     const q = query({
       prompt: "hi",
       options: {
@@ -125,6 +131,7 @@ async function probeEndpoint(
         // territory) while keeping CLAUDE.md / project settings working.
         settingSources: ["project", "local"],
         includePartialMessages: false,
+        ...(binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {}),
       },
     });
 
