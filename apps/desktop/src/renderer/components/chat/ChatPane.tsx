@@ -38,7 +38,7 @@ import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor.js";
 import { ContentTagChip } from "./ContentTagChip.js";
 import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
-import { EmptyThreadWelcome, SuggestionCards } from "./EmptyThreadWelcome.js";
+import { EmptyThreadWelcome } from "./EmptyThreadWelcome.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { StatusCapsule } from "./StatusCapsule.js";
 import { MessageTimeline, type UserItemIndexMap } from "./MessageTimeline.js";
@@ -1358,9 +1358,10 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           )}
           <div
             className={cn(
-              "relative flex flex-col rounded-xl border border-edge-input bg-surface-muted/30 focus-within:border-accent",
+              "relative flex flex-col rounded-2xl border border-edge-input bg-surface-muted/30 transition-all duration-200",
+              "focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgb(var(--accent)/0.12)]",
               // Highlight the composer while a file-tree drag hovers over it.
-              dragOver && "border-accent ring-1 ring-accent/30",
+              dragOver && "border-accent ring-4 ring-accent/20",
             )}
             onDragOver={(e) => {
               // Only react to OUR file drag (custom MIME). External drags
@@ -1477,8 +1478,8 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 tags.length > 0 && "pt-1.5",
               )}
             />
-            <div className="flex items-center justify-between gap-2 px-2 pb-1.5 pt-1">
-              <div className="flex items-center gap-0.5">
+            <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-1.5">
+              <div className="flex items-center gap-1">
                 <button
                   type="button"
                   onClick={openAttachPicker}
@@ -1486,11 +1487,12 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                   title="添加上下文文件"
                   aria-label="添加上下文文件"
                   className={cn(
-                    "inline-flex h-6 w-6 items-center justify-center rounded-md text-content-muted transition-colors",
-                    "hover:bg-surface-muted hover:text-content disabled:opacity-40 disabled:hover:bg-transparent",
+                    "inline-flex h-8 w-8 items-center justify-center rounded-xl text-content-muted transition-all duration-150 ease-out",
+                    "hover:scale-110 hover:bg-accent/10 hover:text-accent active:scale-95",
+                    "disabled:scale-100 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted disabled:hover:scale-100",
                   )}
                 >
-                  <IconPaperclip size={15} />
+                  <IconPaperclip size={18} />
                 </button>
                 <ComposerToolbar />
               </div>
@@ -1500,11 +1502,11 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                   title="停止生成"
                   aria-label="停止生成"
                   className={cn(
-                    "inline-flex items-center justify-center rounded-md bg-danger p-1.5 text-surface transition-all",
-                    "hover:brightness-110",
+                    "inline-flex h-8 w-8 items-center justify-center rounded-xl bg-danger text-surface transition-all duration-150 ease-out",
+                    "hover:scale-105 hover:brightness-110 active:scale-95 active:brightness-95",
                   )}
                 >
-                  <IconPlayerStop size={14} />
+                  <IconPlayerStop size={16} />
                 </button>
               ) : (
                 <button
@@ -1512,27 +1514,17 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                   disabled={!value.trim() && tags.length === 0}
                   title="发送"
                   className={cn(
-                    "inline-flex items-center justify-center rounded-md bg-accent p-1.5 text-surface transition-all",
-                    "hover:brightness-110 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle",
+                    "inline-flex h-8 w-8 items-center justify-center rounded-xl bg-accent text-surface shadow-sm transition-all duration-150 ease-out",
+                    "hover:scale-110 hover:brightness-110 hover:shadow-md hover:shadow-accent/20",
+                    "active:scale-95 active:brightness-95",
+                    "disabled:scale-100 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle disabled:shadow-none disabled:hover:scale-100",
                   )}
                 >
-                  <IconSend2 size={14} />
+                  <IconSend2 size={16} />
                 </button>
               )}
             </div>
           </div>
-          {/* Suggestion cards — rendered below the composer on an empty thread
-              (the title sits above it; see EmptyThreadWelcome). Splitting
-              around the input keeps the composer as the visual focus. */}
-          {empty && (
-            <SuggestionCards
-              disabled={inputBlocked}
-              onPickPrompt={(prompt) => {
-                editorRef.current?.setText(prompt);
-                setValue(prompt);
-              }}
-            />
-          )}
           {/* Content-tag preview popover. Fixed-positioned to the clicked
               chip's top-right; rendered outside the composer container so
               it isn't clipped by overflow/border-radius. Anchored only while

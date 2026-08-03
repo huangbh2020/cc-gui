@@ -33,12 +33,12 @@ export function ComposerToolbar() {
   );
 
   return (
-    <div className="flex items-center gap-0.5">
+    <div className="flex items-center gap-1">
       <ModelDropdown />
       <EffortDropdown />
       <PermissionModeDropdown />
       {contextSnapshot && (
-        <span className="ml-1 inline-flex items-center border-l border-edge/60 pl-1.5">
+        <span className="ml-1 inline-flex items-center border-l border-edge/60 pl-2">
           <ContextRing snapshot={contextSnapshot} history={usageHistory} />
         </span>
       )}

@@ -100,7 +100,13 @@ export function Titlebar({
           showLeftStrip && "rounded-tr-lg border-r border-edge",
           isMac ? "pl-[78px]" : "pl-1.5",
         )}
-        style={showLeftStrip ? { width: leftWidth } : undefined}
+        // Align the strip's right edge with the panel row's left column below.
+        // In workspace mode the panel row is <aside width=leftWidth> + a
+        // separate 1px <Divider>, so the left column spans leftWidth+1 and the
+        // strip must match (+1) for the border-r to land directly above the
+        // divider. Settings mode renders no divider (SettingsPage passes no
+        // resize handler), so the strip stays exactly leftWidth.
+        style={showLeftStrip ? { width: leftWidth + (isSettings ? 0 : 1) } : undefined}
       >
         {isSettings ? (
           <button
@@ -119,8 +125,10 @@ export function Titlebar({
           <button
             onClick={onToggleLeft}
             className={cn(
-              "flex items-center justify-center rounded p-1.5 text-content-muted transition-colors",
-              "hover:bg-surface-hover hover:text-content",
+              "flex items-center justify-center rounded p-1.5 transition-colors",
+              leftOpen
+                ? "bg-surface-hover text-accent"
+                : "text-content-muted hover:bg-surface-hover hover:text-content",
             )}
             title={(leftOpen ? "隐藏左侧面板" : "显示左侧面板") + hintFor("layout.toggle-left")}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -173,8 +181,10 @@ export function Titlebar({
             <button
               onClick={onToggleRight}
               className={cn(
-                "flex items-center justify-center rounded p-1.5 text-content-muted transition-colors",
-                "hover:bg-surface-muted hover:text-content",
+                "flex items-center justify-center rounded p-1.5 transition-colors",
+                rightOpen
+                  ? "bg-surface-hover text-accent"
+                  : "text-content-muted hover:bg-surface-hover hover:text-content",
               )}
               title={(rightOpen ? "隐藏右侧面板" : "显示右侧面板") + hintFor("layout.toggle-right")}
               style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
