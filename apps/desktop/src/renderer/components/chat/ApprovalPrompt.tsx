@@ -11,12 +11,16 @@ import {
 /**
  * Composer-area tool-approval card.
  *
- * Sits inside the composer's width-constrained wrapper, so it inherits the
- * same `px-[var(--chat-gutter)]` + `mx-auto max-w-5xl` column as the input box - i.e. exactly
- * as wide as the composer. The composer is disabled and pointer-blocked by
- * the parent while a decision is pending, so the user can't type a
- * competing prompt (matches Claude Code's own UI, which gates the input on
- * outstanding approvals).
+ * Mirrors QuestionPrompt: anchored to the bottom of the ChatPane root
+ * (`relative`) as an absolute overlay (`absolute inset-x-0 bottom-0 z-30`)
+ * so it visually replaces / covers the composer while a decision is
+ * pending — the user can't type a competing prompt. The outer wrapper
+ * mirrors the composer's horizontal sizing — `px-[var(--chat-gutter)]` side
+ * gutters + `mx-auto max-w-5xl` inner column — so the card is exactly as
+ * wide as the input box and left/right-aligned with the message stream.
+ * It sits slightly above the pane's bottom edge (`pb-3`, matching the
+ * composer wrapper) so its rounded corners and drop shadow read as a
+ * floating card rather than a flush bar.
  *
  * Styling mirrors QuestionPrompt: a single rounded, bordered, elevated
  * card on neutral surface tokens, with the `warning` (amber) token used
@@ -89,13 +93,21 @@ export function ApprovalPrompt({
     onDecide(granted, granted ? always : undefined);
   };
 
+  // Outer wrapper mirrors the composer's horizontal sizing so the card is
+  // exactly as wide as the input box: `px-[var(--chat-gutter)]` side
+  // gutters (responsive to pane width - see styles.css) + `mx-auto
+  // max-w-5xl` centered inner column. `pb-3` lifts the card off the pane's
+  // bottom edge so the rounded corners + shadow read as a floating card
+  // (matches the composer wrapper's own bottom padding). Absolute + z-30
+  // so the card overlays/covers the composer, mirroring QuestionPrompt.
   return (
+    <div className="absolute inset-x-0 bottom-0 z-30 px-[var(--chat-gutter)] pb-3">
     <div
       ref={cardRef}
       role="alertdialog"
       aria-label="Claude 正在请求执行工具"
       className={cn(
-        "rounded-2xl border border-edge-input bg-surface px-4 py-3 text-xs text-content shadow-2xl",
+        "mx-auto max-w-5xl rounded-2xl border border-edge-input bg-surface px-4 py-3 text-xs text-content shadow-2xl",
         "animate-[qa-sheet-in_140ms_ease-out]",
       )}
     >
@@ -194,6 +206,7 @@ export function ApprovalPrompt({
           </button>
         </div>
       </div>
+    </div>
     </div>
   );
 }

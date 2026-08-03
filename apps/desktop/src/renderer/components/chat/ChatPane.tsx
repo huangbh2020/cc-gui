@@ -1336,25 +1336,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               }}
             />
           )}
-          {headApproval && (
-            <ApprovalPrompt
-              key={headApproval.requestId}
-              toolName={headApproval.toolName}
-              input={headApproval.input}
-              description={headApproval.description}
-              queuePosition={
-                pendingApprovals.filter((p) => p.sessionId === sessionId).findIndex(
-                  (p) => p.requestId === headApproval.requestId,
-                ) + 1
-              }
-              queueTotal={
-                pendingApprovals.filter((p) => p.sessionId === sessionId).length
-              }
-              onDecide={(granted, always) =>
-                void decideApproval(headApproval.requestId, granted, always)
-              }
-            />
-          )}
           {/* Plan-approval card (ExitPlanMode) - the model drafted a plan in
               plan mode and is awaiting the user's approve/reject decision.
               Rendered inside the composer column so it sits directly above the
@@ -1606,6 +1587,32 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           />
         </div>
       </div>
+
+      {/* Tool-approval bottom sheet — anchored to the bottom of the whole
+          ChatPane (not just the input box) as an absolute overlay, so it
+          visually replaces/covers the composer while a decision is pending
+          (mirrors QuestionPrompt). Highest precedence of the three prompts:
+          pending plan approval and AskUserQuestion are suppressed while a
+          tool approval is the head of the queue. */}
+      {headApproval && (
+        <ApprovalPrompt
+          key={headApproval.requestId}
+          toolName={headApproval.toolName}
+          input={headApproval.input}
+          description={headApproval.description}
+          queuePosition={
+            pendingApprovals.filter((p) => p.sessionId === sessionId).findIndex(
+              (p) => p.requestId === headApproval.requestId,
+            ) + 1
+          }
+          queueTotal={
+            pendingApprovals.filter((p) => p.sessionId === sessionId).length
+          }
+          onDecide={(granted, always) =>
+            void decideApproval(headApproval.requestId, granted, always)
+          }
+        />
+      )}
 
       {/* AskUserQuestion bottom sheet — anchored to the bottom of the
           whole ChatPane (not just the input box) so it can grow upward

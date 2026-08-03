@@ -5,6 +5,7 @@ import { ThreePaneLayout } from "@renderer/components/layout/ThreePaneLayout.js"
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { SkillsPanel } from "./SkillsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
+import { ShortcutsPanel } from "./ShortcutsPanel.js";
 import { GitPanel } from "./GitPanel.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { AboutPanel } from "./AboutPanel.js";
@@ -30,7 +31,7 @@ import { AboutPanel } from "./AboutPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "custom-models" | "skills" | "appearance" | "git" | "terminal" | "about";
+type SectionId = "general" | "custom-models" | "skills" | "appearance" | "shortcuts" | "git" | "terminal" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -42,6 +43,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "custom-models", label: "模型配置" },
   { id: "skills", label: "Skills" },
   { id: "appearance", label: "外观" },
+  { id: "shortcuts", label: "快捷键" },
   { id: "git", label: "Git" },
   { id: "terminal", label: "终端" },
   { id: "about", label: "关于" },
@@ -113,6 +115,7 @@ export function SettingsPage() {
           {active === "custom-models" && <CustomModelsPanel />}
           {active === "skills" && <SkillsPanel />}
           {active === "appearance" && <AppearancePanel />}
+          {active === "shortcuts" && <ShortcutsPanel />}
           {active === "git" && <GitPanel />}
           {active === "terminal" && <TerminalPanel />}
           {active === "about" && <AboutPanel />}

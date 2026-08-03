@@ -104,7 +104,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     SessionRepo.updateStatus(session.id, "running");
     // Lazily bind a runtime for this session (no-op if already bound).
     runtimeManager.bindSession(updated);
-    await runtimeManager.sendTurn(updated, { prompt: input.prompt, cwd: project.path });
+    await runtimeManager.sendTurn(updated, {
+      prompt: input.prompt,
+      cwd: project.path,
+      skills: input.skills,
+    });
     return { session: SessionRepo.get(session.id) ?? updated };
   });
 

@@ -36,6 +36,8 @@ import {
   UI_PANE_WIDTHS_SETTING_KEY,
   UI_PROJECT_VIEW_SETTING_KEY,
   UI_PROJECT_GROUPS_SETTING_KEY,
+  UI_SHORTCUTS_SETTING_KEY,
+  ShortcutBindingsSchema,
   type DisplayMode,
   type ProjectView,
   type ProjectGroupsMeta,
@@ -46,6 +48,8 @@ import {
   type FileViewMode,
   type CustomCommand,
   type SkillInfo,
+  type ShortcutBindings,
+  type Accelerator,
 } from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
 
@@ -341,6 +345,11 @@ export interface SessionState {
    *  into the `accent` Tailwind token used by buttons, links, selected
    *  states, focus rings, and the prompt-card accents. */
   accentColor: string | null;
+  /** User's keyboard-shortcut overrides: commandId → Accelerator. Only the
+   *  entries the user has rebound live here; every other command falls back
+   *  to its compiled-in `defaultAccelerator` (see lib/shortcuts.ts). Persisted
+   *  in the `settings` table as one JSON blob. Hydrated in `initDeferred`. */
+  shortcutOverrides: ShortcutBindings;
 
   messagesBySession: Record<string, ChatMessage[]>;
   /** Per-session running flag. Keyed by sessionId so a turn running in
@@ -733,6 +742,17 @@ export interface SessionState {
   /** Set the global brand/accent color ("R G B" triplet, or null for the
    *  theme default). Persists to the `settings` table. */
   setAccentColor: (rgb: string | null) => Promise<void>;
+  /** Bind (or rebind) a keyboard shortcut for `commandId`. Pass `null` to
+   *  clear the override and fall back to the compiled-in default. Persists
+   *  the whole override map to the `settings` table as one JSON blob. */
+  setShortcutOverride: (commandId: string, accel: Accelerator | null) => void;
+  /** Clear every shortcut override, restoring all defaults. Persists. */
+  resetAllShortcuts: () => void;
+  /** True while the shortcut recorder is capturing a chord. The global
+   *  keydown listener checks this to suppress dispatch (otherwise pressing
+   *  a bound chord mid-recording would both record it AND fire its command). */
+  shortcutRecording: boolean;
+  setShortcutRecording: (recording: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
   setModel: (model: string) => void;
   setEffort: (effort: EffortLevel) => void;
@@ -1098,6 +1118,30 @@ function findSession(
   return undefined;
 }
 
+/** Immutably patch a single cached session row (looked up by id across both
+ *  the active and archived per-project caches) with a partial update, and
+ *  return a new `sessionsByProject` (or archived) map reflecting the change.
+ *
+ *  Used to keep the in-memory session cache in sync with live updates that
+ *  arrive via events (e.g. `token-usage.updated` refreshing a row's
+ *  `contextSnapshot`) without reloading the whole list. Returns the original
+ *  map reference when the session isn't cached (no-op), so callers can spread
+ *  it unconditionally. */
+function patchSessionInCache(
+  byProject: Record<string, Session[]>,
+  projectId: string,
+  sessionId: string,
+  patchFields: Partial<Session>,
+): Record<string, Session[]> {
+  const list = byProject[projectId];
+  if (!list) return byProject;
+  const idx = list.findIndex((s) => s.id === sessionId);
+  if (idx === -1) return byProject;
+  const nextList = list.slice();
+  nextList[idx] = { ...nextList[idx], ...patchFields };
+  return { ...byProject, [projectId]: nextList };
+}
+
 /** Read a session's persisted config (model / effort / permissionMode /
  *  customModelId) into the global view slots so the composer renders the
  *  active thread's choices. If the session can't be found (not yet loaded,
@@ -1150,10 +1194,17 @@ function syncConfigFromSession(
  *  The snapshot is persisted by main on every `token-usage.updated` event
  *  (RuntimeManager.emit), so on select/open-tab we can restore the last
  *  known occupancy without waiting for the next event. Pre-refactor rows
- *  may hold a stale raw-usage object (no `usedTokens` / `pct` / …) —
+ *  may hold a stale raw-usage object (no `usedTokens` / `pct` / …) -
  *  `isValidSnapshot` guards against those so the chip doesn't render NaN.
- *  A null/invalid snapshot is cleared (set to undefined) so switching FROM
- *  a session with a snapshot TO one without doesn't leave the old chip up. */
+ *
+ *  When the row carries no valid snapshot we leave any existing
+ *  `contextSnapshotBySession[sid]` slot untouched rather than clearing it.
+ *  The slot may already hold a fresher value pushed by a live
+ *  `token-usage.updated` event (e.g. re-entering a still-running thread),
+ *  and clobbering it with `delete` here is what made the context ring
+ *  disappear on re-entry until the next event happened to arrive. An empty
+ *  row genuinely never had a snapshot, in which case the slot is already
+ *  undefined and the ring correctly stays hidden until the first event. */
 function hydrateContextSnapshot(
   set: (partial: Partial<SessionState> | ((s: SessionState) => Partial<SessionState>)) => void,
   get: () => SessionState,
@@ -1161,14 +1212,21 @@ function hydrateContextSnapshot(
 ): void {
   const sess = findSession(get().sessionsByProject, get().archivedSessionsByProject, sessionId);
   const snapshot = sess?.contextSnapshot;
+  if (!snapshot || !isValidSnapshot(snapshot)) {
+    // No usable snapshot on the row - leave any existing slot as-is so we
+    // don't wipe a fresher live value. (Switching to a session that truly
+    // has no snapshot still shows no ring, since the slot is undefined.)
+    return;
+  }
   set((s) => {
-    const next = { ...s.contextSnapshotBySession };
-    if (snapshot && isValidSnapshot(snapshot)) {
-      next[sessionId] = snapshot;
-    } else {
-      delete next[sessionId];
-    }
-    return { contextSnapshotBySession: next };
+    const prev = s.contextSnapshotBySession[sessionId];
+    // Skip the write if the cached row's snapshot is the same reference we
+    // already have - avoids a spurious new-object allocation on every tab
+    // switch and the re-render it would trigger in ComposerToolbar.
+    if (prev === snapshot) return {};
+    return {
+      contextSnapshotBySession: { ...s.contextSnapshotBySession, [sessionId]: snapshot },
+    };
   });
 }
 
@@ -1923,6 +1981,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   rightPanelFontSize: 14,
   userMessageColor: null,
   accentColor: null,
+  shortcutOverrides: {},
+  shortcutRecording: false,
   messagesBySession: {},
   runningBySession: {},
   runningTurnStartedAt: {},
@@ -2166,11 +2226,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Appearance extras (right-panel font size, user-message bg, accent color).
     // chatFontSize was already loaded in init() - only the rest here.
     try {
-      const [, rpFontRes, colorRes, accentRes] = await Promise.all([
+      const [, rpFontRes, colorRes, accentRes, shortcutsRes] = await Promise.all([
         Promise.resolve(),
         api.setting.get({ key: UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY }),
         api.setting.get({ key: UI_USER_MSG_COLOR_SETTING_KEY }),
         api.setting.get({ key: UI_ACCENT_COLOR_SETTING_KEY }),
+        api.setting.get({ key: UI_SHORTCUTS_SETTING_KEY }),
       ]);
       if (rpFontRes.value != null) {
         const px = Number(rpFontRes.value);
@@ -2181,6 +2242,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       if (accentRes.value && RGB_TRIPLET_RE.test(accentRes.value)) {
         set({ accentColor: accentRes.value });
+      }
+      // Shortcut overrides — parsed from the ui.shortcuts JSON blob.
+      // safeParse rejects malformed blobs so a corrupt row can't crash the
+      // store; on failure we keep the empty default (all defaults apply).
+      if (shortcutsRes.value) {
+        const parsed = ShortcutBindingsSchema.safeParse(JSON.parse(shortcutsRes.value));
+        if (parsed.success) set({ shortcutOverrides: parsed.data });
       }
     } catch (err) {
       console.error("setting.get(appearance deferred) failed:", err);
@@ -3019,6 +3087,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	        effort,
 	        permissionMode,
 	        customModelId,
+	        skills: skillsUsed && skillsUsed.length > 0 ? skillsUsed : undefined,
 	      }));
 	    } catch (err) {
 	      // The IPC itself rejected (not a streamed `error` event). Without
@@ -3126,6 +3195,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         effort,
         permissionMode,
         customModelId,
+        skills: skillsUsed && skillsUsed.length > 0 ? skillsUsed : undefined,
       }));
     } catch (err) {
       console.error("editAndResendMessage: sendTurn IPC failed:", err);
@@ -3269,10 +3339,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // adapter already normalized everything (usedTokens / maxTokens / pct /
     // warning), so we just store + the chip renders. Main also persists this
     // to the session row, so it round-trips on reload via hydrateContextSnapshot.
+    // We also mirror it into the sessionsByProject cache so the next
+    // selectSession/openTab's hydrate reads a fresh value instead of the
+    // stale snapshot captured at list time (which could be null/invalid and
+    // trigger the else-delete branch, hiding the ring until the next event).
     if (e.type === "token-usage.updated") {
-      set((s) => ({
-        contextSnapshotBySession: { ...s.contextSnapshotBySession, [sid]: e.snapshot },
-      }));
+      if (!isValidSnapshot(e.snapshot)) return;
+      set((s) => {
+        const patch: Partial<SessionState> = {
+          contextSnapshotBySession: { ...s.contextSnapshotBySession, [sid]: e.snapshot },
+        };
+        // Keep the in-memory session row cache in sync. Only touch the list
+        // entry actually found (no-op if this session isn't in the cache, e.g.
+        // archived / not yet loaded).
+        const cached = findSession(s.sessionsByProject, s.archivedSessionsByProject, sid);
+        if (cached && cached.contextSnapshot !== e.snapshot) {
+          patch.sessionsByProject = patchSessionInCache(
+            s.sessionsByProject, cached.projectId, sid, { contextSnapshot: e.snapshot },
+          );
+        }
+        return patch;
+      });
       return;
     }
     if (e.type === "question.ask") {
@@ -3874,6 +3961,49 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       console.error("setting.set(accentColor) failed:", err);
     }
+  },
+
+  /** Bind (or rebind) a keyboard shortcut. Optimistic: the in-memory override
+   *  map flips immediately so the next keydown uses the new chord; the DB
+   *  write is fire-and-forget. Passing `null` removes the override for
+   *  `commandId`, so the command falls back to its compiled-in default
+   *  (or to "no binding" if it has none). The whole override map is serialized
+   *  as one JSON blob — only user-changed entries are stored, defaults live
+   *  in code. */
+  setShortcutOverride: (commandId, accel) => {
+    const next = { ...get().shortcutOverrides };
+    if (accel) next[commandId] = accel;
+    else delete next[commandId];
+    set({ shortcutOverrides: next });
+    try {
+      void api.setting.set({
+        key: UI_SHORTCUTS_SETTING_KEY,
+        value: JSON.stringify(next),
+      });
+    } catch (err) {
+      console.error("setting.set(shortcuts) failed:", err);
+    }
+  },
+
+  /** Clear all shortcut overrides, restoring every default binding. The
+   *  in-memory map empties immediately; the DB write persists an empty blob. */
+  resetAllShortcuts: () => {
+    set({ shortcutOverrides: {} });
+    try {
+      void api.setting.set({
+        key: UI_SHORTCUTS_SETTING_KEY,
+        value: "{}",
+      });
+    } catch (err) {
+      console.error("setting.set(shortcuts reset) failed:", err);
+    }
+  },
+
+  /** Toggle the "recording a chord" sentinel. The global keydown listener
+   *  suppresses dispatch while this is true so a captured chord doesn't
+   *  also fire the command it's being assigned to. Not persisted. */
+  setShortcutRecording: (recording) => {
+    set({ shortcutRecording: recording });
   },
 
   /** Persist the active session's permission mode. The local slot is updated

@@ -10,6 +10,7 @@ import {
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchIndicator.js";
+import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/shortcuts.js";
 
 type Mode = "workspace" | "settings";
 
@@ -74,6 +75,18 @@ export function Titlebar({
   const leftWidth = useSessionStore((s) => s.leftWidth);
   const showLeftStrip = leftOpen || isSettings;
 
+  // Subscribe once to the shortcut overrides so every toggle button's tooltip
+  // shows the *effective* chord (override ?? default). Re-resolved per render
+  // via `hintFor` below — cheap (a handful of lookups).
+  const overrides = useSessionStore((s) => s.shortcutOverrides);
+  /** Append the effective shortcut for `commandId` to a label, e.g.
+   *  "隐藏左侧面板" → "隐藏左侧面板 (⌘B)". Returns the label unchanged when
+   *  the command has no binding. */
+  const hintFor = (commandId: string): string => {
+    const a = resolveShortcut(commandId, overrides);
+    return a ? ` (${acceleratorToDisplayString(a)})` : "";
+  };
+
   return (
     <div
       className="flex h-10 shrink-0 items-stretch"
@@ -109,7 +122,7 @@ export function Titlebar({
               "flex items-center justify-center rounded p-1.5 text-content-muted transition-colors",
               "hover:bg-surface-hover hover:text-content",
             )}
-            title={leftOpen ? "隐藏左侧面板" : "显示左侧面板"}
+            title={(leftOpen ? "隐藏左侧面板" : "显示左侧面板") + hintFor("layout.toggle-left")}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           >
             <IconLayoutSidebarLeftExpand
@@ -152,7 +165,7 @@ export function Titlebar({
                   ? "bg-surface-hover text-accent"
                   : "text-content-muted hover:bg-surface-hover hover:text-content",
               )}
-              title={bottomTerminalOpen ? "隐藏终端" : "显示终端"}
+              title={(bottomTerminalOpen ? "隐藏终端" : "显示终端") + hintFor("layout.toggle-bottom-terminal")}
               style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             >
               <IconTerminal2 size={18} className="shrink-0" />
@@ -163,7 +176,7 @@ export function Titlebar({
                 "flex items-center justify-center rounded p-1.5 text-content-muted transition-colors",
                 "hover:bg-surface-muted hover:text-content",
               )}
-              title={rightOpen ? "隐藏右侧面板" : "显示右侧面板"}
+              title={(rightOpen ? "隐藏右侧面板" : "显示右侧面板") + hintFor("layout.toggle-right")}
               style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             >
               <IconLayoutSidebarRightExpand

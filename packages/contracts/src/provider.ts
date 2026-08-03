@@ -54,6 +54,15 @@ export interface StartTurnRequest {
    *  Main-process only — never crosses the IPC boundary (the cleartext token
    *  is decrypted in main right before the turn starts). */
   apiConfig?: ApiConfig;
+  /** Skill names the user picked in the composer (without the leading "/").
+   *  When non-empty the provider passes them as the SDK `Options.skills`
+   *  allowlist so the model's `Skill` tool can actually reach them. This is
+   *  required because `query()` runs the bundled binary in stream-json input
+   *  mode, where the CLI does NOT re-parse `/name` slash commands from the
+   *  prompt text — so the `/name` literals the composer inlines are display-
+   *  only and never trigger the Skill tool on their own. Omitted/empty falls
+   *  back to `skills: "all"` (let the model self-discover). */
+  skills?: string[];
 }
 
 /** Approval request passed from provider → host (for canUseTool-style callbacks). */

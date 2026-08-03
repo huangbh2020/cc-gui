@@ -33,19 +33,31 @@ import {
   type CommandDef,
   type CommandGroup,
 } from "@renderer/lib/commands.js";
+import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/shortcuts.js";
 
 export function CommandPalette() {
   const open = useSessionStore((s) => s.commandPaletteOpen);
   const setOpen = useSessionStore((s) => s.setCommandPaletteOpen);
+  // Subscribe to overrides so the <kbd> hints update live when the user
+  // rebinds in settings (the palette is usually closed by then, but this
+  // keeps the two views consistent if they ever overlap).
+  const overrides = useSessionStore((s) => s.shortcutOverrides);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Collect commands from the live store state. `getState()` gives us a
   // snapshot that includes dynamic session-switch commands. We re-collect on
-  // every open so freshly-created sessions appear without a remount.
+  // every open so freshly-created sessions appear without a remount. Each
+  // command's effective shortcut (override ?? default) is rendered into
+  // `shortcutHint` for the trailing <kbd> badge.
   const commands = useMemo<CommandDef[]>(() => {
     if (!open) return [];
-    return collectCommands(useSessionStore.getState());
-  }, [open]);
+    return collectCommands(useSessionStore.getState()).map((cmd) => {
+      const effective = resolveShortcut(cmd.id, overrides);
+      return effective
+        ? { ...cmd, shortcutHint: acceleratorToDisplayString(effective) }
+        : cmd;
+    });
+  }, [open, overrides]);
 
   const close = () => setOpen(false);
 

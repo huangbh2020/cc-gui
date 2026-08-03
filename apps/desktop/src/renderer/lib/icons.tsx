@@ -36,6 +36,7 @@ export {
   IconSend,
   IconSend2,
   IconArchive,
+  IconFocus,
   // Navigation
   IconChevronDown,
   IconChevronUp,
@@ -45,6 +46,7 @@ export {
   IconArrowLeft,
   IconArrowUp,
   IconArrowDown,
+  IconArrowsExchange,
   IconMenu2,
   IconDots,
   IconDotsVertical,
@@ -167,6 +169,7 @@ export {
   IconGripVertical,
   // Objects
   IconKey,
+  IconKeyboard,
   IconLink,
   IconUnlink,
   IconLock,

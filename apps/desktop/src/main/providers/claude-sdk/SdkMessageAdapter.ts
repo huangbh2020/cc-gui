@@ -80,6 +80,7 @@ interface TaskUpdatedEnvelope {
 import {
   normalizeClaudeTokenUsage,
   mergeClaudeTokenUsageSnapshot,
+  buildCompactSnapshot,
   resolveEffectiveContextWindow,
   type RawClaudeUsage,
   type ClaudeContextWindowTag,
@@ -457,7 +458,12 @@ export class SdkMessageAdapter {
 
   /** Compact boundary: the SDK finished a context compaction (manual
    *  `/compact` or auto-compact). Emit a `compact.result` event so the
-   *  renderer can show a summary card in the message stream. */
+   *  renderer can show a summary card in the message stream, AND emit a
+   *  `token-usage.updated` event built from `post_tokens` so the context
+   *  ring / persistence / path-C merge all reflect the reduced occupancy.
+   *  Without the token-usage emit, the ring would stay at the pre-compact
+   *  value until the next assistant response - which may never come if the
+   *  user just ran `/compact` and stopped. */
   private handleCompactBoundary(m: {
     subtype: "compact_boundary";
     compact_metadata: {
@@ -476,6 +482,18 @@ export class SdkMessageAdapter {
       postTokens: meta.post_tokens,
       durationMs: meta.duration_ms,
     });
+    // Build a post-compaction snapshot from post_tokens. publishTokenUsageSnapshot
+    // updates lastKnownTokenUsage (so path-C merge at turn-end uses the
+    // post-compact occupancy) and lastKnownContextWindow (never-downgrade),
+    // then emits token-usage.updated -> renderer ring + DB persistence.
+    const snapshot = buildCompactSnapshot({
+      postTokens: meta.post_tokens,
+      lastKnown: this.state.lastKnownTokenUsage,
+      model: this.state.lastKnownTokenUsage?.model,
+    });
+    if (snapshot) {
+      this.publishTokenUsageSnapshot(snapshot);
+    }
   }
 
   /* ──────────────── subagent task lifecycle (SDK level-signal pattern) ────────────────

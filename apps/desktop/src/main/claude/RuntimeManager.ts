@@ -135,7 +135,7 @@ class RuntimeManager {
   }
 
   /** Send a user message to the provider and stream events back. */
-  async sendTurn(session: Session, input: { prompt: string; cwd: string }): Promise<void> {
+  async sendTurn(session: Session, input: { prompt: string; cwd: string; skills?: string[] }): Promise<void> {
     const rt = this.sessions.get(session.id);
     if (!rt) {
       log.warn(`sendTurn: no runtime bound for session ${session.id}`);
@@ -223,6 +223,7 @@ class RuntimeManager {
       permissionMode: session.permissionMode !== "default" ? session.permissionMode : undefined,
       resumeProviderSessionId: rt.providerSessionId,
       apiConfig,
+      skills: input.skills,
     };
 
     const handle = await provider.startTurn(req, rt.ctx);

@@ -1,20 +1,30 @@
 /**
- * Command registry for the Cmd/Ctrl+K command palette.
+ * Command registry for the Cmd/Ctrl+K command palette AND the global
+ * keyboard-shortcut system. This is the single source of truth for "what
+ * actions the app exposes": each command is a self-contained definition with
+ * a label (search target), a group (visual cluster), an icon, a `perform`
+ * that runs against the live store, and optionally a `defaultAccelerator`
+ * that binds it to a keyboard chord out of the box.
  *
- * Each command is a self-contained definition: a label the user searches for,
- * a group for visual clustering, an icon, optional keywords, and a `perform`
- * that runs against the live store (fetched via `useSessionStore.getState()`
- * at click time — NOT captured at definition time, so the array itself can be
- * a module-level constant for the static commands).
+ * The shortcut system layers user overrides on top of `defaultAccelerator`
+ * (see `lib/shortcuts.ts`): the *effective* binding for a command is its
+ * override if present, else its default. The palette and the global keydown
+ * listener share the same `perform`, so rebinding a chord needs no code
+ * change — `collectCommands(state, overrides)` injects the resolved chord
+ * into `shortcutHint` for display.
  *
- * Dynamic commands (e.g. "switch to session X") are produced by
- * `collectCommands()`, which merges the static list with per-store-state
- * items. The palette component calls this on every render of an open palette.
+ * Static commands are a module-level constant (their `perform` reads the live
+ * store via the argument, never capturing stale state). Dynamic commands
+ * (e.g. "switch to session X") are produced by `collectCommands()`, which
+ * merges the static list with per-store-state items.
  */
 import type { ComponentType } from "react";
+import type { Accelerator } from "@contracts/ipc";
 import type { SessionState } from "@renderer/stores/sessionStore.js";
 import type { TablerIconProps } from "@renderer/lib/icons.js";
 import { api } from "@renderer/lib/api.js";
+import { isMac } from "@renderer/lib/platform.js";
+import { DEFAULT_SHORTCUTS } from "@renderer/lib/shortcuts.js";
 import {
   IconPlus,
   IconMessage,
@@ -29,6 +39,10 @@ import {
   IconSun,
   IconMoon,
   IconSearch,
+  IconKeyboard,
+  IconX,
+  IconArrowsExchange,
+  IconFocus,
 } from "@renderer/lib/icons.js";
 
 /** Visual grouping label shown as a section header in the palette. */
@@ -41,7 +55,7 @@ export const COMMAND_GROUPS = [
 export type CommandGroup = (typeof COMMAND_GROUPS)[number];
 
 export interface CommandDef {
-  /** Stable id for keying / dedup. */
+  /** Stable id for keying / dedup. Also the key into the shortcut bindings. */
   id: string;
   /** Display label — also the primary search target. */
   label: string;
@@ -50,7 +64,17 @@ export interface CommandDef {
   keywords?: string[];
   /** Leading icon. */
   icon?: ComponentType<TablerIconProps>;
-  /** Hint shown on the right (purely display, e.g. "⌘K"). */
+  /**
+   * Default keyboard chord for this command. The effective binding is the
+   * user's override (if any) falling back to this. Commands without a
+   * `defaultAccelerator` simply have no shortcut until the user binds one.
+   */
+  defaultAccelerator?: Accelerator;
+  /**
+   * Effective chord for display, filled in by `collectCommands` from the
+   * user's overrides + `defaultAccelerator`. Purely presentational; the
+   * global keydown listener resolves bindings independently.
+   */
   shortcutHint?: string;
   /** Run the command. Called with the live store so actions are fresh. */
   perform: (s: SessionState) => void | Promise<void>;
@@ -68,13 +92,37 @@ const STATIC_COMMANDS: CommandDef[] = [
     group: "会话",
     keywords: ["new", "session", "chat", "thread", "新建", "对话"],
     icon: IconPlus,
+    defaultAccelerator: DEFAULT_SHORTCUTS["session.new"],
     perform: (s) => {
       void s.startSession();
     },
     available: (s) => s.activeProjectId !== null,
   },
+  {
+    id: "tab.close",
+    label: "关闭当前标签页",
+    group: "会话",
+    keywords: ["close", "tab", "关闭", "标签"],
+    icon: IconX,
+    defaultAccelerator: DEFAULT_SHORTCUTS["tab.close"],
+    perform: (s) => {
+      if (s.activeSessionId) s.closeTab(s.activeSessionId);
+    },
+    available: (s) => s.displayMode === "tabs" && s.openTabs.length > 0,
+  },
 
   // ── 视图 ──
+  {
+    id: "command.palette",
+    label: "打开命令面板",
+    group: "视图",
+    keywords: ["command", "palette", "search", "命令", "面板"],
+    icon: IconKeyboard,
+    defaultAccelerator: DEFAULT_SHORTCUTS["command.palette"],
+    perform: (s) => {
+      s.setCommandPaletteOpen(!s.commandPaletteOpen);
+    },
+  },
   {
     id: "view.display-mode.single",
     label: "显示模式：单会话",
@@ -98,6 +146,18 @@ const STATIC_COMMANDS: CommandDef[] = [
     available: (s) => s.displayMode !== "tabs",
   },
   {
+    id: "view.display-mode.toggle",
+    label: "切换显示模式",
+    group: "视图",
+    keywords: ["toggle", "display", "mode", "切换", "模式"],
+    icon: IconArrowsExchange,
+    defaultAccelerator: DEFAULT_SHORTCUTS["view.display-mode.toggle"],
+    perform: (s) => {
+      void s.setDisplayMode(s.displayMode === "tabs" ? "single" : "tabs");
+    },
+    available: (s) => s.activeProjectId !== null,
+  },
+  {
     id: "view.right-panel.files",
     label: "右栏：文件",
     group: "视图",
@@ -114,7 +174,7 @@ const STATIC_COMMANDS: CommandDef[] = [
     group: "视图",
     keywords: ["search", "files", "grep", "搜索", "查找", "文件"],
     icon: IconSearch,
-    shortcutHint: "⌘⇧F",
+    defaultAccelerator: DEFAULT_SHORTCUTS["files.search"],
     perform: (s) => {
       s.setSearchDialogOpen(true);
     },
@@ -137,9 +197,26 @@ const STATIC_COMMANDS: CommandDef[] = [
     group: "视图",
     keywords: ["settings", "preferences", "设置", "偏好"],
     icon: IconSettings,
-    shortcutHint: "⌘,",
+    defaultAccelerator: DEFAULT_SHORTCUTS["view.settings"],
     perform: (s) => {
       s.setSettingsOpen(true);
+    },
+  },
+  {
+    id: "chat.focus-input",
+    label: "聚焦聊天输入框",
+    group: "视图",
+    keywords: ["focus", "chat", "input", "composer", "聚焦", "输入"],
+    icon: IconFocus,
+    defaultAccelerator: DEFAULT_SHORTCUTS["chat.focus-input"],
+    perform: () => {
+      // The composer is a Tiptap contentEditable; its inner .ProseMirror node
+      // is the actual focusable element. Reaching it via querySelector keeps
+      // this command decoupled from the composer's ref/imperative handle.
+      const el = document.querySelector<HTMLElement>(
+        ".composer-host .ProseMirror",
+      );
+      if (el) el.focus();
     },
   },
 
@@ -150,6 +227,7 @@ const STATIC_COMMANDS: CommandDef[] = [
     group: "布局",
     keywords: ["left", "sidebar", "toggle", "左侧", "侧栏"],
     icon: IconLayoutSidebarLeftExpand,
+    defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-left"],
     perform: (s) => {
       s.setLeftOpen(!s.leftOpen);
     },
@@ -160,6 +238,7 @@ const STATIC_COMMANDS: CommandDef[] = [
     group: "布局",
     keywords: ["right", "sidebar", "panel", "toggle", "右侧", "右栏"],
     icon: IconLayoutSidebarRightExpand,
+    defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-right"],
     perform: (s) => {
       s.setRightOpen(!s.rightOpen);
     },
@@ -170,6 +249,7 @@ const STATIC_COMMANDS: CommandDef[] = [
     group: "布局",
     keywords: ["terminal", "bottom", "toggle", "终端", "底部"],
     icon: IconTerminal2,
+    defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-bottom-terminal"],
     perform: (s) => {
       s.setBottomTerminalOpen(!s.bottomTerminalOpen);
     },
@@ -196,6 +276,21 @@ const STATIC_COMMANDS: CommandDef[] = [
       void api.theme.set({ theme: "dark" });
     },
   },
+  {
+    id: "appearance.theme.toggle",
+    label: "切换深/浅主题",
+    group: "外观",
+    keywords: ["toggle", "theme", "切换", "主题"],
+    icon: IconArrowsExchange,
+    defaultAccelerator: DEFAULT_SHORTCUTS["appearance.theme.toggle"],
+    perform: () => {
+      // Derive the current effective theme from the <html> class set by
+      // useTheme (kept in sync with the persisted preference + OS). Toggling
+      // then writes the explicit opposite so it sticks across restarts.
+      const isDark = document.documentElement.classList.contains("dark");
+      void api.theme.set({ theme: isDark ? "light" : "dark" });
+    },
+  },
 ];
 
 /* ───────────────────── dynamic commands ───────────────────── */
@@ -205,7 +300,14 @@ const STATIC_COMMANDS: CommandDef[] = [
  *  Merges the static commands with dynamic "switch to session X" entries
  *  (one per session in the active project's loaded page). `s` is the live
  *  store snapshot — the palette passes `useSessionStore.getState()` so
- *  `perform` runs against fresh actions. */
+ *  `perform` runs against fresh actions.
+ *
+ *  `overrides` (optional) injects each command's *effective* shortcut into
+ *  `shortcutHint` for display: the user's override if present, else the
+ *  command's `defaultAccelerator`. The global keydown listener resolves
+ *  bindings from the same source, so what the palette shows always matches
+ *  what the keyboard does. Rendering is platform-aware (⌘ on mac, Ctrl
+ *  elsewhere) via `acceleratorToDisplayString`. */
 export function collectCommands(s: SessionState): CommandDef[] {
   const cmds = STATIC_COMMANDS.filter((c) => !c.available || c.available(s));
 
@@ -239,3 +341,7 @@ export function commandMatches(cmd: CommandDef, query: string): boolean {
   if (cmd.label.toLowerCase().includes(q)) return true;
   return (cmd.keywords ?? []).some((k) => k.toLowerCase().includes(q));
 }
+
+/** Re-exported for the settings panel + shortcut listener. The platform
+ *  label is also handy for UI hints ("hold ⌘/Ctrl to…"). */
+export { isMac };

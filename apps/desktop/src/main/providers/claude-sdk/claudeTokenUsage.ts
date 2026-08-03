@@ -200,6 +200,65 @@ export function normalizeClaudeTokenUsage(
   };
 }
 
+/* ── compaction (doc §6) ── */
+
+/** Build a post-compaction snapshot from the SDK's `compact_metadata.
+ *  post_tokens`.
+ *
+ *  Unlike `normalizeClaudeTokenUsage` (which takes raw usage fields and
+ *  computes occupancy as `input + cacheCreation + cacheRead`), `post_tokens`
+ *  is already the resolved window occupancy after compaction - the SDK did
+ *  the math. We only clamp it to the ceiling and recompute pct / warning.
+ *
+ *  Throughput / cost / cache / output fields are carried over from
+ *  `lastKnown` (the pre-compaction snapshot) because compaction doesn't
+ *  reset billing counters - it only shrinks what's in the window.
+ *
+ *  Returns `undefined` when `post_tokens` is missing or zero, so the caller
+ *  can skip emitting - avoids a ghost "0 / 200k (0%)" readout when the SDK
+ *  doesn't report a post-compact token count. */
+export function buildCompactSnapshot(opts: {
+  postTokens?: number;
+  lastKnown?: ContextSnapshot;
+  model?: string;
+}): ContextSnapshot | undefined {
+  const { postTokens, lastKnown } = opts;
+  if (typeof postTokens !== "number" || postTokens <= 0) return undefined;
+
+  // Preserve the resolved window ceiling (never-downgrade rule). Fall back
+  // to the model heuristic when no prior snapshot exists (compaction at the
+  // very start of a session - rare but possible).
+  const maxTokens = lastKnown?.maxTokens
+    ?? resolveEffectiveContextWindow({ model: opts.model });
+
+  const usedTokens = Math.min(postTokens, maxTokens);
+  const pct = Math.min(100, Math.round((usedTokens / maxTokens) * 100));
+  const warning: ContextWarning =
+    pct >= 90 ? "critical" : pct >= 70 ? "near-window" : "ok";
+
+  // Recompute granular warnings against the post-compact occupancy. We
+  // synthesize a RawClaudeUsage where inputTokens = postTokens (cache fields
+  // unset) so the existing threshold logic applies cleanly.
+  const warnings = decideClaudeContextUsageWarnings(
+    { inputTokens: postTokens },
+    maxTokens,
+  );
+
+  return {
+    usedTokens,
+    totalProcessedTokens: lastKnown?.totalProcessedTokens ?? 0,
+    maxTokens,
+    outputTokens: lastKnown?.outputTokens ?? 0,
+    cacheReadTokens: lastKnown?.cacheReadTokens,
+    cacheCreationTokens: lastKnown?.cacheCreationTokens,
+    costUsd: lastKnown?.costUsd,
+    model: opts.model ?? lastKnown?.model,
+    pct,
+    warning,
+    warnings,
+  };
+}
+
 /* ── path C merge (doc §2 path C) ── */
 
 /** Merge a turn-end accumulated snapshot (from `result.usage`) with the last

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -32,6 +32,21 @@ const EMPTY_EXPANDED: string[] = [];
  */
 type FileNodeRegister = (path: string, el: HTMLButtonElement | null) => void;
 const FileNodeRegistryContext = createContext<FileNodeRegister | null>(null);
+
+/**
+ * Per-tree set of directory paths the user has explicitly collapsed out of
+ * auto-open. Tracks the *end* path of a compacted dir node (the deepest dir in
+ * the absorbed chain), since that's the path whose children we render.
+ *
+ * Auto-open shows a dir's children by default when every entry is a subdir.
+ * Without a way to record "I collapsed this", the node would re-open on the
+ * next render. This set persists across re-renders within one FileTree
+ * lifetime (keyed by projectPath in FilesPanel, so it resets on project
+ * switch). It is NOT persisted to the settings table - a restart restores
+ * auto-open, which is the expected "fresh" behavior.
+ */
+type AutoClosedToggle = (endPath: string) => void;
+const AutoClosedDirsContext = createContext<{ has: (p: string) => boolean; toggle: AutoClosedToggle } | null>(null);
 
 /* ───────────────────────── context menu ───────────────────────── */
 
@@ -150,6 +165,24 @@ export function FileTree({ projectPath }: { projectPath: string }) {
     else nodeMap.current.delete(path);
   }, []);
 
+  // Per-tree set of dir paths the user collapsed out of auto-open. State (not
+  // ref) so toggling re-renders the affected DirNode; stable has/toggle are
+  // memoized so context consumers don't all re-render on every toggle.
+  const [autoClosed, setAutoClosed] = useState<Set<string>>(() => new Set());
+  const autoClosedCtx = useMemo<{ has: (p: string) => boolean; toggle: AutoClosedToggle }>(
+    () => ({
+      has: (p) => autoClosed.has(p),
+      toggle: (p) =>
+        setAutoClosed((prev) => {
+          const next = new Set(prev);
+          if (next.has(p)) next.delete(p);
+          else next.add(p);
+          return next;
+        }),
+    }),
+    [autoClosed],
+  );
+
   // Reveal the active file in the tree: expand its ancestor dirs (so the node
   // mounts - DirNode only renders children when open) then scroll it into view.
   // Ancestor expansion is an async chain (setDirExpanded -> re-render ->
@@ -212,13 +245,58 @@ export function FileTree({ projectPath }: { projectPath: string }) {
 
   return (
     <FileNodeRegistryContext.Provider value={registerNode}>
-      <div className="py-1 [font-size:var(--right-panel-font-size)]">
-        {entries.map((e) => (
-          <TreeNode key={e.path} entry={e} depth={0} projectPath={projectPath} />
-        ))}
-      </div>
+      <AutoClosedDirsContext.Provider value={autoClosedCtx}>
+        <div className="py-1 [font-size:var(--right-panel-font-size)]">
+          {entries.map((e) => (
+            <TreeNode key={e.path} entry={e} depth={0} projectPath={projectPath} />
+          ))}
+        </div>
+      </AutoClosedDirsContext.Provider>
     </FileNodeRegistryContext.Provider>
   );
+}
+
+/** Maximum number of single-subdir levels to absorb into one row. Caps a
+ *  pathological deep chain so the compact loop can't block the renderer. */
+const MAX_COMPACT_DEPTH = 24;
+/** Directories deeper than this in the tree aren't auto-expanded even when
+ *  they contain only subdirs, so a huge monorepo can't render tens of
+ *  thousands of nodes on first paint. The user can still expand manually. */
+const MAX_AUTO_OPEN_DEPTH = 15;
+
+/** Load `startPath`'s entries, then keep descending as long as the dir has
+ *  exactly one entry and it's a subdir, absorbing each step into a compact
+ *  chain (VS Code "Compact Folders"). Returns the end dir's absolute path, the
+ *  absorbed name segments (excluding startPath's own name), the end dir's
+ *  entries, and whether every entry is a directory (the auto-open condition). */
+async function loadAndCompact(
+  projectPath: string,
+  startPath: string,
+): Promise<{
+  endPath: string;
+  extraSegments: string[];
+  children: FileTreeEntry[];
+  allDirs: boolean;
+}> {
+  const extraSegments: string[] = [];
+  let currentPath = startPath;
+  let entries: FileTreeEntry[] = [];
+  for (let i = 0; i < MAX_COMPACT_DEPTH; i++) {
+    // dirPath is relative to projectPath; compute it from the absolute path
+    // (same trick the old lazy-load used).
+    const dirPath = currentPath.slice(projectPath.length).replace(/^[\\/]/, "");
+    const result = await api.file.listDir({ projectPath, dirPath });
+    entries = result.entries;
+    // Compact only when there's exactly one entry and it's a directory.
+    if (entries.length === 1 && entries[0].isDir) {
+      extraSegments.push(entries[0].name);
+      currentPath = entries[0].path;
+    } else {
+      break;
+    }
+  }
+  const allDirs = entries.length > 0 && entries.every((e) => e.isDir);
+  return { endPath: currentPath, extraSegments, children: entries, allDirs };
 }
 
 /* ───────────────────────── TreeNode ───────────────────────── */
@@ -242,12 +320,16 @@ function TreeNode({
     pid ? s.ideExpandedDirsByProject[pid] ?? EMPTY_EXPANDED : EMPTY_EXPANDED,
   );
   const toggleDirExpanded = useSessionStore((s) => s.toggleDirExpanded);
+  const setDirExpanded = useSessionStore((s) => s.setDirExpanded);
   const openFileInIde = useSessionStore((s) => s.openFileInIde);
   const activeFile = useSessionStore((s) =>
     pid ? s.ideActiveFileByProject[pid] ?? null : null,
   );
 
   const isOpen = expandedDirs.includes(entry.path);
+  // autoOpen is the default-expanded state for a dir that contains only
+  // subdirectories (no files) at a reasonable depth - see MAX_AUTO_OPEN_DEPTH.
+  const autoOpen = depth < MAX_AUTO_OPEN_DEPTH && !isOpen;
   const isActiveFile = activeFile === entry.path;
 
   if (entry.isDir) {
@@ -257,7 +339,9 @@ function TreeNode({
         depth={depth}
         projectPath={projectPath}
         isOpen={isOpen}
+        autoOpen={autoOpen}
         onToggle={() => toggleDirExpanded(entry.path)}
+        setDirExpanded={setDirExpanded}
       />
     );
   }
@@ -280,45 +364,102 @@ function DirNode({
   depth,
   projectPath,
   isOpen,
+  autoOpen,
   onToggle,
+  setDirExpanded,
 }: {
   entry: FileTreeEntry;
   depth: number;
   projectPath: string;
   isOpen: boolean;
+  autoOpen: boolean;
   onToggle: () => void;
+  setDirExpanded: (dirPath: string, open: boolean) => void;
 }) {
   const [children, setChildren] = useState<FileTreeEntry[] | null>(null);
+  const [extraSegments, setExtraSegments] = useState<string[]>([]);
+  const [endPath, setEndPath] = useState<string>(entry.path);
+  const [allDirs, setAllDirs] = useState(false);
   const [loading, setLoading] = useState(false);
   const { copy: copyWithFeedback, toast: copiedToast } = useCopyFeedback();
+  const autoClosedCtx = useContext(AutoClosedDirsContext);
 
-  // Lazy-load children when first expanded. We cache the result so subsequent
-  // collapses/re-expansions don't re-fetch (unless the user manually refreshes
-  // — not wired in this phase).
+  // Lazy-load + compact when first expanded OR when auto-open should preview
+  // the children (we need to know whether allDirs to decide). We fetch eagerly
+  // for auto-open candidates; for plain collapsed dirs we wait for the user.
+  // Cache the result so subsequent collapses/re-expansions don't re-fetch.
   useEffect(() => {
-    if (!isOpen || children !== null) return;
+    if (children !== null) return;
+    if (!isOpen && !autoOpen) return;
     let cancelled = false;
     setLoading(true);
-    // dirPath is relative to projectPath; compute it from the absolute path.
-    const dirPath = entry.path.slice(projectPath.length).replace(/^[\\/]/, "");
-    api.file
-      .listDir({ projectPath, dirPath })
-      .then(({ entries }) => {
-        if (!cancelled) {
-          setChildren(entries);
-          setLoading(false);
-        }
+    loadAndCompact(projectPath, entry.path)
+      .then(({ endPath: ep, extraSegments: segs, children: kids, allDirs: ad }) => {
+        if (cancelled) return;
+        setChildren(kids);
+        setExtraSegments(segs);
+        setEndPath(ep);
+        setAllDirs(ad);
+        setLoading(false);
       })
       .catch(() => {
-        if (!cancelled) {
-          setChildren([]);
-          setLoading(false);
-        }
+        if (cancelled) return;
+        setChildren([]);
+        setExtraSegments([]);
+        setEndPath(entry.path);
+        setAllDirs(false);
+        setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [isOpen, children, entry.path, projectPath]);
+  }, [isOpen, autoOpen, children, entry.path, projectPath]);
+
+  // Effective open state: manual (store) OR (auto-open AND all-dirs AND not
+  // user-closed). The user-closed check lets a click collapse an auto-opened
+  // node; clicking again re-opens it (clears the closed flag).
+  const isAutoClosed = autoClosedCtx?.has(endPath) ?? false;
+  const effectivelyOpen =
+    isOpen || (autoOpen && allDirs && children !== null && !isAutoClosed);
+
+  // Click handler: toggle the effective state. For a manually-opened node we
+  // flip the store entry (onToggle). For an auto-opened node we flip the
+  // per-tree closed flag instead, so the store stays clean of auto-open noise.
+  const handleClick = useCallback(() => {
+    if (isOpen) {
+      // Manually opened -> close via store.
+      onToggle();
+      return;
+    }
+    if (autoOpen && allDirs) {
+      // Auto-opened node: toggle the closed flag. Closing adds to autoClosed;
+      // re-opening (when already closed) clears it.
+      autoClosedCtx?.toggle(endPath);
+      return;
+    }
+    // Collapsed non-auto node -> open via store.
+    onToggle();
+  }, [isOpen, autoOpen, allDirs, onToggle, autoClosedCtx, endPath]);
+
+  // If the active file lives under endPath (the compacted dir), make sure
+  // endPath is in the store's expandedDirs so the reveal effect can descend.
+  // Compaction means the intermediate dirs in the chain don't have their own
+  // DirNode rows, so the store wouldn't otherwise know to expand them.
+  const activeFile = useSessionStore((s) => {
+    const pid = s.activeProjectId;
+    return pid ? s.ideActiveFileByProject[pid] ?? null : null;
+  });
+  useEffect(() => {
+    if (!activeFile) return;
+    if (endPath !== entry.path && activeFile.startsWith(endPath + "/")) {
+      setDirExpanded(endPath, true);
+    }
+  }, [activeFile, endPath, entry.path, setDirExpanded]);
+
+  // Build the display label: entry.name + absorbed segments, joined by "/".
+  // e.g. entry.name="apps", extraSegments=["desktop","src"] -> "apps/desktop/src".
+  const label =
+    extraSegments.length > 0 ? `${entry.name}/${extraSegments.join("/")}` : entry.name;
 
   return (
     <div className="relative">
@@ -327,7 +468,7 @@ function DirNode({
           render={
             <button
               type="button"
-              onClick={onToggle}
+              onClick={handleClick}
               className={cn(
                 "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors hover:bg-surface-hover/50",
               )}
@@ -336,9 +477,12 @@ function DirNode({
           }
         >
           <span className="shrink-0 text-content-subtle">
-            {isOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+            {effectivelyOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
           </span>
-          <span className="truncate text-content-muted">{entry.name}</span>
+          <span className="shrink-0 text-content-subtle">
+            <IconFolderOpen size={13} />
+          </span>
+          <span className="truncate text-content-muted">{label}</span>
           {loading && <IconLoader2 size={10} className="ml-auto animate-spin text-content-subtle" />}
         </ContextMenu.Trigger>
         <ContextMenu.Portal>
@@ -346,30 +490,30 @@ function DirNode({
             <ContextMenu.Popup className={MENU_POPUP_CLASS}>
               <MenuItem
                 icon={<IconFolderOpen size={12} />}
-                label={isOpen ? "折叠" : "展开"}
-                onClick={onToggle}
+                label={effectivelyOpen ? "折叠" : "展开"}
+                onClick={handleClick}
               />
               <MenuItem
                 icon={<IconExternalLink size={12} />}
                 label="在资源管理器中显示"
-                onClick={() => void api.shell.showItemInFolder({ path: entry.path })}
+                onClick={() => void api.shell.showItemInFolder({ path: endPath })}
               />
               <MenuItem
                 icon={<IconClipboard size={12} />}
                 label="复制绝对路径"
-                onClick={() => copyWithFeedback(entry.path)}
+                onClick={() => copyWithFeedback(endPath)}
               />
               <MenuItem
                 icon={<IconCopy size={12} />}
                 label="复制相对路径"
-                onClick={() => copyWithFeedback(relativePath(entry.path, projectPath))}
+                onClick={() => copyWithFeedback(relativePath(endPath, projectPath))}
               />
             </ContextMenu.Popup>
           </ContextMenu.Positioner>
         </ContextMenu.Portal>
       </ContextMenu.Root>
       {copiedToast}
-      {isOpen && children && children.length > 0 && (
+      {effectivelyOpen && children && children.length > 0 && (
         <div>
           {children.map((c) => (
             <TreeNode key={c.path} entry={c} depth={depth + 1} projectPath={projectPath} />

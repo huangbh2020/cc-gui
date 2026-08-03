@@ -94,6 +94,34 @@ export const ProjectGroupsMetaSchema = z.record(z.string(), ProjectGroupMetaSche
 export type ProjectGroupsMeta = z.infer<typeof ProjectGroupsMetaSchema>;
 
 /**
+ * Setting key under which the user's keyboard-shortcut overrides are persisted
+ * as a JSON object: `{ commandId: Accelerator }`. Only user-changed bindings
+ * are stored — commands absent from this map fall back to the compiled-in
+ * `DEFAULT_SHORTCUTS` table, so a version bump that adds new defaults takes
+ * effect automatically while preserving older overrides.
+ *
+ * The Accelerator is platform-neutral: `cmd: true` means "the primary
+ * modifier" (⌘ on macOS, Ctrl elsewhere). The renderer resolves it for
+ * display and matching. Mirrors the displayMode pipeline.
+ */
+export const UI_SHORTCUTS_SETTING_KEY = "ui.shortcuts";
+
+/** zod schema for a single accelerator. All three modifiers are always
+ *  present (default false); `key` is the normalized main key, lowercase
+ *  for letters ("k"), or a named key ("f1", "space", "escape"). */
+export const AcceleratorSchema = z.object({
+  key: z.string(),
+  cmd: z.boolean().default(false),
+  shift: z.boolean().default(false),
+  alt: z.boolean().default(false),
+});
+export type Accelerator = z.infer<typeof AcceleratorSchema>;
+
+/** zod schema for the whole override map: commandId → Accelerator. */
+export const ShortcutBindingsSchema = z.record(z.string(), AcceleratorSchema);
+export type ShortcutBindings = z.infer<typeof ShortcutBindingsSchema>;
+
+/**
  * Setting key under which the user's preferred chat content font size (px)
  * is persisted. Value is a numeric string like "14". Validated/clamped in
  * the renderer store action (12–20 px). Mirrors the displayMode pipeline.
@@ -321,6 +349,10 @@ export const SendTurnSchema = z.object({
   /** Override the session's bound custom model for this turn. null = clear
    *  (use built-in credential discovery); a string = bind to that config. */
   customModelId: z.string().nullable().optional(),
+  /** Skill names picked via composer skill pills this turn (no leading "/").
+   *  Forwarded to the provider as the SDK `skills` allowlist so the model's
+   *  Skill tool can reach them (stream-json input doesn't parse /name). */
+  skills: z.array(z.string()).optional(),
 });
 export type SendTurnInput = z.infer<typeof SendTurnSchema>;
 
