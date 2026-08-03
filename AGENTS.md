@@ -126,7 +126,7 @@ pnpm build
 - `SdkMessageAdapter.dispatch()` 将 SDK 的 `SDKMessage` 归一化为 `RuntimeEvent`
 - 流是按 `message.type` 分发的 if/else 链,未知 type 静默忽略(向前兼容)
 - stream_event 的 text/thinking 增量**只在 delta 渲染**;assistant 完整消息只补全 tool_use,不重发 text(避免重复)
-- turn 结束判定:收到 `result` 消息发 `turn.done`;generator 正常结束但无 result 时,`flushFinal()` 兜底补发
+- turn 结束判定:收到 `result` 消息时,**仅当没有运行中的子代理、也没有后台任务**才立即发 `turn.done`(CLI v2.1.198+ 子代理默认后台运行,主 agent 回合结束会先发一条中间 `result`,此时 turn 并未真正结束,后续会恢复继续流式);否则推迟到 `flushFinal()` 在 generator 真正结束时补发(reason 取最后一条 result)。`emitTurnDone` 去重,每 turn 恰好发一次。后台任务跟踪同时消费 SDK 的 `background_tasks_changed` 水平信号,避免漏掉 task_started 边沿事件
 - **canUseTool 审批回调由 `ClaudeAgentSdkProvider` 在 `query()` options 里注册**,不在 adapter 里处理
 
 ### 中间面板 Tab 模式(P3.5)

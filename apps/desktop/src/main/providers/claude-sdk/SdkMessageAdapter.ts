@@ -255,7 +255,6 @@ export function parseQuestions(input: unknown): AskUserQuestionItem[] {
 interface AdapterState {
   blockMessageIds: Map<number, string>;
   emittedToolUse: Set<string>;
-  resultSeen: boolean;
   tasks: TodoUpdateEvent["todos"];
   /** Per-message sentinel scanners — only created when AskUserQuestion tool is unavailable. */
   textScanners: Map<string, SentinelScanner>;
@@ -273,6 +272,18 @@ interface AdapterState {
    *  false on the matching ExitPlanMode or when a `mode.change` to default
    *  arrives (covers rejection / interruption). Drives `plan.update` emit. */
   inPlanMode: boolean;
+  /** Whether turn.done has been emitted for this turn. Guards against double
+   *  emits when both a result message and flushFinal() fire it. */
+  turnDoneEmitted: boolean;
+  /** Reason captured from the LAST `result` message. When that result was an
+   *  INTERMEDIATE one (held back because subagents were still running), the
+   *  real turn.done is deferred to flushFinal(), which uses this reason. */
+  lastResultReason?: TurnDoneEvent["reason"];
+  /** Level signal of live background tasks (SDK `background_tasks_changed`).
+   *  The SDK documents it as the authoritative "is background work running"
+   *  source: a level, not edge events — we keep the task_ids so the
+   *  turn.done gate below can't be fooled by a missed task_started. */
+  backgroundTaskIds: Set<string>;
 }
 
 /* ─── public export ────────────────────────────────────────────────── */
@@ -304,12 +315,13 @@ export class SdkMessageAdapter {
     this.state = {
       blockMessageIds: new Map(),
       emittedToolUse: new Set(),
-      resultSeen: false,
       tasks: [],
       textScanners: new Map(),
       lastKnownContextWindow: 0,
       subagents: new Map(),
       inPlanMode: false,
+      turnDoneEmitted: false,
+      backgroundTaskIds: new Set(),
     };
   }
 
@@ -339,6 +351,11 @@ export class SdkMessageAdapter {
             post_tokens?: number;
             duration_ms?: number;
           };
+        });
+      } else if (subtype === "background_tasks_changed") {
+        this.handleBackgroundTasksChanged(sys as unknown as {
+          subtype: "background_tasks_changed";
+          tasks: { task_id: string; task_type: string; description: string }[];
         });
       }
     } else if (type === "stream_event") {
@@ -416,12 +433,14 @@ export class SdkMessageAdapter {
       }
     }
     if (subagentsChanged) this.flushSubagents();
-    if (!this.state.resultSeen) {
-      this.ctx.emit({
-        type: "turn.done",
-        sessionId: this.sessionId,
-        reason: "interrupted",
-      });
+    // Turn end, exactly once. Three paths converge here:
+    //  - a result arrived while subagents were still running → held back by
+    //    maybeEmitTurnDone, now emitted with the final result's reason;
+    //  - the stream ended without any result → safety-net "interrupted"
+    //    (preserves the pre-existing fallback semantics);
+    //  - a normal result already emitted turn.done → no-op (guard inside).
+    if (!this.state.turnDoneEmitted) {
+      this.emitTurnDone(this.state.lastResultReason ?? "interrupted");
     }
   }
 
@@ -535,6 +554,33 @@ export class SdkMessageAdapter {
       isBackgrounded: patch.is_backgrounded ?? cur.isBackgrounded,
     });
     this.flushSubagents();
+  }
+
+  /** Level signal: the SDK's authoritative "which background tasks are live"
+   *  roster. REPLACE semantics per the SDK docs — swap the whole id set. We
+   *  don't emit a `subagent.update` here (the edge events task_started /
+   *  task_updated already drive the renderer roster); this set only feeds the
+   *  turn.done gate so a backgrounded task that skipped its task_started edge
+   *  still counts as "work in progress" and holds the composer locked. */
+  private handleBackgroundTasksChanged(m: {
+    subtype: "background_tasks_changed";
+    tasks: { task_id: string; task_type: string; description: string }[];
+  }): void {
+    this.state.backgroundTaskIds = new Set((m.tasks ?? []).map((t) => t.task_id));
+  }
+
+  /** Emit the turn.done event exactly once per turn. Both handleResult (when
+   *  the result isn't held back) and flushFinal (deferred end) route through
+   *  here so the guard can't be bypassed by a result message followed by a
+   *  stream-teardown emit. */
+  private emitTurnDone(reason: TurnDoneEvent["reason"]): void {
+    if (this.state.turnDoneEmitted) return;
+    this.state.turnDoneEmitted = true;
+    this.ctx.emit({
+      type: "turn.done",
+      sessionId: this.sessionId,
+      reason,
+    } satisfies TurnDoneEvent);
   }
 
   /** Emit the current subagent roster as a single `subagent.update` event.
@@ -870,8 +916,6 @@ export class SdkMessageAdapter {
   }
 
   private handleResult(m: SDKResultMessage): void {
-    this.state.resultSeen = true;
-
     // Diagnostic: log the raw result envelope so we can see exactly what the
     // SDK delivered. Tokens staying at 0 after a turn usually means either
     // (a) the SDK didn't populate `usage` here, or (b) a non-success subtype
@@ -1002,11 +1046,7 @@ export class SdkMessageAdapter {
       }
 
       const reason = (m.stop_reason ?? "end_turn") as TurnDoneEvent["reason"];
-      this.ctx.emit({
-        type: "turn.done",
-        sessionId: this.sessionId,
-        reason,
-      } satisfies TurnDoneEvent);
+      this.maybeEmitTurnDone(reason);
     } else {
       // Error result
       this.ctx.emit({
@@ -1015,11 +1055,37 @@ export class SdkMessageAdapter {
         message: (m as { result?: string }).result ?? "Unknown error",
         code: "CLAUDE_ERROR",
       } satisfies ErrorEvent);
-      this.ctx.emit({
-        type: "turn.done",
-        sessionId: this.sessionId,
-        reason: "error",
-      } satisfies TurnDoneEvent);
+      this.maybeEmitTurnDone("error");
+    }
+  }
+
+  /** Decide whether a `result` message really ends the turn, and emit
+   *  turn.done if so.
+   *
+   *  Since CLI v2.1.198 subagents run in the BACKGROUND by default. When the
+   *  main agent spawns one and then ends its own phase, the CLI emits an
+   *  intermediate `result` message while the subagent is still running — the
+   *  stream later resumes the parent turn once the subagent's result arrives
+   *  (verified: a session turn produced a `result` at 06:53:03 and the parent
+   *  kept streaming Write/ExitPlanMode until a second, final `result` at
+   *  06:54:18). Treating that intermediate result as a turn end would clear
+   *  `runningBySession` mid-work and unlock the composer's send button while
+   *  the subagent (and the resumed parent turn) are still active — the exact
+   *  symptom reported. So: only end the turn at result-time when NO subagent
+   *  is still running and no background task is tracked; otherwise defer the
+   *  real turn.done to flushFinal(), which fires when the whole stream closes
+   *  (the subagent roster is then auto-completed / killed first, so the gate
+   *  passes and the deferred emit carries the final result's reason).
+   *
+   *  `lastResultReason` is captured regardless so flushFinal has the right
+   *  reason to report. */
+  private maybeEmitTurnDone(reason: TurnDoneEvent["reason"]): void {
+    this.state.lastResultReason = reason;
+    const anyRunning = Array.from(this.state.subagents.values()).some(
+      (s) => s.status === "running",
+    );
+    if (!anyRunning && this.state.backgroundTaskIds.size === 0) {
+      this.emitTurnDone(reason);
     }
   }
 

@@ -127,6 +127,21 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     const binaryPath = resolveSdkBinaryPath();
     if (binaryPath) options.pathToClaudeCodeExecutable = binaryPath;
 
+    // Plan files location: the bundled CLI forces the model to write its plan
+    // to a file before calling ExitPlanMode (the tool errors with "No plan file
+    // found ... Please write your plan to this file before calling ExitPlanMode"
+    // if the file is missing). The plan directory is resolved by the CLI from
+    // the `plansDirectory` setting (must be within project root), defaulting to
+    // ~/.claude/plans/ when unset. Without this, plan files leak into the
+    // GLOBAL ~/.claude/plans/ directory instead of staying project-scoped.
+    //
+    // We set it to ".claude/plans" (relative to cwd = project root) via the
+    // flag-settings layer (Options.settings), which has the highest
+    // user-controlled priority and applies regardless of `settingSources`.
+    // Add ".claude/plans/" to .gitignore to keep these ephemeral drafts out of
+    // version control.
+    options.settings = { plansDirectory: ".claude/plans" };
+
     // Custom endpoint injection: when the host provides apiConfig, route this
     // turn to the user's Anthropic-compatible endpoint by setting the SDK env.
     //
@@ -332,26 +347,34 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // SDK 0.3.x routes ExitPlanMode's user-approval step through
     // `request_user_dialog` control requests (dialogKind-based), NOT through
     // canUseTool. The CLI is fail-closed: it only emits a dialog kind declared
-    // in `supportedDialogKinds` — without the declaration the flow degrades to
-    // its no-dialog behavior (the turn aborts) and the approval UI never shows.
+    // in `supportedDialogKinds` - without the declaration the flow degrades to
+    // its no-dialog behavior (the turn aborts with "Tool permission request
+    // failed: AbortError: Stream closed") and the approval UI never shows.
     // See sdk.d.ts OnUserDialog / supportedDialogKinds docs.
     //
-    // The exact dialogKind string for ExitPlanMode is an open union defined by
-    // the bundled CLI binary, so we declare the likely candidates and let the
-    // diagnostic log below surface the real value on first hit for future
-    // tightening. Any non-matching kind is answered `cancelled` per SDK spec.
+    // The real dialogKind for ExitPlanMode is `permission_exit_plan_mode_v2`,
+    // confirmed by analyzing the bundled claude.exe v2.1.218 binary: the
+    // ExitPlanMode tool (var `oz`, name "ExitPlanMode") is mapped to dialog
+    // `fcr` whose `.kind` is "permission_exit_plan_mode_v2" in the LBy routing
+    // table (KUe({matches:(e)=>e===oz, dialog:fcr, build:qZu})). The CLI gates
+    // emission on `ewt() && (twt() ?? []).includes(dialogKind)`, so a mismatch
+    // silently suppresses the dialog. The legacy guesses below are kept as
+    // defensive fallbacks in case a future SDK version renames the kind.
     const EXIT_PLAN_DIALOG_KINDS = new Set([
-      "exit_plan_mode",
-      "ExitPlanMode",
-      "plan_approval",
+      "permission_exit_plan_mode_v2", // real value (claude.exe v2.1.218)
+      "exit_plan_mode", // legacy guess - defensive
+      "ExitPlanMode", // legacy guess - defensive
+      "plan_approval", // legacy guess - defensive
     ]);
     const onUserDialog: OnUserDialog = async (request, opts) => {
       ctx.log.info(
         `onUserDialog: dialogKind=${request.dialogKind} toolUseID=${request.toolUseID ?? "n/a"} payloadKeys=${JSON.stringify(Object.keys(request.payload ?? {}))}`,
       );
       // ExitPlanMode plan approval: route to the existing plan-approval bridge
-      // (renderer shows <PlanApprovalPrompt>). The model's plan text may live
-      // under payload.plan (canonical) or payload.input.plan (older shape).
+      // (renderer shows <PlanApprovalPrompt>). The model's plan text lives in
+      // payload.plan (the qZu build fn sets {requestId, toolName,
+      // permissionResult, plan, planFilePath, usage}); fall back to the older
+      // payload.input.plan shape for SDK versions that nested it there.
       if (EXIT_PLAN_DIALOG_KINDS.has(request.dialogKind) || typeof (request.payload as { plan?: unknown })?.plan === "string") {
         if (!requestPlanApproval) {
           return { behavior: "cancelled" as const };
