@@ -137,6 +137,17 @@ export type Block =
        *  card is read-only (historical snapshot, no rewind). Demoted to false
        *  the moment a new turn opens. */
       isLatestTurn?: boolean;
+    }
+  | {
+      kind: "compact-summary";
+      /** What triggered the compaction - manual `/compact` or auto. */
+      trigger: "manual" | "auto";
+      /** Token count before compaction. */
+      preTokens: number;
+      /** Token count after compaction (may be absent). */
+      postTokens?: number;
+      /** How long the compaction took, in ms (may be absent). */
+      durationMs?: number;
     };
 
 /** Turn-level timing metadata. Attached to the FIRST assistant message of
@@ -1535,6 +1546,43 @@ function upsertLiveTurnFilesBlock(messages: ChatMessage[], files: TurnFileEntry[
     };
   });
   return next;
+}
+
+/** Append a `compact-summary` block to the current turn's trailing assistant
+ *  message. If no open-turn assistant message exists yet (compact_boundary
+ *  arrives before any model text), create one WITH a turnMeta so it opens a
+ *  proper turn in the stream - mirroring how tool.use creates a turn opener.
+ *  Without the turnMeta the card would either attach to the PREVIOUS turn's
+ *  message (wrong position) or float as an orphan (no stat row). */
+function appendCompactSummaryBlock(
+  messages: ChatMessage[],
+  block: Block,
+  startedAt: number,
+): ChatMessage[] {
+  // Look for an OPEN turn's trailing assistant message (turnMeta present,
+  // endedAt undefined = turn.done hasn't landed). This is the correct target
+  // - the compact belongs to the CURRENT turn, not a previous one.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined) {
+      const next = messages.slice();
+      next[i] = { ...m, blocks: [...m.blocks, block] };
+      return next;
+    }
+  }
+  // No open-turn assistant message yet - the compact_boundary arrived before
+  // any model text. Create a turn-opener assistant message carrying the
+  // compact-summary block, stamped with turnMeta so it renders as the start
+  // of the current turn (with its own stat row, correct grouping, etc.).
+  const opener: ChatMessage = {
+    id: `compact_${Date.now()}`,
+    sessionId: "",
+    role: "assistant",
+    blocks: [block],
+    createdAt: Date.now(),
+    turnMeta: { startedAt },
+  };
+  return [...messages, opener];
 }
 
 /** Remove the LATEST turn's turn-files block (called from the turn.rewound
@@ -3302,6 +3350,36 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const filesSnapshot = get().messagesBySession[sid];
       if (filesSnapshot) {
         void api.session.saveMessages({ sessionId: sid, messages: toRecords(sid, filesSnapshot) });
+      }
+      return;
+    }
+    if (e.type === "compact.result") {
+      // A context compaction completed (manual /compact or auto-compact).
+      // Push a compact-summary block onto the current turn's trailing
+      // assistant message so the user sees what happened in the stream.
+      set((s) => {
+        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        const block: Block = {
+          kind: "compact-summary",
+          trigger: e.trigger,
+          preTokens: e.preTokens,
+          postTokens: e.postTokens,
+          durationMs: e.durationMs,
+        };
+        // Use the send-time anchor (stamped in sendPrompt) so the compact
+        // card's turnMeta continues the synthesized pendingTurn row's timing
+        // seamlessly - same pattern as tool.use / text.delta. Falls back to
+        // now if the anchor is missing (resumed/legacy turn).
+        const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
+        const next = appendCompactSummaryBlock(list, block, startedAt);
+        return next === list
+          ? s
+          : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
+      });
+      // Persist so the card survives reload.
+      const compactSnapshot = get().messagesBySession[sid];
+      if (compactSnapshot) {
+        void api.session.saveMessages({ sessionId: sid, messages: toRecords(sid, compactSnapshot) });
       }
       return;
     }

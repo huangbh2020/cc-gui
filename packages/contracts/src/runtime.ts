@@ -384,6 +384,22 @@ export interface SubagentUpdateEvent {
   agents: SubagentSnapshot[];
 }
 
+/** Emitted when a context compaction completes (manual `/compact` or auto).
+ *  Carries the token counts before/after so the renderer can show a summary
+ *  card in the message stream telling the user what happened. */
+export interface CompactResultEvent {
+  type: "compact.result";
+  sessionId: string;
+  /** What triggered the compaction. */
+  trigger: "manual" | "auto";
+  /** Token count before compaction. */
+  preTokens: number;
+  /** Token count after compaction (may be absent if the SDK didn't report it). */
+  postTokens?: number;
+  /** How long the compaction took, in ms (may be absent). */
+  durationMs?: number;
+}
+
 /** The union of all runtime events. */
 export type RuntimeEvent =
   | TextDeltaEvent
@@ -402,4 +418,5 @@ export type RuntimeEvent =
   | ErrorEvent
   | TurnDoneEvent
   | TurnFilesEvent
-  | TurnRewoundEvent;
+  | TurnRewoundEvent
+  | CompactResultEvent;

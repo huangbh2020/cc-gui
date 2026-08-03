@@ -28,7 +28,7 @@ import {
   shouldPromoteToTag,
   FILE_DRAG_MIME,
 } from "@renderer/lib/contentTag.js";
-import type { SkillInfo } from "@renderer/lib/slashCommands.js";
+import type { SkillInfo, BuiltInCommand } from "@renderer/lib/slashCommands.js";
 import { MessageBlocks, TurnPanel, type ProceduralBlock, type BeforeContentMap } from "./MessageBlocks.js";
 import { ComposerToolbar } from "./ComposerToolbar.js";
 import { QuestionPrompt } from "./QuestionPrompt.js";
@@ -653,16 +653,38 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
    *  - `/` (slash): same boundary rule. Query = chars after the trigger up to
    *    the caret, stopping at whitespace.
    *  Closing the picker happens when the token is broken (space / delete /
-   *  caret leaves). */
+   *  caret leaves).
+   *
+   *  IMPORTANT: skill/command pills serialize as `/name` in the plain-text
+   *  representation, so their leading `/` would be mistaken for a freshly-typed
+   *  slash trigger. We fetch the pill text ranges from the editor and skip over
+   *  them while backtracking - a pill's `/` is never a trigger. */
   const recomputePicker = useCallback(
     (v: string, caret: number) => {
       if (inputBlocked) {
         if (pickerKind !== null) setPickerKind(null);
         return;
       }
+      // Ranges [start, end) in `v` occupied by skill/command pills. A trigger
+      // char found inside one of these is part of a pill, not user input.
+      const pillRanges = editorRef.current?.getPillRanges() ?? [];
+      /** Is plain-text offset `pos` inside a pill? */
+      const inPill = (pos: number) =>
+        pillRanges.some(([s, e]) => pos >= s && pos < e);
+
       // Walk back from the caret to find a trigger char at a valid position.
       let i = caret;
       while (i > 0) {
+        // If the char just before `i` sits inside a pill, skip the whole pill
+        // and continue backtracking from its start. This prevents the pill's
+        // leading `/` (from `/name`) from being treated as a slash trigger.
+        if (inPill(i - 1)) {
+          const range = pillRanges.find(([s, e]) => i - 1 >= s && i - 1 < e);
+          if (range) {
+            i = range[0]; // jump to the pill's start offset
+            continue;
+          }
+        }
         const ch = v[i - 1];
         if (ch === "@" || ch === "/") {
           const atLineStart = i - 1 === 0 || /\s/.test(v[i - 2]);
@@ -671,7 +693,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
             return;
           }
           const token = v.slice(i, caret);
-          // A space inside the token means the user moved past it — close.
+          // A space inside the token means the user moved past it - close.
           if (/\s/.test(token)) {
             if (pickerKind !== null) setPickerKind(null);
             return;
@@ -785,6 +807,49 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
       setValue(editorRef.current.getTextWithSkills());
     },
     [],
+  );
+
+  /** Built-in command confirm (`/compact` / `/init`). Unlike skills (which
+   *  become inline pills), built-in commands have bespoke behavior:
+   *  - `compact`: immediately send `/compact` as a turn to the agent so it
+   *    summarizes and releases context. No-op while a turn is running.
+   *  - `init`: insert an atomic `/init` pill into the editor (same visual
+   *    treatment as a skill pill) so the user can append extra instructions
+   *    before sending. The agent recognizes `/init` and generates AGENTS.md. */
+  const handleBuiltInPick = useCallback(
+    (cmd: BuiltInCommand) => {
+      if (cmd.kind === "compact") {
+        // Refuse while a turn is in flight; the agent can't process a second
+        // prompt concurrently and compact mid-turn is undefined.
+        setPickerKind(null);
+        if (sessionBusy) return;
+        clearTriggerToken();
+        void sendPrompt("/compact");
+        return;
+      }
+      // `init`: replace the `/query` trigger token with an inline `/init` pill
+      // (same atomic color block as a skill pill). The user can then type
+      // additional constraints after it and press Enter to send. Order matters:
+      // read the trigger range + caret and insert the pill BEFORE closing the
+      // picker, mirroring handleSlashPick - closing first can blur the editor
+      // and make getCaretOffset return -1.
+      const start = triggerStartRef.current;
+      if (start === null || !editorRef.current) {
+        setPickerKind(null);
+        return;
+      }
+      const caret = editorRef.current.getCaretOffset();
+      if (caret < 0) {
+        setPickerKind(null);
+        return;
+      }
+      editorRef.current.insertCommandPill(cmd.name, start, caret);
+      setPickerKind(null);
+      triggerStartRef.current = null;
+      // Refresh the mirrored text so empty-state / enqueue stay in sync.
+      setValue(editorRef.current.getTextWithSkills());
+    },
+    [sessionBusy, clearTriggerToken, sendPrompt],
   );
 
   /** Open the attach picker from the bottom-left + button. */
@@ -1520,7 +1585,9 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
             query={pickerQuery}
             skills={skills}
             anchorRect={pickerAnchor}
-            onPick={handleSlashPick}
+            busy={sessionBusy}
+            onPickSkill={handleSlashPick}
+            onPickCommand={handleBuiltInPick}
             onClose={() => setPickerKind(null)}
           />
           {/* "Add context" picker opened from the bottom-left + button.

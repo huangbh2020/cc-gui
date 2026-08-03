@@ -69,6 +69,14 @@ export function FileMentionPicker({
     }
   }, [open, mode]);
 
+  // Keep the selection on the first row while the user types, mirroring the
+  // SlashCommandPicker. The debounced search also resets on result, but this
+  // covers the gap between keystroke and result arrival so the highlight
+  // doesn't linger on a now-stale row index.
+  useEffect(() => {
+    if (open) setActiveIdx(0);
+  }, [open, effectiveQuery]);
+
   // Debounced search driven by the effective query.
   useEffect(() => {
     if (!open) return;
@@ -171,11 +179,13 @@ export function FileMentionPicker({
       }
       if (e.key === "ArrowDown") {
         e.preventDefault();
+        e.stopPropagation();
         setActiveIdx((i) => Math.min(files.length - 1, i + 1));
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
+        e.stopPropagation();
         setActiveIdx((i) => Math.max(0, i - 1));
         return;
       }
@@ -313,8 +323,10 @@ export function FileMentionPicker({
                   }
                 }}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px]",
-                  isActive ? "bg-accent/12 text-content" : "text-content",
+                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors",
+                  isActive
+                    ? "bg-accent/15 text-content ring-1 ring-inset ring-accent/40"
+                    : "text-content hover:bg-surface-hover",
                   already && "opacity-50",
                 )}
               >

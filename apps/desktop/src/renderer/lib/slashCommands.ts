@@ -21,6 +21,60 @@ import type { SkillInfo } from "@contracts/ipc";
 export type { SkillInfo } from "@contracts/ipc";
 export type { SkillSource } from "@contracts/ipc";
 
+/** Built-in slash commands surfaced in the `/` menu alongside skills. Unlike
+ *  skills (which are filesystem-scanned and inserted as atomic pills), built-in
+ *  commands are fixed entries with bespoke behavior handled by the composer:
+ *  - `compact`: immediately sends `/compact` to the agent (summarize + release
+ *    context). Disabled while a turn is running.
+ *  - `init`: fills the editor with an editable AGENTS.md-generation prompt so
+ *    the user can tweak it before sending. */
+export type BuiltInCommandKind = "compact" | "init";
+
+export interface BuiltInCommand {
+  /** Command name without the leading slash, e.g. "compact". */
+  name: string;
+  /** Short human description shown in the picker. */
+  description: string;
+  /** Optional argument hint shown after the name (currently unused). */
+  argumentHint?: string;
+  /** Discriminator distinguishing this from SkillInfo (which lacks `kind`). */
+  kind: BuiltInCommandKind;
+}
+
+/** Fixed list of built-in `/` commands. Order is the display order. */
+export const BUILT_IN_COMMANDS: BuiltInCommand[] = [
+  {
+    name: "compact",
+    description: "压缩对话历史(总结并释放上下文)",
+    kind: "compact",
+  },
+  {
+    name: "init",
+    description: "生成项目说明文件 AGENTS.md",
+    kind: "init",
+  },
+];
+
+/** Case-insensitive match on built-in command name + description.
+ *  Empty query = all built-in commands. */
+export function filterBuiltInCommands(query: string): BuiltInCommand[] {
+  const q = query.trim().toLowerCase().replace(/^\//, "");
+  if (!q) return BUILT_IN_COMMANDS;
+  return BUILT_IN_COMMANDS.filter((c) => {
+    if (c.name.toLowerCase().includes(q)) return true;
+    return c.description.toLowerCase().includes(q);
+  });
+}
+
+/** A unified entry the picker renders - either a discovered skill or a
+ *  built-in command. The `kind` field discriminates them. */
+export type SlashEntry = SkillInfo | BuiltInCommand;
+
+/** Type guard: is this entry a built-in command (has a `kind`)? */
+export function isBuiltInCommand(entry: SlashEntry): entry is BuiltInCommand {
+  return (entry as BuiltInCommand).kind !== undefined;
+}
+
 /** Case-insensitive match on skill name + description. Empty query = all.
  *  Mirrors the old static filterSlashCommands shape, now over a dynamic list. */
 export function filterSkillCommands(query: string, skills: SkillInfo[]): SkillInfo[] {

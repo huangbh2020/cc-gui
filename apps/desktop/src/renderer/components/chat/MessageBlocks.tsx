@@ -22,6 +22,7 @@ import {
   IconWorldWww,
   IconWorldSearch,
   IconHelpCircle,
+  IconStack2,
 } from "@renderer/lib/icons.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import type { Block, TurnMeta } from "@renderer/stores/sessionStore.js";
@@ -518,6 +519,36 @@ const BlockView = memo(function BlockView({
       return (
         <TurnFilesCard files={block.files} isLatestTurn={block.isLatestTurn} />
       );
+
+    case "compact-summary": {
+      // Inline card shown after a context compaction (manual /compact or
+      // auto). Tells the user the history was summarized and how many tokens
+      // were freed, so the silence after /compact isn't confusing.
+      const saved = block.postTokens != null
+        ? Math.max(0, block.preTokens - block.postTokens)
+        : null;
+      const pct = block.postTokens != null && block.preTokens > 0
+        ? Math.round((saved! / block.preTokens) * 100)
+        : null;
+      return (
+        <div className="flex items-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 [font-size:var(--chat-fs-sm)]">
+          <IconStack2 size={14} className="shrink-0 text-accent" />
+          <span className="text-content">
+            {block.trigger === "manual" ? "已手动压缩对话历史" : "已自动压缩对话历史"}
+            {saved != null && (
+              <span className="text-content-muted">
+                {" "}· 释放 {saved.toLocaleString()} tokens{pct != null ? ` (${pct}%)` : ""}
+              </span>
+            )}
+            {block.postTokens != null && (
+              <span className="text-content-subtle">
+                {" "}· {block.preTokens.toLocaleString()} → {block.postTokens.toLocaleString()}
+              </span>
+            )}
+          </span>
+        </div>
+      );
+    }
   }
 });
 export { BlockView };

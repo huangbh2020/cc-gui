@@ -358,7 +358,7 @@ body,
    extra contenteditable suppression is needed. */
 .composer-host .skill-pill::before {
   content: "✦ ";
-  font-size: 0.85em;
+  font-size: 0.8em;
   opacity: 0.8;
 }
 

@@ -317,7 +317,7 @@ export class SdkMessageAdapter {
   dispatch(m: SDKMessage): void {
     const type = m.type;
     if (type === "system") {
-      // Task lifecycle events share the `system` envelope — dispatch on
+      // Task lifecycle events share the `system` envelope - dispatch on
       // subtype alongside `init`. Unknown subtypes are silently ignored
       // (forward-compatible).
       const sys = m as SDKSystemMessage;
@@ -330,6 +330,16 @@ export class SdkMessageAdapter {
         this.handleTaskProgress(sys as unknown as TaskProgressEnvelope);
       } else if (subtype === "task_updated") {
         this.handleTaskUpdated(sys as unknown as TaskUpdatedEnvelope);
+      } else if (subtype === "compact_boundary") {
+        this.handleCompactBoundary(sys as unknown as {
+          subtype: "compact_boundary";
+          compact_metadata: {
+            trigger: "manual" | "auto";
+            pre_tokens: number;
+            post_tokens?: number;
+            duration_ms?: number;
+          };
+        });
       }
     } else if (type === "stream_event") {
       this.handleStreamEvent(m as SDKPartialAssistantMessage);
@@ -424,6 +434,29 @@ export class SdkMessageAdapter {
         `claude SDK init: session=${m.session_id}, model=${m.model}, permissionMode=${m.permissionMode}`,
       );
     }
+  }
+
+  /** Compact boundary: the SDK finished a context compaction (manual
+   *  `/compact` or auto-compact). Emit a `compact.result` event so the
+   *  renderer can show a summary card in the message stream. */
+  private handleCompactBoundary(m: {
+    subtype: "compact_boundary";
+    compact_metadata: {
+      trigger: "manual" | "auto";
+      pre_tokens: number;
+      post_tokens?: number;
+      duration_ms?: number;
+    };
+  }): void {
+    const meta = m.compact_metadata;
+    this.ctx.emit({
+      type: "compact.result",
+      sessionId: this.sessionId,
+      trigger: meta.trigger,
+      preTokens: meta.pre_tokens,
+      postTokens: meta.post_tokens,
+      durationMs: meta.duration_ms,
+    });
   }
 
   /* ──────────────── subagent task lifecycle (SDK level-signal pattern) ────────────────

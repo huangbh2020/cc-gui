@@ -69,6 +69,11 @@ export interface ComposerEditorHandle {
    * `getTextWithSkills`).
    */
   insertSkill: (skill: SkillInfo, start: number, end: number) => void;
+  /** Insert a command pill (e.g. `/init`) at the plain-text range [start, end),
+   *  replacing the trigger token. Same atomic pill rendering as a skill, but
+   *  used for built-in commands so they show up as inline color blocks in the
+   *  composer instead of being executed immediately or replacing all text. */
+  insertCommandPill: (name: string, start: number, end: number) => void;
   /** Delete the text in the plain-text range [start, end), then place the
    *  caret at `start`. Used to remove a `/query` or `@query` trigger token. */
   deleteTextRange: (start: number, end: number) => void;
@@ -80,6 +85,11 @@ export interface ComposerEditorHandle {
   getCaretOffset: () => number;
   /** Focus the editor and collapse the caret to the given plain-text offset. */
   setCaretOffset: (offset: number) => void;
+  /** Returns the [start, end) plain-text intervals occupied by skill/command
+   *  pills. The caller uses this to skip pill text (which serializes as
+   *  `/name`) when scanning for a trigger `/`, so a pill's leading slash is
+   *  never mistaken for a freshly-typed slash trigger. */
+  getPillRanges: () => Array<[number, number]>;
 }
 
 interface ComposerEditorProps {
@@ -119,11 +129,23 @@ const SkillPill = Mention.extend({
   // rehydrate pills if we ever round-trip HTML.
   renderHTML({ node, HTMLAttributes }) {
     const name = node.attrs.label ?? node.attrs.id ?? "";
+    // CRITICAL: the `class` lives in `this.options.HTMLAttributes` (configured
+    // below). The `HTMLAttributes` argument only carries per-instance attributes
+    // (data-id, data-label, etc.) — it does NOT include the configured class.
+    // Concatenate the class explicitly so the pill renders with its style
+    // instead of as plain text. Mirrors what Tiptap's `mergeAttributes` would
+    // do, but we inline it to avoid pulling in `@tiptap/core` as a direct
+    // dependency.
+    const baseClass = (this.options.HTMLAttributes as { class?: string }).class ?? "";
+    const extraClass = (HTMLAttributes as { class?: string }).class ?? "";
+    const className = [baseClass, extraClass].filter(Boolean).join(" ");
     return [
       "span",
-      this.options.HTMLAttributes
-        ? { "data-type": "skill", ...HTMLAttributes }
-        : { "data-type": "skill", ...HTMLAttributes },
+      {
+        "data-type": "skill",
+        ...HTMLAttributes,
+        ...(className ? { class: className } : {}),
+      },
       `/${name}`,
     ];
   },
@@ -142,9 +164,14 @@ const SkillPill = Mention.extend({
   },
   renderText: ({ node }) => `/${node.attrs.label ?? node.attrs.id ?? ""}`,
   HTMLAttributes: {
+    // Opaque accent fill (same pairing as the send button) so the skill pill
+    // reads as a solid, distinct color block inline with the text rather than
+    // a faint tint. text-surface gives high contrast on the accent background.
+    // Tight padding + sub-1em font keeps the pill height roughly aligned with
+    // the surrounding text line rather than towering above it.
     class: cn(
-      "skill-pill inline-flex items-center gap-0.5 rounded-md border border-accent/50 bg-accent/25 px-1.5 py-0.5 align-baseline shadow-sm",
-      "text-[0.85em] font-semibold text-accent",
+      "skill-pill inline-flex items-center gap-0.5 rounded border border-accent bg-accent px-1 py-px align-baseline shadow-sm transition-colors",
+      "text-[0.8em] font-semibold text-surface hover:brightness-110",
     ),
   },
 });
@@ -317,6 +344,37 @@ export const ComposerEditor = forwardRef<
     return pos;
   }
 
+  /** Shared pill-insertion logic for both skills and built-in commands.
+   *  Replaces the plain-text range [start, end) with an atomic `skill` node
+   *  (rendered as `/name`) + a trailing space, then parks the caret after the
+   *  space so the user can keep typing. The node type is the same for both -
+   *  a built-in command pill is visually identical to a skill pill. */
+  function insertPillAt(
+    ed: NonNullable<typeof editor>,
+    name: string,
+    start: number,
+    end: number,
+  ) {
+    const from = textOffsetToPos(ed, start);
+    const to = textOffsetToPos(ed, end);
+    const attrs: MentionNodeAttrs = { id: name, label: name };
+    ed.chain()
+      .focus()
+      .deleteRange({ from, to })
+      .insertContentAt(from, [
+        { type: "skill", attrs },
+        { type: "text", text: " " },
+      ])
+      .run();
+    // Park the caret right after the inserted space (pill nodeSize 1 + space 1).
+    requestAnimationFrame(() => {
+      if (!ed.isDestroyed) {
+        ed.commands.focus();
+        ed.commands.setTextSelection(from + 2);
+      }
+    });
+  }
+
   useImperativeHandle(
     ref,
     (): ComposerEditorHandle => ({
@@ -332,33 +390,11 @@ export const ComposerEditor = forwardRef<
       getRect: () => hostRef.current?.getBoundingClientRect() ?? null,
       insertSkill: (skill, start, end) => {
         if (!editor) return;
-        const from = textOffsetToPos(editor, start);
-        const to = textOffsetToPos(editor, end);
-        const attrs: MentionNodeAttrs = {
-          id: skill.name,
-          label: skill.name,
-        };
-        editor
-          .chain()
-          .focus()
-          .deleteRange({ from, to })
-          .insertContentAt(from, [
-            { type: "skill", attrs },
-            { type: "text", text: " " },
-          ])
-          .run();
-        // Place the caret right after the inserted space. The pill occupies
-        // 1 node (nodeSize 1), so in plain-text terms the caret lands at
-        // start + 1 ("/name"→ we treat the pill as one unit here) + 1 (space).
-        // Simpler: just move to end of the freshly inserted content.
-        requestAnimationFrame(() => {
-          if (!editor) return;
-          // Position the caret at the position right after the inserted space.
-          // insertContentAt placed the space at `from + pillNodeSize`; its text
-          // ends at `from + pillNodeSize + 1`. Compute via the live doc.
-          editor.commands.focus();
-          editor.commands.setTextSelection(from + 2);
-        });
+        insertPillAt(editor, skill.name, start, end);
+      },
+      insertCommandPill: (name, start, end) => {
+        if (!editor) return;
+        insertPillAt(editor, name, start, end);
       },
       deleteTextRange: (start, end) => {
         if (!editor) return;
@@ -388,6 +424,23 @@ export const ComposerEditor = forwardRef<
       },
       getTextWithSkills: () => textWithSkills(editor),
       getCaretOffset: () => caretOffset(editor),
+      getPillRanges: () => {
+        if (!editor) return [];
+        const ranges: Array<[number, number]> = [];
+        let offset = 0;
+        editor.state.doc.descendants((node) => {
+          if (node.isText) {
+            offset += node.text?.length ?? 0;
+          } else if (node.type.name === "skill") {
+            const len = `/${node.attrs.label ?? node.attrs.id ?? ""}`.length;
+            ranges.push([offset, offset + len]);
+            offset += len;
+            return false; // don't descend into the pill
+          }
+          return true;
+        });
+        return ranges;
+      },
     }),
     [editor],
   );
