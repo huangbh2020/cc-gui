@@ -14,6 +14,7 @@ import { registerShellHandlers } from "./shell.js";
 import { registerUpdaterHandlers } from "./updater.js";
 import { registerSkillsHandlers } from "./skills.js";
 import { registerLspHandlers } from "./lsp.js";
+import { registerBrowserHandlers } from "./browser.js";
 
 /**
  * Wrap `ipcMain` so every `handle()` registration automatically awaits DB
@@ -54,6 +55,7 @@ export function registerIpcHandlers(): void {
   registerUpdaterHandlers(ipc);
   registerSkillsHandlers(ipc);
   registerLspHandlers(ipc);
+  registerBrowserHandlers(ipc);
 }
 
 // Re-export channel constants so handlers stay aligned with the contract.

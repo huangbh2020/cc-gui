@@ -1,5 +1,5 @@
 /**
- * Content-tag model — a pasted chunk that's been promoted from "inline text"
+ * Content-tag model - a pasted chunk that's been promoted from "inline text"
  * to a small chip displayed above the textarea.
  *
  * Why: long pastes (logs, stack traces, file contents) bury the input area
@@ -10,6 +10,7 @@
  * State is owned by the composer (ChatPane); it is intentionally not in the
  * Zustand store because it's ephemeral per-turn UI state, not session data.
  */
+import type { PickedElement } from "@contracts/ipc";
 
 /** Display char count for a tag's preview text. Single line, whitespace
  *  collapsed; an ellipsis is appended if the original was longer. */
@@ -32,9 +33,10 @@ export const TAG_THRESHOLD_CHARS = 200;
 export const TAG_THRESHOLD_LINES = 3;
 
 /** Source of the tag: "paste" for bulky clipboard content, "file" for a
- *  file dragged in from the file tree (path reference only — no content
- *  is read). */
-export type ContentTagKind = "paste" | "file";
+ *  file dragged in from the file tree (path reference only - no content
+ *  is read), "element" for a DOM element picked from the embedded browser
+ *  (selector + outerHTML inlined so the model can see it). */
+export type ContentTagKind = "paste" | "file" | "element";
 
 /** One content tag. `id` is the React key + removal handle. `content` is the
  *  full pasted text (for paste) or the `@path` reference string (for file),
@@ -86,7 +88,7 @@ export function makeContentTag(text: string): ContentTag {
 
 /** Build a ContentTag for a file dragged in from the file tree. Unlike paste
  *  tags, a file tag carries only a PATH reference (the agent reads the file
- *  itself via its tools) — no file content is loaded. `preview` is the base
+ *  itself via its tools) - no file content is loaded. `preview` is the base
  *  file name; `content` is the `@path` reference injected into the prompt. */
 export function makeFileTag(filePath: string): ContentTag {
   // Derive a short display name from the last path segment (handles both /
@@ -101,6 +103,26 @@ export function makeFileTag(filePath: string): ContentTag {
     preview,
     content: `@${filePath}`,
     filePath,
+  };
+}
+
+/** Build a ContentTag for a DOM element picked from the embedded browser. The
+ *  selector + outerHTML + source URL are inlined into the prompt (delimited
+ *  block, like paste) so the model can reason about the element directly.
+ *  `preview` is a short selector + tag hint for the chip. */
+export function makeElementTag(el: PickedElement): ContentTag {
+  const preview =
+    el.preview.length > TAG_PREVIEW_CHARS
+      ? el.preview.slice(0, TAG_PREVIEW_CHARS) + "…"
+      : el.preview;
+  // Delimited block mirroring the paste format, but labeled as a page element
+  // with its selector + source URL so the model knows exactly what it's seeing.
+  const content = `--- 页面元素 (${el.selector}) ---\n来源: ${el.url}\n${el.outerHTML}\n--- end ---`;
+  return {
+    id: cryptoRandomId(),
+    kind: "element",
+    preview,
+    content,
   };
 }
 
@@ -126,7 +148,10 @@ function cryptoRandomId(): string {
  *
  *  - Paste tags become delimited content blocks (full text wrapped in
  *    `--- pasted content N ---` / `--- end ---` markers).
- *  - File tags become bare `@path` reference lines (one per line) — the
+ *  - Element tags become delimited blocks too, but labeled as page elements
+ *    (the content is already pre-formatted by makeElementTag - we emit it
+ *    verbatim so the selector + URL + outerHTML stay together).
+ *  - File tags become bare `@path` reference lines (one per line) - the
  *    agent reads the file itself via its tools, so no content is inlined. */
 export function composePromptWithTags(
   text: string,
@@ -142,6 +167,9 @@ export function composePromptWithTags(
   for (const tag of tags) {
     if (tag.kind === "file") {
       parts.push(tag.content); // already "@path"
+    } else if (tag.kind === "element") {
+      // Element content is already a fully-formatted delimited block.
+      parts.push(tag.content);
     } else {
       pasteIdx += 1;
       parts.push(

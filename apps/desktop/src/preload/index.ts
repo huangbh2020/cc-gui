@@ -197,6 +197,35 @@ const api = {
       ipcRenderer.invoke(IPC.TERMINAL_LIST, input)) as RpcMap["terminal.list"],
   },
 
+  /** Embedded browser (WebContentsView in main ↔ browser panel in renderer).
+   *  The view is an OS-level surface overlaid on the main window; the renderer
+   *  measures a placeholder div and syncs pixel bounds via setBounds. Pick mode
+   *  injects a script into the page's main world to capture clicked elements. */
+  browser: {
+    create: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_CREATE, input)) as RpcMap["browser.create"],
+    loadUrl: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_LOAD_URL, input)) as RpcMap["browser.loadUrl"],
+    goBack: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_GO_BACK, input)) as RpcMap["browser.goBack"],
+    goForward: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_GO_FORWARD, input)) as RpcMap["browser.goForward"],
+    reload: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_RELOAD, input)) as RpcMap["browser.reload"],
+    setBounds: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_SET_BOUNDS, input)) as RpcMap["browser.setBounds"],
+    setPickMode: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_SET_PICK_MODE, input)) as RpcMap["browser.setPickMode"],
+    show: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_SHOW, input)) as RpcMap["browser.show"],
+    hide: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_HIDE, input)) as RpcMap["browser.hide"],
+    close: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_CLOSE, input)) as RpcMap["browser.close"],
+    setDevice: ((input) =>
+      ipcRenderer.invoke(IPC.BROWSER_SET_DEVICE, input)) as RpcMap["browser.setDevice"],
+  },
+
   /** Language servers (LSP): install/enable per language, then sync documents
    *  and forward capability requests (definition/references/hover) to the
    *  server process running in main. All paths must resolve inside a known
@@ -301,6 +330,18 @@ const api = {
       ipcRenderer.on(IPC.LSP_EVENT, listener);
       return () => {
         ipcRenderer.off(IPC.LSP_EVENT, listener);
+      };
+    },
+    /** Browser push events: navigation (URL/title/back/forward), loading state,
+     *  pickResult (a clicked element's data), and crashed. Filter by `msg.type`
+     *  and `msg.browserId` in the handler. */
+    browserEvent(handler: (msg: Extract<MainToRendererMessage, { channel: "browser:event" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.BROWSER_EVENT) handler(msg);
+      };
+      ipcRenderer.on(IPC.BROWSER_EVENT, listener);
+      return () => {
+        ipcRenderer.off(IPC.BROWSER_EVENT, listener);
       };
     },
     /** Fires when the effective theme changes (user picked one, or OS changed

@@ -6,6 +6,7 @@ import { initTheme } from "@main/lib/theme.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { lspManager } from "@main/lsp/LspManager.js";
+import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { initUpdater } from "@main/updater.js";
 import { is } from "@main/utils.js";
 import { logStartup } from "@main/lib/startupTimer.js";
@@ -106,10 +107,11 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// Close PTYs + bridge servers + LSP servers + DB cleanly on shutdown (best-effort).
+// Close PTYs + bridge servers + LSP servers + browser views + DB cleanly on shutdown (best-effort).
 app.on("before-quit", () => {
   BridgeRegistry.disposeAll();
   TerminalManager.disposeAll();
   lspManager.disposeAll();
+  BrowserManager.disposeAll();
   closeDb();
 });

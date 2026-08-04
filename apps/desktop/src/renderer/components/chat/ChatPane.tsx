@@ -15,7 +15,7 @@ import {
   IconX,
   IconPencil,
 } from "@renderer/lib/icons.js";
-import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_CHAT_QUEUE, EMPTY_PROMPT_QUEUE, type Block, type ChatMessage, type TodoItem, type TurnMeta, type QueuedPrompt } from "@renderer/stores/sessionStore.js";
+import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_CHAT_QUEUE, EMPTY_ELEMENT_QUEUE, EMPTY_PROMPT_QUEUE, type Block, type ChatMessage, type TodoItem, type TurnMeta, type QueuedPrompt } from "@renderer/stores/sessionStore.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import type { FileSearchEntry } from "@contracts/ipc";
@@ -25,6 +25,7 @@ import {
   composePromptWithTags,
   makeContentTag,
   makeFileTag,
+  makeElementTag,
   shouldPromoteToTag,
   FILE_DRAG_MIME,
 } from "@renderer/lib/contentTag.js";
@@ -775,6 +776,21 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     setTags((prev) => appendUniqueFileTags(prev, paths));
   }, [chatFileQueue, drainChatFileQueue]);
 
+  // Element-pick drain: the embedded browser panel enqueues picked DOM
+  // elements (selector + outerHTML + url) into chatElementQueueBySession;
+  // materialize them as element tags here. Same one-shot hand-off pattern as
+  // the file queue above. Each pick becomes its own chip (multi-select).
+  const chatElementQueue = useSessionStore((s) =>
+    sessionId ? s.chatElementQueueBySession[sessionId] ?? EMPTY_ELEMENT_QUEUE : EMPTY_ELEMENT_QUEUE,
+  );
+  const drainChatElementQueue = useSessionStore((s) => s.drainChatElementQueue);
+  useEffect(() => {
+    if (chatElementQueue.length === 0) return;
+    const els = drainChatElementQueue();
+    if (els.length === 0) return;
+    setTags((prev) => [...prev, ...els.map(makeElementTag)]);
+  }, [chatElementQueue, drainChatElementQueue]);
+
   /** Mention picker confirm: drop the @token, add a file tag, refocus. */
   const handleMentionPick = useCallback(
     (files: FileSearchEntry[]) => {
@@ -956,10 +972,13 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     // displayText = just the editor text; the attachment content is shown
     // via the cards, so we must NOT also inline it into the text block
     // (the full prompt, with attachments inlined, is still sent to the SDK).
+    // Element tags map to "paste" for stream-display purposes (they're inline
+    // content blocks, same as a paste); the "element" kind only matters inside
+    // the composer's ContentTag, not in the persisted attachment record.
     const attachments = tags.map((t) => ({
       preview: t.preview,
       content: t.content,
-      attachmentKind: t.kind,
+      attachmentKind: t.kind === "file" ? ("file" as const) : ("paste" as const),
       filePath: t.filePath,
     }));
     void sendPrompt(
@@ -993,7 +1012,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     const attachments = tags.map((t) => ({
       preview: t.preview,
       content: t.content,
-      attachmentKind: t.kind,
+      attachmentKind: t.kind === "file" ? ("file" as const) : ("paste" as const),
       filePath: t.filePath,
     }));
     enqueuePrompt(sessionId, {
@@ -1041,7 +1060,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
     const attachments = tags.map((t) => ({
       preview: t.preview,
       content: t.content,
-      attachmentKind: t.kind,
+      attachmentKind: t.kind === "file" ? ("file" as const) : ("paste" as const),
       filePath: t.filePath,
     }));
     // Preserve the original message's skill pills (if any) so the edited

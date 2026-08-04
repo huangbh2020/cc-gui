@@ -10,6 +10,7 @@ import { BottomTerminalBar } from "./components/layout/BottomTerminalBar.js";
 import { SettingsPage } from "./components/settings/SettingsPage.js";
 import { CommandPalette } from "./components/layout/CommandPalette.js";
 import { SearchDialog } from "./components/ide/SearchDialog.js";
+import { BrowserPanel } from "./components/browser/BrowserPanel.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts.js";
 import { useSessionStore } from "./stores/sessionStore.js";
@@ -72,6 +73,8 @@ export function App() {
   const setRightOpen = useSessionStore((s) => s.setRightOpen);
   const bottomTerminalOpen = useSessionStore((s) => s.bottomTerminalOpen);
   const setBottomTerminalOpen = useSessionStore((s) => s.setBottomTerminalOpen);
+  const browserPanelOpen = useSessionStore((s) => s.browserPanelOpen);
+  const setBrowserPanelOpen = useSessionStore((s) => s.setBrowserPanelOpen);
 
   /** Draggable pane sizes + resize actions (from the store; persisted). */
   const leftWidth = useSessionStore((s) => s.leftWidth);
@@ -99,9 +102,12 @@ export function App() {
   return (
     <div className="flex h-full w-full flex-col bg-surface text-content">
       {/* Command palette + file search dialog overlay both workspace and
-          settings views. */}
+          settings views. The browser panel overlay mounts here too - it
+          covers the workspace with a fixed inset overlay (z-40, below the
+          z-50 dialogs so ConfirmDialog etc. still sit on top). */}
       <CommandPalette />
       <SearchDialog />
+      <BrowserPanel />
       {settingsOpen ? (
         <>
           <Titlebar
@@ -128,9 +134,11 @@ export function App() {
             leftOpen={leftOpen}
             rightOpen={rightOpen}
             bottomTerminalOpen={bottomTerminalOpen}
+            browserPanelOpen={browserPanelOpen}
             onToggleLeft={() => setLeftOpen(!leftOpen)}
             onToggleRight={() => setRightOpen(!rightOpen)}
             onToggleBottomTerminal={() => setBottomTerminalOpen(!bottomTerminalOpen)}
+            onToggleBrowser={() => setBrowserPanelOpen(!browserPanelOpen)}
           />
           {/* Panel row — bg-surface-muted as the contrasting track so the
               center pane's rounded bottom-left corner (in ThreePaneLayout)

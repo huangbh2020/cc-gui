@@ -7,6 +7,7 @@ import {
   IconLayoutSidebarRightExpand,
   IconTerminal2,
   IconCode,
+  IconWorld,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchIndicator.js";
@@ -23,9 +24,12 @@ interface Props {
   rightOpen: boolean;
   /** Bottom terminal bar visibility (workspace mode only). */
   bottomTerminalOpen: boolean;
+  /** Browser panel visibility (workspace mode only). */
+  browserPanelOpen?: boolean;
   onToggleLeft?: () => void;
   onToggleRight?: () => void;
   onToggleBottomTerminal?: () => void;
+  onToggleBrowser?: () => void;
   /** Settings mode: returns to the workspace view. */
   onBack?: () => void;
 }
@@ -66,14 +70,21 @@ export function Titlebar({
   onToggleLeft,
   onToggleRight,
   onToggleBottomTerminal,
+  onToggleBrowser,
+  browserPanelOpen,
   onBack,
 }: Props) {
   const isSettings = mode === "settings";
+  // When the browser overlay is open, the side panels are forced closed and
+  // their toggle buttons are hidden - the browser gets the full width.
+  const isBrowserMode = !!browserPanelOpen && !isSettings;
 
   // The left strip tracks the sidebar's draggable width so the toggle button
   // and the settings back button stay aligned with the panel edge below.
   const leftWidth = useSessionStore((s) => s.leftWidth);
-  const showLeftStrip = leftOpen || isSettings;
+  const showLeftStrip = (leftOpen || isSettings) && !isBrowserMode;
+  // Open-browser-tab count (for the toggle button badge).
+  const browserTabCount = useSessionStore((s) => s.browserTabCount);
 
   // Subscribe once to the shortcut overrides so every toggle button's tooltip
   // shows the *effective* chord (override ?? default). Re-resolved per render
@@ -94,7 +105,12 @@ export function Titlebar({
     >
       <div
         className={cn(
-          "flex shrink-0 items-center rounded-tl-lg bg-surface-muted pr-1.5",
+          "flex shrink-0 items-center rounded-tl-lg pr-1.5",
+          // When the left panel is open (or in settings), the strip uses the
+          // muted surface so it blends with the sidebar below it as one
+          // continuous block. When collapsed, match the main strip's
+          // bg-surface so the toggle reads as part of the main titlebar.
+          showLeftStrip ? "bg-surface-muted" : "bg-surface",
           // In settings mode the sidebar strip is always shown so the back
           // button lines up with the settings menu below.
           showLeftStrip && "rounded-tr-lg border-r border-edge",
@@ -121,7 +137,7 @@ export function Titlebar({
             <IconArrowLeft size={16} className="shrink-0" />
             返回工作区
           </button>
-        ) : (
+        ) : isBrowserMode ? null : (
           <button
             onClick={onToggleLeft}
             className={cn(
@@ -162,41 +178,70 @@ export function Titlebar({
             {/* Editor column toggle - shows/hides the center-pane editor column
                 without closing the open file. Sits right of the branch pill. */}
             <EditorColumnToggle />
+            {/* Browser panel toggle - opens the embedded browser overlay. Sits
+                right of the editor toggle; shows a badge with the open-tab count. */}
+            <button
+              onClick={onToggleBrowser}
+              className={cn(
+                "relative flex items-center justify-center rounded p-1.5 transition-colors",
+                browserPanelOpen
+                  ? "bg-surface-hover text-accent"
+                  : "text-content-muted hover:bg-surface-hover hover:text-content",
+              )}
+              title={(browserPanelOpen ? "隐藏浏览器" : "打开浏览器") + hintFor("layout.toggle-browser")}
+              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+            >
+              <IconWorld size={16} className="shrink-0" />
+              {browserTabCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-bold leading-none text-white">
+                  {browserTabCount}
+                </span>
+              )}
+            </button>
             <div className="flex-1" />
             {/* Bottom terminal toggle — sits just left of the right-panel
                 toggle. Active state highlighted with the accent token. */}
-            <button
-              onClick={onToggleBottomTerminal}
-              className={cn(
-                "flex items-center justify-center rounded p-1.5 transition-colors",
-                bottomTerminalOpen
-                  ? "bg-surface-hover text-accent"
-                  : "text-content-muted hover:bg-surface-hover hover:text-content",
-              )}
-              title={(bottomTerminalOpen ? "隐藏终端" : "显示终端") + hintFor("layout.toggle-bottom-terminal")}
-              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            >
+            {/* Bottom terminal toggle - hidden while the browser overlay is
+                open, same as the side-panel toggles. */}
+            {!isBrowserMode && (
+              <button
+                onClick={onToggleBottomTerminal}
+                className={cn(
+                  "flex items-center justify-center rounded p-1.5 transition-colors",
+                  bottomTerminalOpen
+                    ? "bg-surface-hover text-accent"
+                    : "text-content-muted hover:bg-surface-hover hover:text-content",
+                )}
+                title={(bottomTerminalOpen ? "隐藏终端" : "显示终端") + hintFor("layout.toggle-bottom-terminal")}
+                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+              >
               <IconTerminal2 size={18} className="shrink-0" />
             </button>
-            <button
-              onClick={onToggleRight}
-              className={cn(
-                "flex items-center justify-center rounded p-1.5 transition-colors",
-                rightOpen
-                  ? "bg-surface-hover text-accent"
-                  : "text-content-muted hover:bg-surface-hover hover:text-content",
-              )}
-              title={(rightOpen ? "隐藏右侧面板" : "显示右侧面板") + hintFor("layout.toggle-right")}
-              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            >
-              <IconLayoutSidebarRightExpand
-                size={18}
+            )}
+            {/* Right-panel toggle - hidden while the browser overlay is open
+                (the browser forces the right panel closed and manages its own
+                restore on exit). */}
+            {!isBrowserMode && (
+              <button
+                onClick={onToggleRight}
                 className={cn(
-                  "shrink-0 transition-transform",
-                  !rightOpen && "scale-x-[-1]",
+                  "flex items-center justify-center rounded p-1.5 transition-colors",
+                  rightOpen
+                    ? "bg-surface-hover text-accent"
+                    : "text-content-muted hover:bg-surface-hover hover:text-content",
                 )}
-              />
-            </button>
+                title={(rightOpen ? "隐藏右侧面板" : "显示右侧面板") + hintFor("layout.toggle-right")}
+                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+              >
+                <IconLayoutSidebarRightExpand
+                  size={18}
+                  className={cn(
+                    "shrink-0 transition-transform",
+                    !rightOpen && "scale-x-[-1]",
+                  )}
+                />
+              </button>
+            )}
           </>
         )}
       </div>

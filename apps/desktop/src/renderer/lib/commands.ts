@@ -33,6 +33,7 @@ import {
   IconLayoutSidebarLeftExpand,
   IconLayoutSidebarRightExpand,
   IconTerminal2,
+  IconWorld,
   IconFolder,
   IconGitBranch,
   IconSettings,
@@ -252,6 +253,17 @@ const STATIC_COMMANDS: CommandDef[] = [
     defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-bottom-terminal"],
     perform: (s) => {
       s.setBottomTerminalOpen(!s.bottomTerminalOpen);
+    },
+  },
+  {
+    id: "layout.toggle-browser",
+    label: "切换浏览器面板",
+    group: "布局",
+    keywords: ["browser", "web", "toggle", "浏览器", "网页"],
+    icon: IconWorld,
+    defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-browser"],
+    perform: (s) => {
+      s.setBrowserPanelOpen(!s.browserPanelOpen);
     },
   },
 

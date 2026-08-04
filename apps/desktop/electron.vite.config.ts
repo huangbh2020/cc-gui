@@ -37,7 +37,13 @@ export default defineConfig({
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
-      lib: { entry: "src/preload/index.ts" },
+      // Two preload bundles:
+      //  - index: the main window's preload (contextBridge API).
+      //  - browserPicker: a minimal preload for the embedded browser
+      //    WebContentsView, exposing only `window.mcodeBridge.pickElement`
+      //    so the picker script (injected into the page's main world) can
+      //    forward clicked elements to main without leaking any Node API.
+      lib: { entry: { index: "src/preload/index.ts", browserPicker: "src/preload/browserPicker.ts" } },
       rollupOptions: { external: ["electron"] },
     },
     resolve: {

@@ -195,6 +195,7 @@ export {
   IconLanguage,
   IconGlobe,
   IconWorldWww,
+  IconWorld,
   IconWorldSearch,
   IconSun,
   IconMoon,
@@ -206,6 +207,8 @@ export {
   IconCpu,
   // Theme picker icons
   IconDeviceDesktop,
+  IconDeviceMobile,
+  IconDevices,
   // Permission / security
   IconShield,
   IconShieldCheck,
@@ -214,6 +217,8 @@ export {
   // Cognition / AI (thinking, brainstorming)
   IconBrain,
   IconBulb,
+  // Browser panel: element picker toggle
+  IconTarget,
 } from "@tabler/icons-react";
 
 /* ───────── Shorthand aliases (commonly used) ───────── */

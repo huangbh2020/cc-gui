@@ -52,6 +52,7 @@ import {
   type ShortcutBindings,
   type Accelerator,
   type LspLanguageState,
+  type PickedElement,
 } from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
 
@@ -375,6 +376,14 @@ export interface SessionState {
    *  persisted. The bar stays mounted (keep-alive) regardless; this only
    *  controls whether it's expanded. */
   bottomTerminalOpen: boolean;
+  /** Browser panel visibility. When true the BrowserPanel overlay mounts over
+   *  the workspace and the embedded WebContentsView is shown; false hides both.
+   *  NOT persisted (pure in-memory, like the other layout flags). */
+  browserPanelOpen: boolean;
+  /** Number of open browser tabs (mirrors BrowserPanel's local tabs state so
+   *  the Titlebar toggle button can show a count badge). Updated by the panel
+   *  via setBrowserTabCount. NOT persisted. */
+  browserTabCount: number;
   /* ── Draggable pane sizes ──
    *  Persisted as one JSON blob (UI_PANE_WIDTHS_SETTING_KEY) and re-clamped
    *  on hydrate. Updated live during drag (synchronous set); the DB write is
@@ -480,6 +489,12 @@ export interface SessionState {
    *  queue via {@link drainChatFileQueue} and converts the paths to tags.
    *  NOT persisted - it's a one-shot hand-off channel, not session data. */
   chatFileQueueBySession: Record<string, string[]>;
+
+  /** Per-session ephemeral queue of DOM elements picked from the embedded
+   *  browser panel. The owning ChatPane drains its session's queue via
+   *  {@link drainChatElementQueue} and converts each to an element tag. Same
+   *  one-shot hand-off pattern as chatFileQueueBySession. NOT persisted. */
+  chatElementQueueBySession: Record<string, PickedElement[]>;
 
   /** Per-session FIFO prompt queue. Populated when the user "排队" a prompt
    *  while the session is busy; auto-drained (head sent) when the session
@@ -691,6 +706,10 @@ export interface SessionState {
   setRightOpen: (open: boolean) => void;
   /** Toggle the bottom terminal bar open/closed (direct set). NOT persisted. */
   setBottomTerminalOpen: (open: boolean) => void;
+  /** Toggle the browser panel open/closed (direct set). NOT persisted. */
+  setBrowserPanelOpen: (open: boolean) => void;
+  /** Update the open-browser-tab count (drives the Titlebar badge). */
+  setBrowserTabCount: (count: number) => void;
   /** Apply an incremental delta to the left sidebar width (clamped, then a
    *  debounced DB write). Called by the drag handle on every mousemove. */
   adjustLeftWidth: (deltaPx: number) => void;
@@ -816,6 +835,15 @@ export interface SessionState {
    *  the paths so the caller can turn them into tags. Returns an empty array
    *  if no active session or queue is empty. */
   drainChatFileQueue: () => string[];
+
+  /** Enqueue a DOM element picked from the embedded browser to be added to the
+   *  active session's composer as an element tag. The owning ChatPane drains
+   *  its queue (see {@link drainChatElementQueue}). No-op if no active session. */
+  enqueueChatElement: (element: PickedElement) => void;
+  /** Read and clear the active session's pending chat-element queue, returning
+   *  the elements so the caller can turn them into tags. Empty array if no
+   *  active session or queue is empty. */
+  drainChatElementQueue: () => PickedElement[];
 
   /** Append a prepared prompt to a session's FIFO queue. Called by the
    *  composer's "排队" action while the session is busy. Generates the id;
@@ -974,6 +1002,8 @@ export const EMPTY_TODOS: TodoItem[] = [];
 export const EMPTY_TURN_FILES: TurnFileEntry[] = [];
 /** Stable empty chat-file queue reference (selector must return a stable array). */
 export const EMPTY_CHAT_QUEUE: string[] = [];
+/** Stable empty chat-element queue reference (selector must return a stable array). */
+export const EMPTY_ELEMENT_QUEUE: PickedElement[] = [];
 /** Stable empty prompt-queue reference (selector must return a stable array). */
 export const EMPTY_PROMPT_QUEUE: QueuedPrompt[] = [];
 const EMPTY_CUSTOM_MODELS: CustomModelPublic[] = [];
@@ -2010,6 +2040,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   leftOpen: true,
   rightOpen: true,
   bottomTerminalOpen: false,
+  // Browser panel overlay - closed by default. NOT persisted.
+  browserPanelOpen: false,
+  browserTabCount: 0,
   // Draggable pane sizes. Persisted as one JSON blob (UI_PANE_WIDTHS_SETTING_KEY);
   // init() hydrates + clamps. These defaults match the original hardcoded
   // widths so the first-run layout is unchanged.
@@ -2036,6 +2069,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   pendingPlanApprovalBySession: {},
   turnFilesBySession: {},
   chatFileQueueBySession: {},
+  chatElementQueueBySession: {},
   promptQueueBySession: {},
   // IDE right-panel. Editor state is per-project (keyed by projectId);
   // init() hydrates from the settings table. rightPanelTab / ideEditorMode
@@ -2847,6 +2881,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete turnFilesBySession[id];
       const chatFileQueueBySession = { ...s.chatFileQueueBySession };
       delete chatFileQueueBySession[id];
+      const chatElementQueueBySession = { ...s.chatElementQueueBySession };
+      delete chatElementQueueBySession[id];
       const contextSnapshotBySession = { ...s.contextSnapshotBySession };
       delete contextSnapshotBySession[id];
       const usageHistoryBySession = { ...s.usageHistoryBySession };
@@ -2881,6 +2917,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           pendingQuestionBySession,
           turnFilesBySession,
           chatFileQueueBySession,
+          chatElementQueueBySession,
           contextSnapshotBySession,
           usageHistoryBySession,
           pendingPlanApprovalBySession,
@@ -2921,6 +2958,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         pendingQuestionBySession,
         turnFilesBySession,
         chatFileQueueBySession,
+        chatElementQueueBySession,
         contextSnapshotBySession,
         usageHistoryBySession,
         pendingPlanApprovalBySession,
@@ -3802,6 +3840,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setLeftOpen: (open) => set({ leftOpen: open }),
   setRightOpen: (open) => set({ rightOpen: open }),
   setBottomTerminalOpen: (open) => set({ bottomTerminalOpen: open }),
+  setBrowserPanelOpen: (open) => set({ browserPanelOpen: open }),
+  setBrowserTabCount: (count) => set({ browserTabCount: Math.max(0, count) }),
 
   // ── Draggable pane sizes ──
   // adjust* apply an incremental delta (from the drag handle) to the current
@@ -4379,6 +4419,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => {
       const { [sessionId]: _drop, ...rest } = s.chatFileQueueBySession;
       return { chatFileQueueBySession: rest };
+    });
+    return queued;
+  },
+
+  enqueueChatElement: (element) => {
+    const sessionId = get().activeSessionId;
+    if (!sessionId) return;
+    set((s) => {
+      const prev = s.chatElementQueueBySession[sessionId] ?? [];
+      return {
+        chatElementQueueBySession: {
+          ...s.chatElementQueueBySession,
+          [sessionId]: [...prev, element],
+        },
+      };
+    });
+  },
+
+  drainChatElementQueue: () => {
+    const sessionId = get().activeSessionId;
+    if (!sessionId) return [];
+    const queued = get().chatElementQueueBySession[sessionId];
+    if (!queued || queued.length === 0) return [];
+    set((s) => {
+      const { [sessionId]: _drop, ...rest } = s.chatElementQueueBySession;
+      return { chatElementQueueBySession: rest };
     });
     return queued;
   },
