@@ -25,21 +25,31 @@
  * the updater is a convenience, not a core path.
  */
 import { app } from "electron";
-// electron-updater ships as CommonJS; under ESM output ("type": "module") a
-// named import (`import { autoUpdater }`) is not reliably supported by Node's
-// ESM/CJS interop - it throws "Named export 'autoUpdater' not found" at boot.
-// We therefore import the default export and destructure `autoUpdater` from it.
+import { createRequire } from "node:module";
+// electron-updater ships as CommonJS and exposes `autoUpdater` as a
+// getter-defined named export on `module.exports`:
+//   Object.defineProperty(exports, "autoUpdater", { enumerable: true, get() {...} })
+// Under ESM output ("type": "module") a dynamic `await import()` does NOT
+// surface getter-defined CJS named exports - `mod.autoUpdater` is `undefined`,
+// so `autoUpdater.autoDownload = false` throws
+// "Cannot set properties of undefined" and `initUpdater()` fails silently
+// (every check then short-circuits to "up-to-date <current version>", making
+// the app claim it's on the newest release even when a newer one exists).
+//
+// `createRequire` + `require()` loads the CJS module directly, which preserves
+// the getter and correctly resolves `autoUpdater`. This mirrors how
+// TerminalManager loads the CJS `node-pty` addon.
 //
 // Lazy-loaded: electron-updater only works in packaged builds and is never
 // needed during startup (the first check is scheduled 10s after boot). Keeping
-// the CJS module out of the startup path shaves load time in both dev (where
+// the require() inside loadAutoUpdater() shaves load time in both dev (where
 // it's a pure no-op) and prod. Mirrors the node-pty / SDK lazy-load pattern.
 import type { AppUpdater } from "electron-updater";
+const requireFromHere = createRequire(import.meta.url);
 let autoUpdaterRef: AppUpdater | null = null;
-async function loadAutoUpdater(): Promise<AppUpdater> {
+function loadAutoUpdater(): AppUpdater {
   if (!autoUpdaterRef) {
-    const mod = await import("electron-updater");
-    autoUpdaterRef = mod.autoUpdater;
+    autoUpdaterRef = requireFromHere("electron-updater").autoUpdater as AppUpdater;
   }
   return autoUpdaterRef;
 }
@@ -79,7 +89,7 @@ export async function initUpdater(): Promise<void> {
   }
 
   try {
-    const autoUpdater = await loadAutoUpdater();
+    const autoUpdater = loadAutoUpdater();
     // Don't auto-download - let the user opt in from the About panel.
     autoUpdater.autoDownload = false;
     // Install on quit if a download has completed (harmless if none pending).
@@ -174,7 +184,7 @@ export async function checkForUpdates(): Promise<CheckForUpdatesResult> {
   }
 
   try {
-    const autoUpdater = await loadAutoUpdater();
+    const autoUpdater = loadAutoUpdater();
     const result = await autoUpdater.checkForUpdates();
     // If a newer version exists, `update-available` will have fired and set
     // pendingVersion. Otherwise the check resolves and we're up-to-date.
@@ -195,7 +205,7 @@ export async function checkForUpdates(): Promise<CheckForUpdatesResult> {
 export async function downloadUpdate(): Promise<void> {
   if (!is.prod || !initialized) return;
   try {
-    const autoUpdater = await loadAutoUpdater();
+    const autoUpdater = loadAutoUpdater();
     // Record the version being downloaded so download-progress events can tag
     // it, and seed the persisted state so an early remount shows "downloading"
     // even before the first progress chunk arrives.
@@ -215,7 +225,7 @@ export async function downloadUpdate(): Promise<void> {
 export async function quitAndInstall(): Promise<void> {
   if (!is.prod || !initialized) return;
   try {
-    const autoUpdater = await loadAutoUpdater();
+    const autoUpdater = loadAutoUpdater();
     // The install will swap the binary and restart; clear the persisted state
     // so the next launch (running the new version) doesn't show a stale banner.
     clearPersistedUpdateState();

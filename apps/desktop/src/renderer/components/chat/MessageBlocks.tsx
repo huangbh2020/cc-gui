@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useEffect, useDeferredValue, type ReactNode, type ComponentType } from "react";
+import { memo, useState, useMemo, useDeferredValue, type ReactNode, type ComponentType } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconChevronDown,
@@ -370,13 +370,6 @@ export function TurnPanel({
   // open=true, keeping the process visible throughout.
   const [open, setOpen] = useState(!completed);
 
-  // Collapse exactly when the turn ends (the false→true transition of
-  // `completed`), regardless of whether the final reply text has started
-  // streaming. The user can still re-expand by clicking.
-  useEffect(() => {
-    if (completed) setOpen(false);
-  }, [completed]);
-
   const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
 
   // Live duration via the app-wide 1s clock. Frozen turns compute a static
@@ -729,10 +722,8 @@ function EditToolCard({
         <StatusIcon status={status} />
         <ToolIcon name="Edit" className="text-content-subtle" />
         <span className="font-medium text-content-muted">Edit</span>
-        {/* FileLink is a span (role=button) that stops propagation on click,
-            so clicking the path opens the file without toggling the card. */}
-        <span className="truncate font-mono text-content-subtle">
-          <FileLink token={filePath} projectPath={projectPath} />
+        <span className="truncate font-mono text-content-subtle" title={filePath}>
+          {filePath}
         </span>
         <span className="ml-auto flex items-center gap-1.5 [font-size:var(--chat-fs-xxs)]">
           {adds > 0 && <span className="text-accent">+{adds}</span>}
@@ -810,8 +801,8 @@ function WriteToolCard({
         <StatusIcon status={status} />
         <ToolIcon name="Write" className="text-content-subtle" />
         <span className="font-medium text-content-muted">Write</span>
-        <span className="truncate font-mono text-content-subtle">
-          <FileLink token={filePath} projectPath={projectPath} />
+        <span className="truncate font-mono text-content-subtle" title={filePath}>
+          {filePath}
         </span>
         <span className="ml-auto flex items-center gap-1.5 [font-size:var(--chat-fs-xxs)]">
           {diff && adds > 0 && <span className="text-accent">+{adds}</span>}

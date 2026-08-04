@@ -82,14 +82,6 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // snapshot is missing (e.g. startTurn called without a preceding
     // sendTurn, which shouldn't happen but we don't want a crash).
     const snapshot = getFileSnapshot(req.sessionId);
-    const adapter = new SdkMessageAdapter(
-      ctx,
-      req.sessionId,
-      this.capabilities.supportsAskUserQuestion,
-      req.cwd,
-      snapshot,
-      ac.signal,
-    );
 
     const options: Options = {
       abortController: ac,
@@ -406,11 +398,21 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
 
     const q = (await loadQuery())({ prompt: req.prompt, options });
 
+    const adapter = new SdkMessageAdapter(
+      ctx,
+      req.sessionId,
+      this.capabilities.supportsAskUserQuestion,
+      req.cwd,
+      snapshot,
+      ac.signal,
+      q,
+    );
+
     let finished = false;
     const done = (async () => {
       try {
         for await (const m of q) {
-          adapter.dispatch(m);
+          await adapter.dispatch(m);
         }
         await adapter.flushFinal();
       } catch (err) {

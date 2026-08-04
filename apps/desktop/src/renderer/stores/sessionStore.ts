@@ -10,6 +10,7 @@ import type {
   PlanUpdateEvent,
   SubagentSnapshot,
   ContextSnapshot,
+  TurnUsageRecord,
 } from "@contracts/runtime";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { isValidSnapshot } from "@renderer/lib/contextWindow.js";
@@ -168,31 +169,6 @@ export interface TurnMeta {
   /** Wall-clock ms when the turn ended (turn.done / error). Undefined while
    *  the turn is still streaming — the renderer treats this as "live". */
   endedAt?: number;
-}
-
-/** One finalized turn's usage, appended to `usageHistoryBySession` at
- *  turn.done. Mirrors the scalar fields of ContextSnapshot so the history
- *  view can render each turn's tokens/cost without keeping the full
- *  snapshot (warnings etc. are turn-live-only). */
-export interface TurnUsageRecord {
-  /** Wall-clock ms when the turn finalized (turnMeta.endedAt). */
-  endedAt: number;
-  /** Duration of the turn in ms (endedAt − startedAt). */
-  durationMs: number;
-  /** Tokens processed this turn (input + output + cache). */
-  totalProcessedTokens: number;
-  /** Output tokens this turn. */
-  outputTokens: number;
-  /** Tokens read from cache this turn (0 if none). */
-  cacheReadTokens: number;
-  /** Tokens written to cache this turn (0 if none). */
-  cacheCreationTokens: number;
-  /** Estimated USD cost this turn, if known. */
-  costUsd?: number;
-  /** Window occupancy AFTER this turn (cumulative context size). */
-  usedTokens: number;
-  /** Active model for this turn, if known. */
-  model?: string;
 }
 
 /** One queued prompt: a fully-prepared turn payload held back while the
@@ -1323,6 +1299,28 @@ function hydrateTurnFiles(
   });
 }
 
+/** Hydrate the per-turn usage history from the session row. The history is
+ *  persisted at each turn-end (main process), so it survives restart. Absent
+ *  history on the row is cleared so switching FROM a session with history TO
+ *  one without doesn't leave the previous thread's rows up. */
+function hydrateUsageHistory(
+  set: (partial: Partial<SessionState> | ((s: SessionState) => Partial<SessionState>)) => void,
+  get: () => SessionState,
+  sessionId: string,
+): void {
+  const sess = findSession(get().sessionsByProject, get().archivedSessionsByProject, sessionId);
+  const history = sess?.usageHistory ?? null;
+  set((s) => {
+    const next = { ...s.usageHistoryBySession };
+    if (history && Array.isArray(history) && history.length > 0) {
+      next[sessionId] = history;
+    } else {
+      delete next[sessionId];
+    }
+    return { usageHistoryBySession: next };
+  });
+}
+
 /* ──────────────── Plan block helpers (inline plan in the message stream) ────────────────
  *
  * The plan is rendered as a `kind: "plan"` block attached to the CURRENT
@@ -1594,21 +1592,9 @@ function upsertLiveTurnFilesBlock(messages: ChatMessage[], files: TurnFileEntry[
   if (existingIdx >= 0) {
     blocks = target.blocks.map((b, i) => (i === existingIdx ? block : b));
   } else {
-    // Insert the turn-files block AFTER any existing plan block so the
-    // "本轮修改文件" card always renders below the plan card in the stream.
-    // Find the last plan block (if any) and insert after it; otherwise append.
-    let insertAt = target.blocks.length;
-    for (let i = target.blocks.length - 1; i >= 0; i--) {
-      if (target.blocks[i]?.kind === "plan") {
-        insertAt = i + 1;
-        break;
-      }
-    }
-    blocks = [
-      ...target.blocks.slice(0, insertAt),
-      block,
-      ...target.blocks.slice(insertAt),
-    ];
+    // Always insert the turn-files block at the VERY END of the blocks array
+    // so the "本轮修改了 N 个文件" card renders below all text/plan content.
+    blocks = [...target.blocks, block];
   }
   next = next.map((m, i) => (i === targetIndex ? { ...m, blocks } : m));
   // This turn's card is now the latest → demote every OTHER turn's card to
@@ -2583,6 +2569,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     hydrateContextSnapshot(set, get, sessionId);
     hydrateCapsule(set, get, sessionId);
     hydrateTurnFiles(set, get, sessionId);
+    hydrateUsageHistory(set, get, sessionId);
     set({ activeSessionId: sessionId });
     if (get().messagesBySession[sessionId]) return;
     const { messages } = await api.session.messages({ sessionId });
@@ -2602,6 +2589,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     hydrateContextSnapshot(set, get, sessionId);
     hydrateCapsule(set, get, sessionId);
     hydrateTurnFiles(set, get, sessionId);
+    hydrateUsageHistory(set, get, sessionId);
     set((s) => ({
       activeSessionId: sessionId,
       // Append only if not already present; preserves the order in which

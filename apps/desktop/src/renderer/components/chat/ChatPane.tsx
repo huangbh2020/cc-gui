@@ -1246,7 +1246,10 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               keyExtractor={(item) => {
                 if (item.kind === "single") return item.msg.id;
                 if (item.kind === "pendingTurn") return "pending-turn";
-                return `turn:${item.textMsgs[0]?.id ?? item.turnMeta?.startedAt ?? ""}`;
+                // Use turnMeta.startedAt as stable key — it's set once when the turn
+                // begins and never changes, so the TurnPanel (and expanded Edit cards
+                // inside it) survive LegendList recycling during streaming.
+                return `turn:${item.turnMeta?.startedAt ?? ""}`;
               }}
               maintainScrollAtEnd
               // extraData drives LegendList's "should re-render all visible

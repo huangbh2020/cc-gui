@@ -322,19 +322,32 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
     if (projectPath) {
       void openLspDocument(projectPath, filePath, language);
     }
+
+    // Apply a pending goto-def reveal now that the editor is ready. Needed for
+    // cross-file jumps: the EditPane mounts, the reveal effect runs with
+    // editorRef still null (onMount hasn't fired), so we must re-check here.
+    applyReveal();
+  };
+
+  /** Scroll to + focus the pending reveal target for this file, if any, and
+   *  clear it. Shared by the nonce effect (already-mounted editor) and
+   *  onMount (freshly-mounted editor from a cross-file jump). */
+  const applyReveal = () => {
+    const reveal = useSessionStore.getState().idePendingReveal;
+    if (!reveal || reveal.filePath !== filePath) return;
+    const ed = editorRef.current;
+    if (!ed) return;
+    ed.revealLineInCenter(reveal.line);
+    ed.setPosition({ lineNumber: reveal.line, column: reveal.column });
+    ed.focus();
+    useSessionStore.getState().clearIdePendingReveal();
   };
 
   // Goto-definition reveal: when the store has a pending reveal for this file,
   // scroll to it and clear. Re-runs on the nonce bump (so a reveal into an
   // already-mounted editor works, not just on mount).
   useEffect(() => {
-    if (!idePendingReveal || idePendingReveal.filePath !== filePath) return;
-    const ed = editorRef.current;
-    if (!ed) return;
-    ed.revealLineInCenter(idePendingReveal.line);
-    ed.setPosition({ lineNumber: idePendingReveal.line, column: idePendingReveal.column });
-    ed.focus();
-    useSessionStore.getState().clearIdePendingReveal();
+    applyReveal();
   }, [ideRevealNonce, idePendingReveal, filePath]);
 
   // LSP diagnostics subscription: applies publishDiagnostics markers to this

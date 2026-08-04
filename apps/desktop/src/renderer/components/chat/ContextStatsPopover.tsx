@@ -27,8 +27,7 @@
 import { useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { fmtTokens, getContextBreakdown, warningColor } from "@renderer/lib/contextWindow.js";
-import type { ContextSnapshot } from "@contracts/runtime";
-import type { TurnUsageRecord } from "@renderer/stores/sessionStore.js";
+import type { ContextSnapshot, TurnUsageRecord } from "@contracts/runtime";
 import { ContextTooltipBody } from "./ContextRing.js";
 import { IconCalendarStats, IconChartBar, IconClock } from "@renderer/lib/icons.js";
 

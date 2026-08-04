@@ -5,8 +5,7 @@ import {
   getContextBreakdown,
   warningColor,
 } from "@renderer/lib/contextWindow.js";
-import type { ContextSnapshot } from "@contracts/runtime";
-import type { TurnUsageRecord } from "@renderer/stores/sessionStore.js";
+import type { ContextSnapshot, TurnUsageRecord } from "@contracts/runtime";
 import { Tooltip } from "@renderer/components/ui/index.js";
 import {
   IconArrowBarToDown,

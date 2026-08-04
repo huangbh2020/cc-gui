@@ -14,7 +14,7 @@ import type {
   SessionTodoItem,
   SessionPlanDraft,
 } from "@contracts/session";
-import type { ContextSnapshot, SubagentSnapshot, TurnFileEntry } from "@contracts/runtime";
+import type { ContextSnapshot, SubagentSnapshot, TurnFileEntry, TurnUsageRecord } from "@contracts/runtime";
 import { getDb, persist } from "./db.js";
 
 /* sql.js binds `?` params positionally as an array. Values must be
@@ -181,6 +181,7 @@ interface SessionRow {
   subagents: string | null;
   plan_draft: string | null;
   turn_files: string | null;
+  usage_history: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -203,6 +204,7 @@ function rowToSession(r: SessionRow): Session {
     subagents: (r.subagents ? safeJson(r.subagents) : null) as SubagentSnapshot[] | null,
     planDraft: (r.plan_draft ? safeJson(r.plan_draft) : null) as SessionPlanDraft | null,
     turnFiles: (r.turn_files ? safeJson(r.turn_files) : null) as TurnFileEntry[] | null,
+    usageHistory: (r.usage_history ? safeJson(r.usage_history) : null) as TurnUsageRecord[] | null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -212,8 +214,8 @@ export const SessionRepo = {
   create(s: Session): void {
     getDb().run(
       `INSERT INTO sessions
-       (id, project_id, provider_id, claude_session_id, title, status, model, effort, permission_mode, custom_model_id, archived, context_snapshot, todos, subagents, plan_draft, turn_files, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, project_id, provider_id, claude_session_id, title, status, model, effort, permission_mode, custom_model_id, archived, context_snapshot, todos, subagents, plan_draft, turn_files, usage_history, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         v(s.id),
         v(s.projectId),
@@ -231,6 +233,7 @@ export const SessionRepo = {
         v(s.subagents ? JSON.stringify(s.subagents) : null),
         v(s.planDraft ? JSON.stringify(s.planDraft) : null),
         v(s.turnFiles ? JSON.stringify(s.turnFiles) : null),
+        v(s.usageHistory ? JSON.stringify(s.usageHistory) : null),
         v(s.createdAt),
         v(s.updatedAt),
       ],
@@ -366,6 +369,17 @@ export const SessionRepo = {
   updateTurnFiles(id: string, files: TurnFileEntry[] | null): void {
     getDb().run("UPDATE sessions SET turn_files = ?, updated_at = ? WHERE id = ?", [
       v(files ? JSON.stringify(files) : null),
+      v(Date.now()),
+      v(id),
+    ]);
+    persist();
+  },
+
+  /** Persist the per-turn token/cost history. Appended at each turn-end so
+   *  the context-stats history popover survives restart. */
+  updateUsageHistory(id: string, history: TurnUsageRecord[]): void {
+    getDb().run("UPDATE sessions SET usage_history = ?, updated_at = ? WHERE id = ?", [
+      v(JSON.stringify(history)),
       v(Date.now()),
       v(id),
     ]);

@@ -59,6 +59,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       subagents: null,
       planDraft: null,
       turnFiles: null,
+      usageHistory: null,
       createdAt: now,
       updatedAt: now,
     };

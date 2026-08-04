@@ -140,6 +140,39 @@ export function ensureLspProviders(
     }),
   );
 
+  // textDocument/implementation -- "Go to Implementation" (Ctrl+F12 in VS Code).
+  // On an interface method this jumps to the concrete class(es) that implement
+  // it. Cross-file results are opened via the store like definition.
+  providerDisposers.push(
+    monaco.languages.registerImplementationProvider(languageId, {
+      provideImplementation: async (model, position) => {
+        const docUri = modelToLspUri(model);
+        const result = await lspRequest("textDocument/implementation", {
+          textDocument: { uri: docUri },
+          position: toLspPosition(position),
+        });
+        const locs = toMonacoLocations(result, monaco);
+        if (!locs || locs.length === 0) return null;
+        // Cross-file navigation: open the first target via the store.
+        const firstRaw = firstRawLocation(result);
+        if (firstRaw) {
+          const targetPath = uriToFilePath(decodeURIComponentSafe(firstRaw.uri));
+          const currentPath = uriToFilePath(decodeURIComponentSafe(docUri));
+          if (targetPath !== currentPath) {
+            gotoLocation(
+              targetPath,
+              firstRaw.range.start.line + 1,
+              firstRaw.range.start.character + 1,
+            );
+            return null;
+          }
+        }
+        // Same-file: return locations so Monaco navigates natively.
+        return locs;
+      },
+    }),
+  );
+
   // textDocument/hover
   providerDisposers.push(
     monaco.languages.registerHoverProvider(languageId, {
@@ -442,14 +475,16 @@ export async function closeLspDocument(
 }
 
 /** Goto-definition navigation helper: open `filePath` at (line, column) in the
- *  IDE editor via the store, which triggers the EditPane reveal effect. */
+ *  IDE editor via the store, which triggers the EditPane reveal effect.
+ *  Callers pass 1-based line/column (LSP 0-based + 1) -- do NOT add offsets
+ *  here again. */
 export function gotoLocation(
   filePath: string,
   line: number,
   character: number,
 ): void {
   useSessionStore.getState().openFileInIde(filePath, {
-    line: line + 1, // LSP 0-based -> 1-based
-    column: character + 1,
+    line,
+    column: character,
   });
 }

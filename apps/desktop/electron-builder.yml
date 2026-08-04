@@ -93,10 +93,22 @@ mac:
 
 # ── Windows ──
 # NSIS installer with a directory-pick step (non-one-click).
+#
+# Explicit artifactName (no spaces): without it electron-builder defaults to
+# "${productName} Setup ${version}.${ext}" (e.g. "Mcode Setup 0.1.19.exe"). It
+# then derives a GitHub-"safe" name by replacing spaces with "-" -> the url
+# written into latest.yml becomes "Mcode-Setup-0.1.19.exe". But the actual exe
+# written to disk keeps the spaces, and the GitHub Release upload step ends up
+# publishing it as "Mcode.Setup.0.1.19.exe" (spaces -> "."). The latest.yml url
+# and the real asset name therefore DIVERGE, so electron-updater's download
+# 404s. Pinning a space-free artifactName makes the disk filename, the
+# latest.yml url, and the GitHub asset name all identical, so the update
+# download resolves. Mirrors the mac artifact naming (Mcode-<ver>-<arch>.dmg).
 win:
   target:
     - target: nsis
       arch: [x64]
+  artifactName: "${productName}-${version}-${arch}.${ext}"
 
 nsis:
   oneClick: false

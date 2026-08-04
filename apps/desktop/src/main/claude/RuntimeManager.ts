@@ -7,7 +7,7 @@
  */
 import { sendToRenderer } from "@main/window.js";
 import { IPC } from "@contracts/ipc";
-import type { RuntimeEvent, PermissionMode } from "@contracts/runtime";
+import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
 import type { ProviderContext, TurnHandle, StartTurnRequest, UserInputAnswers, PlanApprovalDecision } from "@contracts/provider";
 import { providerRegistry } from "@main/providers/registry.js";
@@ -29,6 +29,16 @@ interface SessionRuntime {
    *  can resolve snapshot paths without having to ask the provider
    *  (the TurnHandle interface doesn't expose it). */
   lastCwd: string | null;
+  /** Wall-clock ms when the current turn started (Date.now()). Used to
+   *  compute `durationMs` in the per-turn usage history. */
+  turnStartedAt: number;
+  /** Latest context snapshot emitted by the adapter (tracked from
+   *  `token-usage.updated` events). Read at `turn.done` to build the
+   *  per-turn usage history entry. */
+  lastContextSnapshot?: ContextSnapshot;
+  /** Per-turn usage history for this session. Hydrated from the persisted
+   *  session row at bind; appended at each `turn.done` and written back. */
+  usageHistory: TurnUsageRecord[];
   /** When the session's config uses the OpenAI protocol, this holds the
    *  customModelId whose bridge we acquired (paired with a release on
    *  dispose). Undefined for anthropic-protocol / no-custom-model sessions. */
@@ -58,6 +68,34 @@ class RuntimeManager {
           SessionRepo.updateSnapshot(session.id, e.snapshot);
         } catch (err) {
           log.error(`failed to persist context snapshot: ${(err as Error).message}`);
+        }
+        // Track the latest snapshot so turn.done can persist the usage history.
+        const rt = this.sessions.get(session.id);
+        if (rt) rt.lastContextSnapshot = e.snapshot;
+      } else if (e.type === "turn.done") {
+        // Persist the per-turn token/cost history. The final snapshot for the
+        // turn is `lastContextSnapshot` (captured from the last token-usage.updated).
+        // durationMs is derived from turnStartedAt (set in sendTurn).
+        try {
+          const rt = this.sessions.get(session.id);
+          const snap = rt?.lastContextSnapshot;
+          if (rt && snap && rt.turnStartedAt > 0) {
+            const record: TurnUsageRecord = {
+              endedAt: Date.now(),
+              durationMs: Math.max(0, Date.now() - rt.turnStartedAt),
+              totalProcessedTokens: snap.totalProcessedTokens,
+              outputTokens: snap.outputTokens,
+              cacheReadTokens: snap.cacheReadTokens ?? 0,
+              cacheCreationTokens: snap.cacheCreationTokens ?? 0,
+              costUsd: snap.costUsd,
+              usedTokens: snap.usedTokens,
+              model: snap.model,
+            };
+            rt.usageHistory = [...rt.usageHistory, record];
+            SessionRepo.updateUsageHistory(session.id, rt.usageHistory);
+          }
+        } catch (err) {
+          log.error(`failed to persist usage history: ${(err as Error).message}`);
         }
       } else if (e.type === "todo.update") {
         try {
@@ -131,6 +169,8 @@ class RuntimeManager {
       providerSessionId: session.claudeSessionId,
       ctx,
       lastCwd: null,
+      turnStartedAt: 0,
+      usageHistory: session.usageHistory ?? [],
     });
   }
 
@@ -147,6 +187,9 @@ class RuntimeManager {
     }
 
     const provider = providerRegistry.resolve(session.providerId);
+
+    // Record turn start time for per-turn usage history persistence.
+    rt.turnStartedAt = Date.now();
 
     // Reset the per-turn file snapshot before the new turn. This is
     // what makes "rewind last turn" work correctly across consecutive

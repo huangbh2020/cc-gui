@@ -133,6 +133,9 @@ function migrate(database: Database): void {
   // Per-turn modified-files snapshot (the "本轮修改" card). JSON blob of
   // TurnFileEntry[]; null after a rewind or for sessions that never edited.
   addColumnIfMissing(database, "sessions", "turn_files", "TEXT");
+  // Per-turn token/cost history. JSON array of TurnUsageRecord; appended at
+  // each turn-end so the context-stats history popover survives restart.
+  addColumnIfMissing(database, "sessions", "usage_history", "TEXT");
   addColumnIfMissing(database, "projects", "archived", "INTEGER NOT NULL DEFAULT 0");
   // Optional user-assigned group name for the left-bar "grouped" view. NULL
   // means the project is ungrouped; the renderer treats "" / undefined as null.

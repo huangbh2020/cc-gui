@@ -35,6 +35,7 @@ import type {
   SDKUserMessage,
   SDKResultMessage,
   SDKPartialAssistantMessage,
+  Query,
 } from "@anthropic-ai/claude-agent-sdk";
 
 /** Minimal envelope for SDKTaskStartedMessage. The full SDK type is rich
@@ -81,6 +82,7 @@ import {
   normalizeClaudeTokenUsage,
   mergeClaudeTokenUsageSnapshot,
   buildCompactSnapshot,
+  buildSnapshotFromControlChannel,
   resolveEffectiveContextWindow,
   type RawClaudeUsage,
   type ClaudeContextWindowTag,
@@ -312,6 +314,11 @@ export class SdkMessageAdapter {
      *  they visually show "已终止" (stopped), reflecting the user's intent.
      *  `null` only in tests that don't exercise interrupt. */
     private abortSignal: AbortSignal | null = null,
+    /** Live Query handle from the SDK. When available, {@link handleResult}
+     *  calls {@link Query.getContextUsage} at turn-end to get the authoritative
+     *  context-window snapshot (path B). Falls back to path-A/C merge when
+     *  `null` or when the control-channel call fails. */
+    private query: Query | null = null,
   ) {
     this.state = {
       blockMessageIds: new Map(),
@@ -327,7 +334,7 @@ export class SdkMessageAdapter {
   }
 
   /** Feed one SDKMessage through the normalization pipeline. */
-  dispatch(m: SDKMessage): void {
+  async dispatch(m: SDKMessage): Promise<void> {
     const type = m.type;
     if (type === "system") {
       // Task lifecycle events share the `system` envelope - dispatch on
@@ -366,7 +373,7 @@ export class SdkMessageAdapter {
     } else if (type === "user") {
       this.handleUser(m as SDKUserMessage);
     } else if (type === "result") {
-      this.handleResult(m as SDKResultMessage);
+      await this.handleResult(m as SDKResultMessage);
     }
     // Unknown message types are silently ignored (forward-compatible).
   }
@@ -933,7 +940,7 @@ export class SdkMessageAdapter {
     }
   }
 
-  private handleResult(m: SDKResultMessage): void {
+  private async handleResult(m: SDKResultMessage): Promise<void> {
     // Diagnostic: log the raw result envelope so we can see exactly what the
     // SDK delivered. Tokens staying at 0 after a turn usually means either
     // (a) the SDK didn't populate `usage` here, or (b) a non-success subtype
@@ -991,65 +998,43 @@ export class SdkMessageAdapter {
         }
       }
 
-      // Path C (doc §2): turn-end merged snapshot. The SDK's `result.usage`
-      // is a CUMULATIVE sum across the whole run (billing semantics), NOT the
-      // current window occupancy — so `usedTokens`/`pct`/`warning` must come
-      // from the last path-A snapshot (the most recent per-assistant-response
-      // window read). The accumulated result contributes only throughput /
-      // cost / cache / output / window-ceiling metadata.
-      //
-      // When no path-A snapshot exists (usage surfaced only at turn end), we
-      // fall back to emitting the accumulated values directly as a
-      // better-than-nothing readout.
-      const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
-      const model = (m as { model?: string }).model;
-      const lastKnown = this.state.lastKnownTokenUsage;
-      const fallback: RawClaudeUsage | undefined = lastKnown
-        ? undefined
-        : {
-            inputTokens: rawInput > 0 ? rawInput : muInput,
-            outputTokens: rawOutput > 0 ? rawOutput : muOutput,
-            cacheReadInputTokens:
-              (usage?.cache_read_input_tokens ?? 0) > 0
-                ? usage!.cache_read_input_tokens
-                : muCacheRead > 0 ? muCacheRead : undefined,
-            cacheCreationInputTokens:
-              (usage?.cache_creation_input_tokens ?? 0) > 0
-                ? usage!.cache_creation_input_tokens
-                : muCacheCreation > 0 ? muCacheCreation : undefined,
-            costUsd,
-            model,
-          };
-      if (fallback) {
-        this.emitTokenUsage(fallback, model, reportedWindow);
-      } else if (lastKnown) {
-        // Normalize the accumulated result.usage for its throughput / cost /
-        // cache / window-ceiling fields, then merge so `usedTokens` reflects
-        // the latest path-A window read (doc §2 path C). The merge ignores
-        // accumulated.usedTokens on purpose — see
-        // mergeClaudeTokenUsageSnapshot.
-        const accumulated = normalizeClaudeTokenUsage(
-          {
-            inputTokens: rawInput > 0 ? rawInput : muInput,
-            outputTokens: rawOutput > 0 ? rawOutput : muOutput,
-            cacheReadInputTokens:
-              (usage?.cache_read_input_tokens ?? 0) > 0 ? usage!.cache_read_input_tokens : muCacheRead || undefined,
-            cacheCreationInputTokens:
-              (usage?.cache_creation_input_tokens ?? 0) > 0 ? usage!.cache_creation_input_tokens : muCacheCreation || undefined,
-            costUsd,
-            model,
-          },
-          { reported: reportedWindow, lastKnown: this.state.lastKnownContextWindow },
-        );
-        if (accumulated) {
-          const merged = mergeClaudeTokenUsageSnapshot(
-            lastKnown,
-            accumulated,
-            accumulated.maxTokens,
-          );
-          this.publishTokenUsageSnapshot(merged);
-        }
-      }
+// Path B (control channel): `Query.getContextUsage()` is the most
+	      // authoritative source for context-window occupancy. When available,
+	      // use it for `usedTokens`/`maxTokens`/`pct`; throughput/billing fields
+	      // still come from the accumulated `result.usage` (path C).
+	      //
+	      // Path C (doc §2): fallback when the control channel is unavailable
+	      // or fails. The SDK's `result.usage` is a CUMULATIVE sum across the
+	      // whole run (billing semantics), NOT the current window occupancy —
+	      // so `usedTokens`/`pct`/`warning` must come from the last path-A
+	      // snapshot. The accumulated result contributes only throughput/cost/
+	      // cache/output/window-ceiling metadata.
+	      const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
+	      const model = (m as { model?: string }).model;
+	      const lastKnown = this.state.lastKnownTokenUsage;
+
+	      // Build the accumulated throughput snapshot from result.usage.
+	      // This always runs — the control channel only provides window
+	      // occupancy, not billing/throughput data.
+	      const accumulatedRaw: RawClaudeUsage = {
+	        inputTokens: rawInput > 0 ? rawInput : muInput,
+	        outputTokens: rawOutput > 0 ? rawOutput : muOutput,
+	        cacheReadInputTokens:
+	          (usage?.cache_read_input_tokens ?? 0) > 0
+	            ? usage!.cache_read_input_tokens
+	            : muCacheRead || undefined,
+	        cacheCreationInputTokens:
+	          (usage?.cache_creation_input_tokens ?? 0) > 0
+	            ? usage!.cache_creation_input_tokens
+	            : muCacheCreation || undefined,
+	        costUsd,
+	        model,
+	      };
+
+	      // Try path B (control channel) first. If it succeeds, merge with
+	      // accumulated throughput. If it fails or is unavailable, fall back
+	      // to path C (path-A merge).
+	      await this.emitTurnEndSnapshot(accumulatedRaw, model, reportedWindow, lastKnown);
 
       // Permission denials
       for (const d of m.permission_denials ?? []) {
@@ -1153,5 +1138,57 @@ export class SdkMessageAdapter {
       sessionId: this.sessionId,
       snapshot,
     } satisfies ContextUsageEvent);
+  }
+
+  /** Emit the turn-end context-usage snapshot. Tries path B (control channel)
+   *  first for authoritative window occupancy; falls back to path C (accumulated
+   *  result.usage merged with path A's last known window read). */
+  private async emitTurnEndSnapshot(
+    accumulatedRaw: RawClaudeUsage,
+    model: string | undefined,
+    reportedWindow: number | undefined,
+    lastKnown: ContextSnapshot | undefined,
+  ): Promise<void> {
+    // Path B: control channel. The most authoritative source for window
+    // occupancy — the CLI reports the live context-window size directly.
+    if (this.query) {
+      try {
+        const cc = await this.query.getContextUsage();
+        const accumulated = normalizeClaudeTokenUsage(
+          accumulatedRaw,
+          { reported: reportedWindow, lastKnown: this.state.lastKnownContextWindow },
+        );
+        if (accumulated) {
+          const snapshot = buildSnapshotFromControlChannel(cc, accumulated);
+          this.publishTokenUsageSnapshot(snapshot);
+          return;
+        }
+      } catch (err) {
+        this.ctx.log.warn(
+          `getContextUsage failed, falling back to path C: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // Path C fallback: accumulated result.usage for throughput/billing,
+    // merged with path A's last known window read for occupancy.
+    if (!lastKnown) {
+      // No path-A snapshot — emit accumulated directly as better-than-nothing.
+      this.emitTokenUsage(accumulatedRaw, model, reportedWindow);
+      return;
+    }
+
+    const accumulated = normalizeClaudeTokenUsage(
+      accumulatedRaw,
+      { reported: reportedWindow, lastKnown: this.state.lastKnownContextWindow },
+    );
+    if (accumulated) {
+      const merged = mergeClaudeTokenUsageSnapshot(
+        lastKnown,
+        accumulated,
+        accumulated.maxTokens,
+      );
+      this.publishTokenUsageSnapshot(merged);
+    }
   }
 }

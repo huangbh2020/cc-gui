@@ -177,6 +177,30 @@ export interface ContextUsageEvent {
   snapshot: ContextSnapshot;
 }
 
+/** One entry in the per-session turn-usage history. Appended at turn-end
+ *  from the latest {@link ContextSnapshot} + timing metadata. Persisted to
+ *  the sessions table so the history survives app restart. */
+export interface TurnUsageRecord {
+  /** Wall-clock ms when the turn finalized (turnMeta.endedAt). */
+  endedAt: number;
+  /** Duration of the turn in ms (endedAt - startedAt). */
+  durationMs: number;
+  /** Tokens processed this turn (input + output + cache). */
+  totalProcessedTokens: number;
+  /** Output tokens this turn. */
+  outputTokens: number;
+  /** Tokens read from cache this turn (0 if none). */
+  cacheReadTokens: number;
+  /** Tokens written to cache this turn (0 if none). */
+  cacheCreationTokens: number;
+  /** Estimated USD cost this turn, if known. */
+  costUsd?: number;
+  /** Window occupancy AFTER this turn (cumulative context size). */
+  usedTokens: number;
+  /** Active model for this turn, if known. */
+  model?: string;
+}
+
 /** Session-level error. */
 export interface ErrorEvent {
   type: "error";

@@ -19,6 +19,7 @@ import type {
   ContextWarning,
   ContextWarningKind,
 } from "@contracts/runtime";
+import type { SDKControlGetContextUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 
 /** Raw usage fields the SDK reports on assistant / result messages. Missing
  *  fields are treated as 0. Field names follow the Anthropic API convention
@@ -305,4 +306,46 @@ function positiveOrZero(n: number | undefined | null): number {
 
 function dedupeWarnings(ws: ContextWarningKind[]): ContextWarningKind[] {
   return Array.from(new Set(ws));
+}
+
+/* ── control-channel snapshot (path B, doc §2 / §7.2) ── */
+
+/** Build a {@link ContextSnapshot} from the SDK's {@link Query.getContextUsage}
+ *  control-channel response. This is the most authoritative source for
+ *  `usedTokens` / `maxTokens` / `pct` — the CLI reports the live context-
+ *  window occupancy directly, without any client-side math.
+ *
+ *  Throughput / billing fields (`totalProcessedTokens`, `outputTokens`,
+ *  `cacheReadTokens`, `cacheCreationTokens`, `costUsd`) are NOT provided by
+ *  the control channel — they must come from the accumulated `result.usage`
+ *  (see {@link normalizeClaudeTokenUsage} and path C merge).
+ *
+ *  @param cc       Response from `Query.getContextUsage()`
+ *  @param accumulated  Snapshot built from accumulated `result.usage` (path C)
+ *                      — only its throughput/billing fields are used here
+ *  @returns A complete snapshot with authoritative window occupancy */
+export function buildSnapshotFromControlChannel(
+  cc: SDKControlGetContextUsageResponse,
+  accumulated: ContextSnapshot,
+): ContextSnapshot {
+  const usedTokens = Math.min(cc.totalTokens, cc.maxTokens);
+  const pct = Math.min(100, Math.round(cc.percentage));
+  const warning: ContextWarning =
+    pct >= 90 ? "critical" : pct >= 70 ? "near-window" : "ok";
+
+  return {
+    usedTokens,
+    totalProcessedTokens: accumulated.totalProcessedTokens,
+    maxTokens: cc.maxTokens,
+    outputTokens: accumulated.outputTokens,
+    cacheReadTokens: accumulated.cacheReadTokens,
+    cacheCreationTokens: accumulated.cacheCreationTokens,
+    costUsd: accumulated.costUsd,
+    model: cc.model || accumulated.model,
+    pct,
+    warning,
+    // Control channel doesn't surface warning kinds; carry forward any
+    // warnings the accumulated snapshot detected (e.g. large-prompt).
+    warnings: accumulated.warnings,
+  };
 }
