@@ -11,9 +11,8 @@
  * binary may not exist on PATH at runtime.
  */
 import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
-import { execFileSync } from "node:child_process";
 import { log } from "@main/lib/logger.js";
+import { which } from "@main/lib/binaryResolve.js";
 
 export interface ResolvedShell {
   /** Executable path or command name passed to node-pty. */
@@ -22,61 +21,6 @@ export interface ResolvedShell {
   args: string[];
   /** Display label for UI / TerminalInfo.shell. */
   label: string;
-}
-
-/** Try to locate `name` on PATH (and a few well-known install dirs on Win). */
-function which(name: string): string | null {
-  // Absolute / relative path that already exists.
-  if (name.includes("/") || name.includes("\\")) {
-    return existsSync(name) ? name : null;
-  }
-
-  if (process.platform === "win32") {
-    try {
-      const out = execFileSync("where.exe", [name], {
-        encoding: "utf8",
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "ignore"],
-      })
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .find((s) => s.length > 0);
-      if (out && existsSync(out)) return out;
-    } catch {
-      // not on PATH
-    }
-    // Well-known install locations not always on PATH.
-    const pf = process.env["ProgramFiles"] ?? "C:\\Program Files";
-    const pf86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
-    const local = process.env["LOCALAPPDATA"] ?? "";
-    const candidates = [
-      join(pf, "PowerShell", "7", `${name}.exe`),
-      join(pf, "PowerShell", "7-preview", `${name}.exe`),
-      join(local, "Microsoft", "WindowsApps", `${name}.exe`),
-      join(pf, "Git", "bin", `${name}.exe`),
-      join(pf, "Git", "usr", "bin", `${name}.exe`),
-      join(pf86, "Git", "bin", `${name}.exe`),
-      join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", `${name}.exe`),
-      join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", `${name}.exe`),
-    ];
-    for (const c of candidates) {
-      if (existsSync(c)) return c;
-    }
-    return null;
-  }
-
-  // POSIX: search PATH manually (avoid shelling out).
-  const pathEnv = process.env.PATH ?? "";
-  for (const dir of pathEnv.split(delimiter)) {
-    if (!dir) continue;
-    const full = join(dir, name);
-    if (existsSync(full)) return full;
-  }
-  // Common absolute locations.
-  for (const full of [`/bin/${name}`, `/usr/bin/${name}`, `/usr/local/bin/${name}`]) {
-    if (existsSync(full)) return full;
-  }
-  return null;
 }
 
 function winShellFromPath(file: string): ResolvedShell {

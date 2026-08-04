@@ -197,6 +197,36 @@ const api = {
       ipcRenderer.invoke(IPC.TERMINAL_LIST, input)) as RpcMap["terminal.list"],
   },
 
+  /** Language servers (LSP): install/enable per language, then sync documents
+   *  and forward capability requests (definition/references/hover) to the
+   *  server process running in main. All paths must resolve inside a known
+   *  project root (main enforces this). */
+  lsp: {
+    list: (() => ipcRenderer.invoke(IPC.LSP_LIST)) as RpcMap["lsp.list"],
+    install: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_INSTALL, input)) as RpcMap["lsp.install"],
+    installFromFile: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_INSTALL_FROM_FILE, input)) as RpcMap["lsp.installFromFile"],
+    uninstall: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_UNINSTALL, input)) as RpcMap["lsp.uninstall"],
+    toggle: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_TOGGLE, input)) as RpcMap["lsp.toggle"],
+    setPath: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_SET_PATH, input)) as RpcMap["lsp.setPath"],
+    healthCheck: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_HEALTH_CHECK, input)) as RpcMap["lsp.healthCheck"],
+    openDocument: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_OPEN_DOC, input)) as RpcMap["lsp.openDocument"],
+    closeDocument: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_CLOSE_DOC, input)) as RpcMap["lsp.closeDocument"],
+    didChange: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_DID_CHANGE, input)) as RpcMap["lsp.didChange"],
+    didSave: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_DID_SAVE, input)) as RpcMap["lsp.didSave"],
+    request: ((input) =>
+      ipcRenderer.invoke(IPC.LSP_REQUEST, input)) as RpcMap["lsp.request"],
+  },
+
   // ── Main-only helpers ──
   /** Open a native folder picker; returns the chosen path or null. */
   pickFolder: (): Promise<{ path: string | null }> =>
@@ -206,8 +236,9 @@ const api = {
   pickFiles: ((input) =>
     ipcRenderer.invoke(IPC.DIALOG_PICK_FILES, input)) as RpcMap["dialog.pickFiles"],
 
-  /** Skill discovery + management. `list` scans ~/.claude/skills + the active
-   *  project's .claude/skills; read/save/delete operate on a single skill. */
+  /** Skill discovery + management. `list` scans ~/.mcode/skills + the active
+   *  project's .claude/skills; read/save/delete operate on a single skill.
+   *  scanSources/import support importing skills from external tools. */
   skills: {
     list: ((input) =>
       ipcRenderer.invoke(IPC.SKILLS_LIST, input)) as RpcMap["skills.list"],
@@ -217,6 +248,10 @@ const api = {
       ipcRenderer.invoke(IPC.SKILLS_SAVE, input)) as RpcMap["skills.save"],
     delete: ((input) =>
       ipcRenderer.invoke(IPC.SKILLS_DELETE, input)) as RpcMap["skills.delete"],
+    scanSources: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_SCAN_SOURCES, input)) as RpcMap["skills.scanSources"],
+    import: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_IMPORT, input)) as RpcMap["skills.import"],
   },
 
   /** Probe whether the default provider is functional. */
@@ -255,6 +290,17 @@ const api = {
       ipcRenderer.on(IPC.TERMINAL_EXIT, listener);
       return () => {
         ipcRenderer.off(IPC.TERMINAL_EXIT, listener);
+      };
+    },
+    /** LSP push events: diagnostics, server log messages, and running-state
+     *  changes. Filter by `msg.type` in the handler. */
+    lspEvent(handler: (msg: Extract<MainToRendererMessage, { channel: "lsp:event" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.LSP_EVENT) handler(msg);
+      };
+      ipcRenderer.on(IPC.LSP_EVENT, listener);
+      return () => {
+        ipcRenderer.off(IPC.LSP_EVENT, listener);
       };
     },
     /** Fires when the effective theme changes (user picked one, or OS changed

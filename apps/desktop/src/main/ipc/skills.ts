@@ -1,16 +1,22 @@
 /**
  * IPC handler for skill discovery. The composer's `/` menu lists skills the
  * user has installed; we discover them by scanning the local filesystem
- * (user-global `~/.claude/skills/` + active-project `.claude/skills/`) and
+ * (user-global `~/.mcode/skills/` + active-project `.claude/skills/`) and
  * parsing each skill's SKILL.md frontmatter.
  *
  * We deliberately do NOT call the SDK's `Query.supportedCommands()` for the
  * listing: that method needs a running query handle, but this app spawns a
  * fresh query per turn, so there is no live handle to query between turns.
  * Scanning the disk is instant, runs without booting the claude binary, and
- * matches what the SDK itself scans when `skills: "all"` is passed. Selecting
- * a skill inserts `/name` into the textarea; the user sends it as a normal
- * turn and the SDK (started with `skills: "all"`) recognizes and runs it.
+ * matches what the SDK itself scans when `skills: "all"` is passed (the
+ * binary scans $CLAUDE_CONFIG_DIR/skills, which we point at ~/.mcode/skills).
+ * Selecting a skill inserts `/name` into the textarea; the user sends it as a
+ * normal turn and the SDK (started with `skills: "all"`) recognizes and runs it.
+ *
+ * Additionally, the settings panel's "Import" feature scans external tools'
+ * skill directories (Claude Code ~/.claude/skills, Codex ~/.codex/skills,
+ * Zcode ~/.agents/skills + ~/.zcode/skills + plugin cache) and copies selected
+ * skills into ~/.mcode/skills so they become available in Mcode.
  */
 import type { IpcMain } from "electron";
 import { promises as fs } from "node:fs";
@@ -22,8 +28,10 @@ import {
   SkillsReadSchema,
   SkillsSaveSchema,
   SkillsDeleteSchema,
+  SkillsScanSourcesSchema,
+  SkillsImportSchema,
 } from "@contracts/ipc";
-import type { SkillInfo, SkillSource } from "@contracts/ipc";
+import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool } from "@contracts/ipc";
 import { ProjectRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 
@@ -53,11 +61,17 @@ function findKnownProject(projectPath: string) {
 }
 
 /** Resolve the skills root directory for a given source. Global skills live
- *  under ~/.claude/skills; project skills under <project>/.claude/skills.
- *  Returns the absolute root path. */
+ *  under ~/.mcode/skills (Mcode's own CLAUDE_CONFIG_DIR); project skills under
+ *  <project>/.claude/skills. Returns the absolute root path.
+ *
+ *  The global root moved from ~/.claude/skills to ~/.mcode/skills because
+ *  CLAUDE_CONFIG_DIR is now always set to ~/.mcode - the SDK's bundled binary
+ *  scans $CLAUDE_CONFIG_DIR/skills for user-level skills, so this is where
+ *  imported skills must live to be discoverable (especially under custom
+ *  endpoints, where ~/.claude/skills is no longer read). */
 function resolveSkillRoot(source: SkillSource, projectPath: string): string {
   if (source === "global") {
-    return path.join(homedir(), ".claude", "skills");
+    return path.join(homedir(), ".mcode", "skills");
   }
   return path.join(projectPath, ".claude", "skills");
 }
@@ -188,6 +202,122 @@ async function scanSkillsRoot(rootDir: string, source: SkillSource, into: Map<st
   }
 }
 
+/**
+ * Scan one external tool's skills root dir and append its skills to `into`.
+ * Similar to {@link scanSkillsRoot} but records the source directory path and
+ * tool origin so the import handler can copy the skill folder later. Dedupes
+ * by name WITHIN a single tool (first occurrence wins); cross-tool dedup is
+ * left to the UI so the user can see the same skill available from multiple
+ * tools. Never throws - IO errors are caught and skipped.
+ */
+async function scanExternalSkillsRoot(
+  rootDir: string,
+  tool: SkillTool,
+  into: Map<string, ExternalSkillInfo>,
+): Promise<void> {
+  const root = await safeRealPath(rootDir);
+  if (!root) return;
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return; // not present / unreadable - nothing to list
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    // Skip Codex's system skills directory - those are built-in, not user
+    // skills meant for import.
+    if (entry.name === ".system") continue;
+    const skillPath = path.join(root, entry.name);
+    const real = await safeRealPath(skillPath);
+    if (!real) continue;
+    let isDir = true;
+    try {
+      const st = await fs.stat(real);
+      isDir = st.isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) continue;
+
+    const md = await readTextHead(path.join(real, "SKILL.md"));
+    const fm = md ? parseSkillFrontmatter(md) : {};
+    const name = fm.name?.trim() || entry.name;
+    // Dedupe within this tool only: if the same name appeared in another tool,
+    // we still add it (different sourcePath). But within one tool's tree,
+    // first occurrence wins.
+    if (into.has(`${tool}:${name}`)) continue;
+    into.set(`${tool}:${name}`, {
+      name,
+      description: fm.description?.trim() ?? "",
+      tool,
+      sourcePath: real,
+    });
+  }
+}
+
+/** The fixed external skill directories scanned by the import feature, keyed
+ *  by tool. Zcode has multiple roots (user skills + plugin cache). The plugin
+ *  cache glob is resolved lazily because it may not exist. */
+function getExternalSkillDirs(): Array<{ tool: SkillTool; dir: string }> {
+  const home = homedir();
+  const dirs: Array<{ tool: SkillTool; dir: string }> = [
+    { tool: "claude-code", dir: path.join(home, ".claude", "skills") },
+    { tool: "codex", dir: path.join(home, ".codex", "skills") },
+    { tool: "zcode", dir: path.join(home, ".agents", "skills") },
+    { tool: "zcode", dir: path.join(home, ".zcode", "skills") },
+  ];
+  // Zcode plugin cache: ~/.zcode/cli/plugins/cache/*/*/skills
+  // Each entry is <marketplace>/<plugin>/<version>/skills - we glob two levels
+  // deep under the cache dir and append any skills/ folders found.
+  return dirs;
+}
+
+/** Scan the Zcode plugin cache for additional skill directories. The cache
+ *  structure is ~/.zcode/cli/plugins/cache/<marketplace>/<plugin>/<version>/skills.
+ *  Returns the list of `skills` directories found (may be empty). */
+async function scanZcodePluginSkillDirs(): Promise<string[]> {
+  const home = homedir();
+  const cacheRoot = path.join(home, ".zcode", "cli", "plugins", "cache");
+  const realRoot = await safeRealPath(cacheRoot);
+  if (!realRoot) return [];
+  const result: string[] = [];
+  try {
+    // Level 1: marketplaces
+    for (const market of await fs.readdir(realRoot, { withFileTypes: true })) {
+      if (!market.isDirectory()) continue;
+      const marketPath = path.join(realRoot, market.name);
+      // Level 2: plugins
+      let plugins: import("node:fs").Dirent[];
+      try {
+        plugins = await fs.readdir(marketPath, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const plugin of plugins) {
+        if (!plugin.isDirectory()) continue;
+        const pluginPath = path.join(marketPath, plugin.name);
+        // Level 3: versions
+        let versions: import("node:fs").Dirent[];
+        try {
+          versions = await fs.readdir(pluginPath, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const ver of versions) {
+          if (!ver.isDirectory()) continue;
+          const skillsDir = path.join(pluginPath, ver.name, "skills");
+          const realSkills = await safeRealPath(skillsDir);
+          if (realSkills) result.push(realSkills);
+        }
+      }
+    }
+  } catch {
+    // Best-effort; swallow.
+  }
+  return result;
+}
+
 export function registerSkillsHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SKILLS_LIST, async (_evt, raw) => {
     const input = SkillsListSchema.parse(raw);
@@ -298,5 +428,86 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
+  });
+
+  // ── Scan external tools for skills available to import ──
+  // Scans Claude Code (~/.claude/skills), Codex (~/.codex/skills), and Zcode
+  // (~/.agents/skills + ~/.zcode/skills + plugin cache) for SKILL.md-bearing
+  // directories. Returns a flat list with the tool origin and source path for
+  // each, so the UI can present them and the import handler can copy them.
+  ipcMain.handle(IPC.SKILLS_SCAN_SOURCES, async () => {
+    const byKey = new Map<string, ExternalSkillInfo>();
+    try {
+      const dirs = getExternalSkillDirs();
+      for (const { tool, dir } of dirs) {
+        await scanExternalSkillsRoot(dir, tool, byKey);
+      }
+      // Zcode plugin cache skills (discovered separately due to nested dir
+      // structure).
+      const pluginDirs = await scanZcodePluginSkillDirs();
+      for (const dir of pluginDirs) {
+        await scanExternalSkillsRoot(dir, "zcode", byKey);
+      }
+    } catch (err) {
+      log.warn(`skills.scanSources failed: ${(err as Error).message}`);
+    }
+    // Sort by tool then name for stable display.
+    const sources = [...byKey.values()].sort((a, b) => {
+      if (a.tool !== b.tool) return a.tool.localeCompare(b.tool);
+      return a.name.localeCompare(b.name);
+    });
+    return { sources };
+  });
+
+  // ── Import (copy) selected skills into ~/.mcode/skills ──
+  // Copies each selected skill's directory tree from its external source into
+  // the global Mcode skills root. Skills that already exist at the destination
+  // are skipped (not overwritten) to protect user edits. Returns per-skill
+  // imported / skipped / error lists so the UI can report precisely.
+  ipcMain.handle(IPC.SKILLS_IMPORT, async (_evt, raw) => {
+    const input = SkillsImportSchema.parse(raw);
+    const globalRoot = resolveSkillRoot("global", "");
+    const imported: string[] = [];
+    const skipped: string[] = [];
+    const errors: Array<{ name: string; error: string }> = [];
+    for (const item of input.skills) {
+      const destDir = path.join(globalRoot, item.name);
+      // Containment guard: destination must stay inside the global skills root.
+      if (!pathWithin(globalRoot, destDir)) {
+        errors.push({ name: item.name, error: "无效的 skill 名" });
+        continue;
+      }
+      // Source must exist and be a directory (the scan guaranteed this, but
+      // the user may have deleted it between scan and import).
+      let srcStat: import("node:fs").Stats;
+      try {
+        srcStat = await fs.stat(item.sourcePath);
+      } catch {
+        errors.push({ name: item.name, error: "源目录不存在" });
+        continue;
+      }
+      if (!srcStat.isDirectory()) {
+        errors.push({ name: item.name, error: "源路径不是目录" });
+        continue;
+      }
+      // Skip if the destination already exists (don't overwrite user edits).
+      try {
+        await fs.lstat(destDir);
+        skipped.push(item.name);
+        continue;
+      } catch {
+        // Good - destination doesn't exist, proceed with copy.
+      }
+      try {
+        await fs.mkdir(globalRoot, { recursive: true });
+        // fs.cp with recursive:true copies the entire directory tree
+        // (SKILL.md + references/ + assets/ + scripts/ etc.).
+        await fs.cp(item.sourcePath, destDir, { recursive: true });
+        imported.push(item.name);
+      } catch (err) {
+        errors.push({ name: item.name, error: (err as Error).message });
+      }
+    }
+    return { imported, skipped, errors };
   });
 }

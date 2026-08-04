@@ -138,6 +138,20 @@ pnpm build
 - `CenterPane`(在 `App.tsx`)按 `displayMode` 决定:`single` 直接挂 `<ChatPane>`;`tabs` 先挂 `<SessionTabs />` 再挂 `<ChatPane key={activeSessionId} />`(只挂载前台 tab,key 变化重挂载)。
 - 4 个全局 config 槽(model / effort / permissionMode / customModelId)保持不变——它们表达"前台 tab 的配置",`syncConfigFromSession` 在 `selectSession` / `openTab` / `closeTab` 切活动时自动同步,Composer 立即反映。
 
+### 语言服务器 LSP(P4.5)
+- **可安装、可启停**:设置页"语言服务器"面板,每种语言(TS/JS、Python、Go、Java)一张卡片。安装走包管理器(`npm`/`pip`/`go`/`brew`),Java win/linux 走直接下载 tar.gz 解压到 `userData/lsp/java`。
+- **配置持久化**:`settings` 表 `lsp.servers` key(JSON 数组 `LspServerConfig[]`),每语言一个条目(`enabled` + 可选 `serverPath`/`args`)。
+- **主进程 `LspManager`**(单例,`apps/desktop/src/main/lsp/LspManager.ts`):按 `(workspacePath, language)` 懒启动 stdio JSON-RPC 子进程;手写 Content-Length 分帧 + JSON-RPC 收发;`initialize` 握手后才放行 `request`;`textDocument/publishDiagnostics` / `window/logMessage` 推送到 renderer(`lsp:event`);`before-quit` 调 `disposeAll()` 杀全部子进程。
+- **语言规格**:`apps/desktop/src/main/lsp/languageSpecs.ts` 是扩展点--新增语言加一个 `LanguageServerSpec` 即可,`LspManager` 自动获得安装/探测/启动/同步行为。
+- **二进制探测**:`which()` 抽到 `apps/desktop/src/main/lib/binaryResolve.ts`(terminal 的 shellResolve 也共用)。Windows 额外探 `%APPDATA%/npm`(npm 全局 bin)。
+- **Monaco 桥接**(renderer):`apps/desktop/src/renderer/lib/lspProviders.ts` 手写 `registerDefinitionProvider` / `registerReferenceProvider` / `registerHoverProvider`,每个 provider 通过 `api.lsp.request` RPC 转发到 main。**不引入 `monaco-languageclient`**(最小依赖)。跨文件跳转在 definition provider 内直接调 `openFileInIde(path, line, col)` 并返回 null,同文件则返回 Location 让 Monaco 原生导航。
+- **文档同步**:`EditPane` 的 `onMount` 发 `didOpen`,`onChange` debounce 300ms 发 `didChange`,`handleSave` 成功后发 `didSave`,卸载时发 `didClose`。
+- **诊断 markers**:`useLspDiagnostics` hook 订阅 `lsp:event`,按 `uri` 过滤后 `monaco.editor.setModelMarkers`。
+- **跳转定位**:`openFileInIde` 扩展了 `opts.line`/`opts.column`,写入 `idePendingReveal` + bump `ideRevealNonce`;`EditPane` 的 `useEffect([nonce])` 消费后 `revealLineInCenter` + `setPosition` + `clearIdePendingReveal`。
+- **TS worker 去重**:TS LSP 启用时,`monacoSetup.ts` 的 `setTsWorkerDiagnosticsEnabled(false)` 关掉内置 tsWorker 诊断,避免双份波浪线。由 `reloadLspLanguages` 在水合后驱动。
+- **安全**:所有 `workspacePath` 过 `isKnownProjectPath`,`filePath` 过 `findContainingProject`,只允许已知项目内的文件进 LSP。
+- **崩溃恢复**:`proc.on("exit")` 非主动关闭时从 Map 移除 + 推 `stateChanged{running:false}`;下次 `request` 自动 `ensureServer` 重启。
+
 ### 前端组件与图标
 
 #### 组件库
@@ -168,7 +182,8 @@ pnpm build
 | P2.5 SDK 迁移 | ✅ | @anthropic-ai/claude-agent-sdk + AgentProvider 抽象层 + ProviderRegistry |
 | P3 工具审批 | ✅ 基础 | canUseTool 桥 → approval.request/approve IPC(后端已通,前端审批 UI 待 P5) |
 | P3.5 中间面板 Tab 模式 | ✅ | 中间面板显示模式偏好(单/tab),`openTabs` + `SessionTabs` 标签条;关闭 tab 后台 turn 继续运行 |
-| P4 IDE 右栏 | ⬜ | 文件树、git、终端(xterm+node-pty)、Monaco diff |
+| P4 IDE 右栏 | ✅ | 文件树、git、终端(xterm+node-pty)、Monaco 编辑器 + diff |
+| P4.5 LSP 语言服务器 | ✅ | 设置页可安装/启停 TS/Python/Go/Java 语言服务器;`LspManager`(main)管理 stdio JSON-RPC 子进程;Monaco 手写 Provider(definition/references/hover)+ 诊断 markers + 跳转定位 |
 | P5 体验打磨 | ⬜ | 浏览器预览、checkpoint 时间线、Cmd+K、审批 UI |
 | P6 发布 | ✅ 基础 | electron-builder(mac/win 安装包)、electron-updater(GitHub Releases 渠道)、CI(typecheck + tag 自动发布)。mac 包已接 ad-hoc 签名(无 Apple 付费证书,dmg 直下首次启动需 `xattr -dr com.apple.quarantine` 或系统设置"仍要打开";brew cask 安装无此问题);真实 Developer ID 签名+公证未做,未含 Vitest |
 

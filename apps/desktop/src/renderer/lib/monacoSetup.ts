@@ -68,3 +68,42 @@ self.MonacoEnvironment = {
 loader.config({ monaco });
 
 export { monaco };
+
+/** Toggle Monaco's built-in TS/JS worker diagnostics. When an external TS
+ *  language server is enabled, we suppress the worker's own diagnostics to
+ *  avoid duplicate squiggles. Called from `reloadLspLanguages` after the LSP
+ *  state is hydrated. Safe to call before any editor mounts (the defaults
+ *  object is always available); idempotent. */
+let tsDiagnosticsEnabled = true;
+export function setTsWorkerDiagnosticsEnabled(enabled: boolean): void {
+  tsDiagnosticsEnabled = enabled;
+  try {
+    // monaco-editor 0.52+ moved the TS language service defaults to the
+    // top-level `typescript` namespace (the old `languages.typescript` is
+    // marked deprecated).
+    const ts = (monaco as unknown as {
+      typescript?: {
+        typescriptDefaults: { setDiagnosticsOptions(o: { noSemanticValidation: boolean; noSyntaxValidation: boolean }): void };
+        javascriptDefaults: { setDiagnosticsOptions(o: { noSemanticValidation: boolean; noSyntaxValidation: boolean }): void };
+      };
+    }).typescript;
+    if (!ts) return;
+    ts.typescriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: !enabled,
+      noSyntaxValidation: !enabled,
+    });
+    ts.javascriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: !enabled,
+      noSyntaxValidation: !enabled,
+    });
+  } catch {
+    // monaco not fully initialized yet - the flag is still recorded so a
+    // later editor mount picks it up via the defaults.
+  }
+}
+
+/** Read the current TS-Worker diagnostics flag (used by EditPane to decide
+ *  whether to expect duplicate markers). */
+export function isTsWorkerDiagnosticsEnabled(): boolean {
+  return tsDiagnosticsEnabled;
+}

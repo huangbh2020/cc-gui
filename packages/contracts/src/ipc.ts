@@ -1186,7 +1186,7 @@ export const SkillsSaveSchema = z.object({
 export type SkillsSaveInput = z.infer<typeof SkillsSaveSchema>;
 
 /** Delete a skill directory. For a symlinked skill only the link is removed
- *  (the target — e.g. a gstack checkout — is left intact); for a real
+ *  (the target - e.g. a gstack checkout - is left intact); for a real
  *  directory the whole skill folder is removed recursively. */
 export const SkillsDeleteSchema = z.object({
   projectPath: z.string(),
@@ -1195,7 +1195,214 @@ export const SkillsDeleteSchema = z.object({
 });
 export type SkillsDeleteInput = z.infer<typeof SkillsDeleteSchema>;
 
+/* ── Skill import (settings panel) ──
+ *  The settings panel's "Import" feature scans external skill directories
+ *  (Claude Code ~/.claude/skills, Codex ~/.codex/skills, Zcode ~/.agents/skills
+ *  + ~/.zcode/skills + plugin cache) and lets the user pick which skills to
+ *  copy into Mcode's own global skills dir (~/.mcode/skills). This makes
+ *  user-level skills available even under custom endpoints, where the SDK
+ *  normally can't load them from ~/.claude/skills. */
+
+/** Which external tool a scanned skill originated from. */
+export type SkillTool = "claude-code" | "codex" | "zcode";
+
+/** A skill discovered in an external tool's skill directory, available for
+ *  import into Mcode's own ~/.mcode/skills. Carries the source directory's
+ *  absolute path so the import handler can copy it without re-resolving. */
+export interface ExternalSkillInfo {
+  /** Skill name (from frontmatter, falling back to directory name). */
+  name: string;
+  /** Short description from SKILL.md frontmatter (may be empty). */
+  description: string;
+  /** Which external tool this skill was found in. */
+  tool: SkillTool;
+  /** Absolute path to the skill directory in the external tool's tree. */
+  sourcePath: string;
+}
+
+/** Scan external tools' skill directories and return all discoverable skills.
+ *  No input parameters - the handler knows the fixed source paths. Always
+ *  resolves (degrades to an empty list on any IO error). */
+export const SkillsScanSourcesSchema = z.object({});
+export type SkillsScanSourcesInput = z.infer<typeof SkillsScanSourcesSchema>;
+
+/** A single skill to import: the source directory (from a scan result) and
+ *  the name to use as the destination directory under ~/.mcode/skills. */
+export const SkillsImportItemSchema = z.object({
+  /** Absolute path to the source skill directory (from a scanSources result). */
+  sourcePath: z.string(),
+  /** Destination skill name (directory name under ~/.mcode/skills). */
+  name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
+});
+
+/** Import (copy) selected skills from external tools into ~/.mcode/skills.
+ *  Skills that already exist at the destination are skipped (not overwritten).
+ *  Returns per-skill success/skip/error so the UI can report precisely. */
+export const SkillsImportSchema = z.object({
+  skills: z.array(SkillsImportItemSchema),
+});
+export type SkillsImportInput = z.infer<typeof SkillsImportSchema>;
+
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
+
+/* ── Language servers (LSP) ──
+ *  Each language has an installable, toggleable language server (TS/JS,
+ *  Python, Go, Java). Servers run in the main process as stdio JSON-RPC
+ *  children; the renderer talks to them via the `lsp.*` RPC namespace and
+ *  receives diagnostics/logs/state changes over the `lsp:event` push channel.
+ *  Monaco providers (definition/references/hover) in the renderer call
+ *  `lsp.request` to forward LSP method calls; document sync goes through
+ *  `lsp.openDocument` / `lsp.didChange` / `lsp.didSave` / `lsp.closeDocument`. */
+
+/** Setting key for the persisted LSP server config list.
+ *  Value = JSON.stringify(LspServerConfig[]). */
+export const LSP_SERVERS_SETTING_KEY = "lsp.servers";
+
+/** Languages with first-class LSP support. The enum is reused across every
+ *  LSP schema so the renderer, preload, and main share one vocabulary. */
+export const LspLanguageSchema = z.enum(["typescript", "python", "go", "java"]);
+export type LspLanguageId = z.infer<typeof LspLanguageSchema>;
+
+/** A single language's persisted configuration. Stored as a JSON array under
+ *  LSP_SERVERS_SETTING_KEY. Missing entries default to { enabled: false }. */
+export interface LspServerConfig {
+  language: LspLanguageId;
+  enabled: boolean;
+  /** User override for the server executable. Empty/absent -> auto-detect via
+   *  PATH lookup (which/where). */
+  serverPath?: string;
+  /** Extra CLI args appended after the server's stdio flag. Advanced. */
+  args?: string[];
+  /** Java only: path to a JDK 17+ home (JAVA_HOME) used to RUN jdtls. This is
+   *  independent of the project's JDK -- jdtls needs Java 17+ to run even when
+   *  the project itself targets Java 8. Empty/absent -> use system java. */
+  javaHome?: string;
+}
+
+/** Generic success/failure result for install/stop/health operations. */
+export interface LspOpResult {
+  ok: boolean;
+  error?: string;
+}
+
+/** Snapshot of one language's state, sent to the renderer by `lsp.list`. The
+ *  renderer treats this as read-only display data. */
+export interface LspLanguageState {
+  language: LspLanguageId;
+  enabled: boolean;
+  /** Whether the server binary was found on disk (PATH or custom path). */
+  installed: boolean;
+  /** Resolved server path (or null if not found). */
+  serverPath: string | null;
+  /** Whether a server process is currently alive for this language (any
+   *  workspace). */
+  running: boolean;
+  /** Whether an install/uninstall is currently in progress. */
+  installing: boolean;
+  /** Tail of the most recent install/uninstall output (truncated). */
+  installLog: string;
+  /** Last error from a failed server start (stderr summary). Empty when the
+   *  server is running fine. Shown in the settings panel so the user knows
+   *  WHY the server won't start (e.g. "jdtls requires at least Java 21"). */
+  lastError: string;
+}
+
+/** A diagnostic pushed from the server via publishDiagnostics. Mirrors LSP
+ *  Diagnostic (0-based line/character). */
+export interface LspDiagnostic {
+  range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+  /** 1=Error, 2=Warning, 3=Information, 4=Hint. */
+  severity: 1 | 2 | 3 | 4;
+  message: string;
+  source?: string;
+}
+
+// -- RPC input schemas --
+
+export const LspListSchema = z.object({});
+export type LspListInput = z.infer<typeof LspListSchema>;
+
+export const LspInstallSchema = z.object({ language: LspLanguageSchema });
+export type LspInstallInput = z.infer<typeof LspInstallSchema>;
+
+/** Install from a user-downloaded archive (tar.gz/zip) or binary. Used when
+ *  the package-manager install fails due to network issues -- the user
+ *  downloads the file manually via the download-page button, then selects it
+ *  here. For Java the archive is extracted into userData/lsp/java; for other
+ *  languages the file/binary path is recorded as a custom serverPath. */
+export const LspInstallFromFileSchema = z.object({
+  language: LspLanguageSchema,
+  /** Absolute path to the user-selected file (archive or binary). */
+  archivePath: z.string().min(1),
+});
+export type LspInstallFromFileInput = z.infer<typeof LspInstallFromFileSchema>;
+
+export const LspUninstallSchema = z.object({ language: LspLanguageSchema });
+export type LspUninstallInput = z.infer<typeof LspUninstallSchema>;
+
+export const LspToggleSchema = z.object({
+  language: LspLanguageSchema,
+  enabled: z.boolean(),
+});
+export type LspToggleInput = z.infer<typeof LspToggleSchema>;
+
+export const LspSetPathSchema = z.object({
+  language: LspLanguageSchema,
+  serverPath: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  /** Java only: override the JDK used to run jdtls (JAVA_HOME). */
+  javaHome: z.string().optional(),
+});
+export type LspSetPathInput = z.infer<typeof LspSetPathSchema>;
+
+export const LspHealthCheckSchema = z.object({ language: LspLanguageSchema });
+export type LspHealthCheckInput = z.infer<typeof LspHealthCheckSchema>;
+
+export const LspOpenDocSchema = z.object({
+  workspacePath: z.string(),
+  filePath: z.string(),
+  language: LspLanguageSchema,
+});
+export type LspOpenDocInput = z.infer<typeof LspOpenDocSchema>;
+
+export const LspCloseDocSchema = z.object({
+  workspacePath: z.string(),
+  filePath: z.string(),
+});
+export type LspCloseDocInput = z.infer<typeof LspCloseDocSchema>;
+
+export const LspDidChangeSchema = z.object({
+  workspacePath: z.string(),
+  filePath: z.string(),
+  text: z.string(),
+  version: z.number().int(),
+});
+export type LspDidChangeInput = z.infer<typeof LspDidChangeSchema>;
+
+export const LspDidSaveSchema = z.object({
+  workspacePath: z.string(),
+  filePath: z.string(),
+  text: z.string(),
+});
+export type LspDidSaveInput = z.infer<typeof LspDidSaveSchema>;
+
+export const LspRequestSchema = z.object({
+  workspacePath: z.string(),
+  language: LspLanguageSchema,
+  /** LSP method, e.g. "textDocument/definition". */
+  method: z.string(),
+  /** LSP params object (passed through verbatim). */
+  params: z.unknown(),
+});
+export type LspRequestInput = z.infer<typeof LspRequestSchema>;
+
+/** `lsp.request` returns either the LSP result or an error object. */
+export type LspRequestResult =
+  | { result: unknown }
+  | { error: { code: number; message: string } };
 
 export interface ClaudeEventMessage {
   channel: "claude:event";
@@ -1217,10 +1424,26 @@ export interface TerminalExitMessage {
   exitCode: number | null;
 }
 
+/** Pushed from main -> renderer for LSP diagnostics, server logs, and running
+ *  state changes. The `payload` shape depends on `type`:
+ *  - "diagnostics":  { uri: string; diagnostics: LspDiagnostic[] }
+ *  - "log":          { level: "info" | "warn" | "error"; message: string }
+ *  - "stateChanged": { running: boolean }
+ *  Kept as `unknown` here so the contract stays decoupled from the renderer's
+ *  narrowing logic. */
+export interface LspEventMessage {
+  channel: "lsp:event";
+  workspacePath: string;
+  language: LspLanguageId;
+  type: "diagnostics" | "log" | "stateChanged";
+  payload: unknown;
+}
+
 export type MainToRendererMessage =
   | ClaudeEventMessage
   | TerminalDataMessage
   | TerminalExitMessage
+  | LspEventMessage
   | ThemeChangedMessage
   | UpdateAvailableMessage
   | UpdateDownloadProgressMessage
@@ -1458,6 +1681,47 @@ export interface RpcMap {
   /** Delete a skill directory (symlink → unlink link only; real dir → recursive
    *  remove). Returns ok:false + error on any IO failure. */
   "skills.delete": (input: SkillsDeleteInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Scan external tools (Claude Code / Codex / Zcode) for skills available
+   *  for import into Mcode's own ~/.mcode/skills. Returns the full list of
+   *  discoverable skills with their source paths. */
+  "skills.scanSources": (input: SkillsScanSourcesInput) => Promise<{ sources: ExternalSkillInfo[] }>;
+  /** Import (copy) selected skills from external tool directories into
+   *  ~/.mcode/skills. Already-existing skills are skipped. Returns per-skill
+   *  imported / skipped / error lists. */
+  "skills.import": (input: SkillsImportInput) => Promise<{
+    imported: string[];
+    skipped: string[];
+    errors: Array<{ name: string; error: string }>;
+  }>;
+  // Language servers (LSP)
+  /** List all language servers and their install/running state. */
+  "lsp.list": () => Promise<{ languages: LspLanguageState[] }>;
+  /** Install a language server via its package manager (npm/pip/go/brew). */
+  "lsp.install": (input: LspInstallInput) => Promise<LspOpResult>;
+  /** Install from a user-downloaded archive/binary (manual download fallback
+   *  for when the package-manager install fails due to network issues). */
+  "lsp.installFromFile": (input: LspInstallFromFileInput) => Promise<LspOpResult>;
+  /** Uninstall a language server. */
+  "lsp.uninstall": (input: LspUninstallInput) => Promise<LspOpResult>;
+  /** Enable/disable a language (disabling kills any running server). Returns
+   *  the refreshed state list. */
+  "lsp.toggle": (input: LspToggleInput) => Promise<{ languages: LspLanguageState[] }>;
+  /** Set a custom server path / args override. Returns the refreshed list. */
+  "lsp.setPath": (input: LspSetPathInput) => Promise<{ languages: LspLanguageState[] }>;
+  /** Verify the server binary runs (--version or --help probe). */
+  "lsp.healthCheck": (input: LspHealthCheckInput) => Promise<LspOpResult>;
+  /** Open a document in the server (textDocument/didOpen). Lazily starts the
+   *  server for (workspacePath, language) on first call. */
+  "lsp.openDocument": (input: LspOpenDocInput) => Promise<void>;
+  /** Close a document (textDocument/didClose). */
+  "lsp.closeDocument": (input: LspCloseDocInput) => Promise<void>;
+  /** Notify the server of a full-content change (textDocument/didChange). */
+  "lsp.didChange": (input: LspDidChangeInput) => Promise<void>;
+  /** Notify the server of a save (textDocument/didSave). */
+  "lsp.didSave": (input: LspDidSaveInput) => Promise<void>;
+  /** Forward an arbitrary LSP request (definition/references/hover/...) to the
+   *  server and await its response. */
+  "lsp.request": (input: LspRequestInput) => Promise<LspRequestResult>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -1548,10 +1812,27 @@ export const IPC = {
   SKILLS_READ: "skills:read",
   SKILLS_SAVE: "skills:save",
   SKILLS_DELETE: "skills:delete",
+  // Skill import (settings panel): scan external tools + copy into ~/.mcode/skills
+  SKILLS_SCAN_SOURCES: "skills:scanSources",
+  SKILLS_IMPORT: "skills:import",
+  // Language servers (LSP): install/enable/sync/request
+  LSP_LIST: "lsp:list",
+  LSP_INSTALL: "lsp:install",
+  LSP_INSTALL_FROM_FILE: "lsp:installFromFile",
+  LSP_UNINSTALL: "lsp:uninstall",
+  LSP_TOGGLE: "lsp:toggle",
+  LSP_SET_PATH: "lsp:setPath",
+  LSP_HEALTH_CHECK: "lsp:healthCheck",
+  LSP_OPEN_DOC: "lsp:openDocument",
+  LSP_CLOSE_DOC: "lsp:closeDocument",
+  LSP_DID_CHANGE: "lsp:didChange",
+  LSP_DID_SAVE: "lsp:didSave",
+  LSP_REQUEST: "lsp:request",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
   TERMINAL_DATA: "terminal:data",
   TERMINAL_EXIT: "terminal:exit",
+  LSP_EVENT: "lsp:event",
   THEME_CHANGED: "theme:changed",
   UPDATE_AVAILABLE: "update:available",
   UPDATE_DOWNLOAD_PROGRESS: "update:downloadProgress",

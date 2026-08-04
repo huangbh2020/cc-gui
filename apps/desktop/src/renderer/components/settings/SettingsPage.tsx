@@ -8,6 +8,7 @@ import { AppearancePanel } from "./AppearancePanel.js";
 import { ShortcutsPanel } from "./ShortcutsPanel.js";
 import { GitPanel } from "./GitPanel.js";
 import { TerminalPanel } from "./TerminalPanel.js";
+import { LspLanguagesPanel } from "./LspLanguagesPanel.js";
 import { AboutPanel } from "./AboutPanel.js";
 
 /**
@@ -31,7 +32,7 @@ import { AboutPanel } from "./AboutPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "custom-models" | "skills" | "appearance" | "shortcuts" | "git" | "terminal" | "about";
+type SectionId = "general" | "custom-models" | "skills" | "appearance" | "shortcuts" | "git" | "terminal" | "lsp-languages" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -46,6 +47,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "shortcuts", label: "快捷键" },
   { id: "git", label: "Git" },
   { id: "terminal", label: "终端" },
+  { id: "lsp-languages", label: "语言服务器" },
   { id: "about", label: "关于" },
 ];
 
@@ -118,6 +120,7 @@ export function SettingsPage() {
           {active === "shortcuts" && <ShortcutsPanel />}
           {active === "git" && <GitPanel />}
           {active === "terminal" && <TerminalPanel />}
+          {active === "lsp-languages" && <LspLanguagesPanel />}
           {active === "about" && <AboutPanel />}
         </div>
       }

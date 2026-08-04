@@ -1,9 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { FileTree } from "./FileTree.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
+  IconFolder,
   IconFolderPlus,
+  IconRefresh,
   IconSearch,
 } from "@renderer/lib/icons.js";
 
@@ -29,11 +31,19 @@ export function FilesPanel() {
   const projects = useSessionStore((s) => s.projects);
   const setSearchDialogOpen = useSessionStore((s) => s.setSearchDialogOpen);
 
-  const projectPath = useMemo(() => {
+  // Bumped on refresh to remount <FileTree> and re-scan the filesystem.
+  // Expanded-dir state lives in the session store, so the remount keeps the
+  // current expansion while re-fetching every level (DirNode children start
+  // null on a fresh mount and re-load).
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
+  const activeProject = useMemo(() => {
     if (!activeProjectId) return null;
-    const proj = projects.find((p) => p.id === activeProjectId);
-    return proj?.path ?? null;
+    return projects.find((p) => p.id === activeProjectId) ?? null;
   }, [activeProjectId, projects]);
+
+  const projectPath = activeProject?.path ?? null;
+  const projectName = activeProject?.name ?? null;
 
   if (!projectPath) {
     return <EmptyState />;
@@ -41,11 +51,29 @@ export function FilesPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Compact header: "文件" label on the left, a search button on the right
-          that opens the project-wide search dialog. Replaces the old inline
-          search row so the tree gets the full panel height. */}
-      <div className="flex shrink-0 items-center justify-between border-b border-edge px-2 py-1.5">
-        <span className="px-1 text-[12px] font-medium text-content-muted">文件</span>
+      {/* Compact header: the active project's folder name on the left (mirrors
+          the explorer header in VS Code), refresh + search buttons on the
+          right. The tree gets the full panel height below. */}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-edge px-2 py-1.5">
+        <span
+          className="flex min-w-0 flex-1 items-center gap-1 px-1 text-[12px] font-medium text-content-muted"
+          title={projectPath}
+        >
+          <IconFolder size={13} className="shrink-0 text-content-subtle" />
+          <span className="truncate">{projectName}</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => setRefreshNonce((n) => n + 1)}
+          title="刷新目录"
+          aria-label="刷新目录"
+          className={cn(
+            "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
+            "text-content-subtle hover:bg-surface-hover hover:text-content",
+          )}
+        >
+          <IconRefresh size={14} />
+        </button>
         <button
           type="button"
           onClick={() => setSearchDialogOpen(true)}
@@ -62,9 +90,10 @@ export function FilesPanel() {
 
       {/* Body: the lazily-loaded directory tree, scoped to the active project.
           Keyed on projectPath so switching projects fully remounts (clears
-          stale expanded state / cached children). */}
+          stale expanded state / cached children); refreshNonce remounts for a
+          manual re-scan of the same project. */}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-        <FileTree key={projectPath} projectPath={projectPath} />
+        <FileTree key={`${projectPath}:${refreshNonce}`} projectPath={projectPath} />
       </div>
     </div>
   );

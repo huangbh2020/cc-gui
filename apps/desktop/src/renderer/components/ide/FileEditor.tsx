@@ -10,6 +10,17 @@ import { ideDirtyTracker } from "./OpenTabsBar.js";
 import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3, IconPhotoOff } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { Markdown } from "../chat/Markdown.js";
+// LSP provider bridge: registers definition/references/hover providers, syncs
+// documents, and applies diagnostics markers to the model.
+import {
+  ensureLspProviders,
+  useLspDiagnostics,
+  openLspDocument,
+  closeLspDocument,
+  notifyLspChange,
+  notifyLspSave,
+  filePathToUri,
+} from "@renderer/lib/lspProviders.js";
 // Side-effect import: configures Monaco's worker environment + local instance
 // (no CDN). Must run before any <Editor> mounts. See monacoSetup.ts.
 import "@renderer/lib/monacoSetup.js";
@@ -112,7 +123,7 @@ export function FileEditor({
             <MarkdownPreviewPane filePath={filePath} projectPath={projectPath} />
           )
         ) : (
-          <EditPane filePath={filePath} />
+          <EditPane filePath={filePath} projectPath={projectPath} />
         )}
       </div>
     </div>
@@ -151,9 +162,13 @@ function EditorToolbar({
   // so the user can still drop into the raw Monaco editor if they want.
   const hasPreviewToggle = isMarkdown || isImage || isUnsupported;
   // Show the path relative to the project root when possible (cleaner in the
-  // narrow toolbar); fall back to the full path.
+  // narrow toolbar); fall back to the full path. Case-insensitive on Windows/
+  // macOS so a lowercased drive letter from LSP (`d:\foo`) still matches a
+  // project root stored with uppercase (`D:\foo`).
+  const lowerFile = filePath.toLowerCase();
+  const lowerProj = projectPath.toLowerCase();
   const rel =
-    filePath.startsWith(projectPath) && filePath.length > projectPath.length
+    lowerFile.startsWith(lowerProj) && filePath.length > projectPath.length
       ? filePath.slice(projectPath.length).replace(/^[/\\]/, "")
       : filePath;
   return (
@@ -223,12 +238,21 @@ function EditorToolbar({
 /* ───────────────────────── Edit pane ───────────────────────── */
 
 /** Editable Monaco instance for one file. Loads content on mount; tracks
- *  dirty state; Ctrl+S saves. */
-function EditPane({ filePath }: { filePath: string }) {
+ *  dirty state; Ctrl+S saves. Wires LSP document sync + providers when the
+ *  file's language has a server enabled. */
+function EditPane({ filePath, projectPath }: { filePath: string; projectPath: string }) {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const [content, setContent] = useState<string | null>(null); // null = loading
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // LSP document-sync version counter (incremented on each didChange).
+  const lspVersionRef = useRef(1);
+  // Debounce timer for didChange notifications.
+  const changeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Reveal nonce consumer - re-runs when the store requests a goto-def reveal.
+  const ideRevealNonce = useSessionStore((s) => s.ideRevealNonce);
+  const idePendingReveal = useSessionStore((s) => s.idePendingReveal);
 
   // Load the file content once per filePath.
   useEffect(() => {
@@ -265,6 +289,8 @@ function EditPane({ filePath }: { filePath: string }) {
       setSaveState("saved");
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => setSaveState("idle"), 1500);
+      // Tell the LSP server the file was saved (best-effort).
+      if (projectPath) void notifyLspSave(projectPath, filePath, language, value);
     } else {
       setSaveState("error");
     }
@@ -275,24 +301,61 @@ function EditPane({ filePath }: { filePath: string }) {
   // Theme: follow the .dark class on <html>.
   const theme = useMonacoTheme();
 
-  // Wire Ctrl+S / Cmd+S to save. Monaco passes its monaco namespace into
-  // onMount, which is where we register the keybinding (we need the monaco
-  // KeyMod/KeyCode constants to compose the chord).
+  // Wire Ctrl+S / Cmd+S to save + LSP providers + document open. Monaco passes
+  // its monaco namespace into onMount, which is where we register the
+  // keybinding (we need the monaco KeyMod/KeyCode constants to compose the
+  // chord) and the LSP providers (we need the monaco.languages API).
   const handleEditorMount = (editor_: editor.IStandaloneCodeEditor, monaco: typeof import("monaco-editor")) => {
     editorRef.current = editor_;
+    monacoRef.current = monaco;
     editor_.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void handleSave();
     });
+
+    // Register LSP providers for this language (idempotent - once per language
+    // id globally). Providers route requests through the active project's LSP
+    // server via api.lsp.request.
+    ensureLspProviders(monaco, language);
+
+    // Open the document in the server (lazily starts the server if enabled).
+    // If no server is enabled for this language, this is a silent no-op.
+    if (projectPath) {
+      void openLspDocument(projectPath, filePath, language);
+    }
   };
 
-  // Clear the saved-indicator timer on unmount.
+  // Goto-definition reveal: when the store has a pending reveal for this file,
+  // scroll to it and clear. Re-runs on the nonce bump (so a reveal into an
+  // already-mounted editor works, not just on mount).
+  useEffect(() => {
+    if (!idePendingReveal || idePendingReveal.filePath !== filePath) return;
+    const ed = editorRef.current;
+    if (!ed) return;
+    ed.revealLineInCenter(idePendingReveal.line);
+    ed.setPosition({ lineNumber: idePendingReveal.line, column: idePendingReveal.column });
+    ed.focus();
+    useSessionStore.getState().clearIdePendingReveal();
+  }, [ideRevealNonce, idePendingReveal, filePath]);
+
+  // LSP diagnostics subscription: applies publishDiagnostics markers to this
+  // file's model and clears them on unmount.
+  useLspDiagnostics(
+    filePath,
+    () => monacoRef.current,
+    () => editorRef.current,
+  );
+
+  // Clear the saved-indicator timer + close the LSP document on unmount.
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (changeDebounceRef.current) clearTimeout(changeDebounceRef.current);
       // Report clean on unmount so a re-open doesn't show a stale dirty dot.
       ideDirtyTracker.set(filePath, false);
+      // Tell the server this document closed (best-effort).
+      if (projectPath) void closeLspDocument(projectPath, filePath);
     };
-  }, [filePath]);
+  }, [filePath, projectPath]);
 
   if (content === null) {
     return (
@@ -307,14 +370,25 @@ function EditPane({ filePath }: { filePath: string }) {
     <div className="relative h-full">
       <Editor
         height="100%"
-        path={filePath} // unique model per file
+        path={filePathToUri(filePath)} // model URI = canonical file:// URI (matches LSP server)
         language={language}
         value={content}
         theme={theme}
         onChange={(value) => {
+          const v = value ?? "";
           // Dirty if content diverges from the saved baseline.
-          const dirty = (value ?? "") !== content;
+          const dirty = v !== content;
           ideDirtyTracker.set(filePath, dirty);
+          // Notify the LSP server of the change (debounced). The server needs
+          // the full text (incremental sync isn't worth the complexity here).
+          if (projectPath) {
+            if (changeDebounceRef.current) clearTimeout(changeDebounceRef.current);
+            lspVersionRef.current += 1;
+            const version = lspVersionRef.current;
+            changeDebounceRef.current = setTimeout(() => {
+              void notifyLspChange(projectPath, filePath, language, v, version);
+            }, 300);
+          }
         }}
         onMount={handleEditorMount}
         loading={<div className="text-[11px] text-content-subtle">加载编辑器…</div>}

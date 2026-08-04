@@ -1,17 +1,24 @@
 /**
- * Two-column panel for managing Claude skills (SKILL.md under
- * ~/.claude/skills + <project>/.claude/skills). Lives in the Settings page
- * under "Skills".
+ * Two-column panel for managing Claude skills (SKILL.md). Lives in the Settings
+ * page under "Skills".
+ *
+ * The list shows BOTH project-scoped skills (<project>/.claude/skills) and
+ * global skills (~/.mcode/skills, Mcode's own CLAUDE_CONFIG_DIR). Global skills
+ * are populated by the "Import" feature, which scans external tools (Claude
+ * Code, Codex, Zcode) and copies selected skills into ~/.mcode/skills so they
+ * become available to the SDK (including under custom endpoints). Both kinds
+ * can be viewed, edited, and deleted here; new skills are created as
+ * project-scoped only.
  *
  * ## Layout
  *
  *   ┌─ project selector (dropdown) ──────────────────────────────┐
  *   ├─ left (skill list) ────┬─ right (editor / empty) ──────────┤
- *   │ • pdf       [全局]      │  — editing existing —             │
- *   │ • docx      [全局]      │  full SKILL.md source textarea    │
- *   │ • my-skill  [项目]      │  — or creating new —              │
- *   │ + 新建 Skill            │  name / description / body        │
- *   └─────────────────────────┤  scope (全局/项目) · 保存/删除     │
+ *   │ • pdf       [全局]      │  - editing existing -             │
+ *   │ • my-skill  [项目]      │  full SKILL.md source textarea    │
+ *   │ + 新建 Skill            │  - or creating new -              │
+ *   │ + 导入 Skill            │  name / description / body        │
+ *   └─────────────────────────┤  · 保存/删除                      │
  *                              └───────────────────────────────────┘
  *
  * ## Which project's skills are shown?
@@ -21,10 +28,11 @@
  * workspace. It defaults to the workspace's active project on first open.
  * The project dropdown at the top makes this explicit: project-scoped skills
  * always belong to whichever project is shown there, removing the prior
- * ambiguity where the binding was invisible.
+ * ambiguity where the binding was invisible. Global skills are the same
+ * regardless of which project is selected.
  *
  * The skill list is fetched locally (panelSkills state) keyed on the managed
- * project, NOT read from the session store's `skills` cache — that cache is
+ * project, NOT read from the session store's `skills` cache - that cache is
  * bound to activeProjectId for the composer `/` menu and must not be coupled
  * to this panel's selection. After a mutation, if the managed project happens
  * to be the active one, we also reload the store cache so the `/` menu stays
@@ -36,14 +44,15 @@ import { useCallback, useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
-import { Button, ConfirmDialog } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, Dialog } from "@renderer/components/ui/index.js";
 import {
   IconPlus,
   IconTrash,
   IconSparkles,
   IconLoader2,
+  IconDownload,
 } from "@renderer/lib/icons.js";
-import type { SkillInfo, SkillSource } from "@contracts/ipc";
+import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool } from "@contracts/ipc";
 
 /** Skill name charset — mirrored from the zod schema in the contract. The
  *  editor disables the name field for existing skills, so this only gates the
@@ -67,11 +76,10 @@ interface NewForm {
   name: string;
   description: string;
   body: string;
-  scope: SkillSource;
 }
 
 function emptyNewForm(): NewForm {
-  return { name: "", description: "", body: "", scope: "global" };
+  return { name: "", description: "", body: "" };
 }
 
 /** Selection key for a SkillInfo — stable identity across reloads. */
@@ -109,6 +117,9 @@ export function SkillsPanel() {
     setListLoading(true);
     try {
       const { skills } = await api.skills.list({ projectPath });
+      // Show both project-scoped and global skills. Global skills live under
+      // ~/.mcode/skills (populated by the Import feature) and are editable/
+      // deletable here the same way project skills are.
       setPanelSkills(skills.length ? skills : EMPTY_PANEL_SKILLS);
     } catch (err) {
       console.error("SkillsPanel load failed:", err);
@@ -142,6 +153,8 @@ export function SkillsPanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<SkillInfo | null>(null);
+  // Import dialog open state.
+  const [importOpen, setImportOpen] = useState(false);
 
   // After any mutation: refresh this panel's list, and (if the managed project
   // is also the workspace's active one) refresh the store cache so the
@@ -177,9 +190,7 @@ export function SkillsPanel() {
 
   const startAdd = () => {
     setSelected({ kind: "new" });
-    // Default scope: project when one is being managed (most user-created
-    // skills are project-scoped), else global.
-    setNewForm({ ...emptyNewForm(), scope: projectPath ? "project" : "global" });
+    setNewForm(emptyNewForm());
     setEditContent(null);
     setError(null);
   };
@@ -236,7 +247,7 @@ export function SkillsPanel() {
     try {
       const res = await api.skills.save({
         projectPath,
-        source: newForm.scope,
+        source: "project",
         name,
         content,
       });
@@ -246,7 +257,7 @@ export function SkillsPanel() {
       }
       await refreshAfterMutation();
       // Land on the freshly created skill so the user sees it selected.
-      setSelected({ kind: "skill", source: newForm.scope, name });
+      setSelected({ kind: "skill", source: "project", name });
       setNewForm(null);
       setEditContent(content);
     } catch (err) {
@@ -290,9 +301,9 @@ export function SkillsPanel() {
       <div className="mb-3">
         <h2 className="font-semibold text-content">Skills</h2>
         <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
-          管理 Claude 技能(SKILL.md)。全局 skill 存放在 <code className="rounded bg-surface-muted px-0.5">~/.claude/skills</code>,
-          所有项目可用;项目 skill 存放在所选项目的 <code className="rounded bg-surface-muted px-0.5">.claude/skills</code>,
-          仅该项目可用(同名时覆盖全局)。在输入框输入 <code className="rounded bg-surface-muted px-0.5">/</code> 即可调用。
+          管理 Claude 技能(SKILL.md)。项目 skill 存放在所选项目的 <code className="rounded bg-surface-muted px-0.5">.claude/skills</code>,
+          仅该项目可用。全局 skill 通过「导入」功能从 Claude Code / Codex / Zcode 导入到 <code className="rounded bg-surface-muted px-0.5">~/.mcode/skills</code>,
+          所有项目可用。在输入框输入 <code className="rounded bg-surface-muted px-0.5">/</code> 即可调用。
         </p>
       </div>
 
@@ -362,11 +373,6 @@ export function SkillsPanel() {
                     <span className="truncate text-[0.7857em] font-medium text-content">
                       {s.name}
                     </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[0.7143em] text-content-subtle">
-                      {s.description || "(无描述)"}
-                    </span>
                     <span
                       className={cn(
                         "shrink-0 rounded px-1 text-[9px] leading-tight",
@@ -378,6 +384,11 @@ export function SkillsPanel() {
                       {s.source === "project" ? "项目" : "全局"}
                     </span>
                   </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-[0.7143em] text-content-subtle">
+                      {s.description || "(无描述)"}
+                    </span>
+                  </div>
                 </button>
               );
             })}
@@ -385,11 +396,11 @@ export function SkillsPanel() {
               <div className="px-2 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
                 未发现 skill。
                 <br />
-                在 ~/.claude/skills 安装,或点击下方新建。
+                点击下方「新建」或「导入」。
               </div>
             )}
           </nav>
-          <div className="border-t border-edge p-1.5">
+          <div className="space-y-1.5 border-t border-edge p-1.5">
             <Button
               variant="ghost"
               size="sm"
@@ -399,6 +410,15 @@ export function SkillsPanel() {
             >
               <IconPlus size={12} />
               新建 Skill
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setImportOpen(true)}
+              className="w-full justify-center gap-1"
+            >
+              <IconDownload size={12} />
+              导入 Skill
             </Button>
           </div>
         </aside>
@@ -411,7 +431,6 @@ export function SkillsPanel() {
             <NewSkillForm
               form={newForm}
               setForm={setNewForm}
-              hasProject={!!projectPath}
               saving={saving}
               error={error}
               onSave={() => void saveNew()}
@@ -445,11 +464,8 @@ export function SkillsPanel() {
         danger
         description={
           <>
-            确认删除「{pendingDelete?.name}」(
-            {pendingDelete?.source === "project"
-              ? `项目级 · ${managedProject?.name ?? ""}`
-              : "全局"}
-            )?此操作不可撤销,skill 目录及其下所有文件将被移除。
+            确认删除{pendingDelete?.source === "project" ? "项目" : "全局"} skill「{pendingDelete?.name}」?
+            此操作不可撤销,skill 目录及其下所有文件将被移除。
           </>
         }
         confirmText="删除"
@@ -457,6 +473,13 @@ export function SkillsPanel() {
           if (!open) setPendingDelete(null);
         }}
         onConfirm={() => void confirmDelete()}
+      />
+
+      <ImportSkillsDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        projectPath={projectPath}
+        onImported={() => void refreshAfterMutation()}
       />
     </div>
   );
@@ -553,7 +576,6 @@ function SkillSourceEditor({
 function NewSkillForm({
   form,
   setForm,
-  hasProject,
   saving,
   error,
   onSave,
@@ -561,13 +583,12 @@ function NewSkillForm({
 }: {
   form: NewForm;
   setForm: React.Dispatch<React.SetStateAction<NewForm | null>>;
-  hasProject: boolean;
   saving: boolean;
   error: string | null;
   onSave: () => void;
   onCancel: () => void;
 }) {
-  // Functional updater — guards against null (the form is guaranteed non-null
+  // Functional updater - guards against null (the form is guaranteed non-null
   // while this component is mounted, but the setter type carries | null).
   const update = <K extends keyof NewForm>(key: K, value: NewForm[K]) =>
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -579,6 +600,7 @@ function NewSkillForm({
       </div>
       <p className="mb-2 text-[0.7143em] leading-relaxed text-content-subtle">
         填写名称、描述和正文,保存时会自动生成标准 frontmatter。
+        新建 skill 存放到当前项目的 <code className="rounded bg-surface-muted px-0.5">.claude/skills</code>。
         之后可在编辑模式补充 <code className="rounded bg-surface-muted px-0.5">allowed-tools</code> 等高级字段。
       </p>
 
@@ -606,24 +628,6 @@ function NewSkillForm({
           className={inputCls}
           spellCheck={false}
         />
-      </Field>
-
-      {/* Scope selector: project only available when a project is selected. */}
-      <Field label="存放范围">
-        <div className="flex gap-1.5">
-          <ScopeRadio
-            label="全局 (~/.claude/skills)"
-            active={form.scope === "global"}
-            onClick={() => update("scope", "global")}
-          />
-          <ScopeRadio
-            label="当前项目 (.claude/skills)"
-            active={form.scope === "project"}
-            disabled={!hasProject}
-            title={!hasProject ? "未选择项目" : undefined}
-            onClick={() => hasProject && update("scope", "project")}
-          />
-        </div>
       </Field>
 
       <Field label="正文 (Markdown)">
@@ -656,38 +660,6 @@ function NewSkillForm({
   );
 }
 
-function ScopeRadio({
-  label,
-  active,
-  disabled,
-  title,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  disabled?: boolean;
-  title?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className={cn(
-        "flex-1 rounded border px-2 py-1 text-[0.7143em] transition-colors",
-        active
-          ? "border-accent bg-accent/8 text-accent"
-          : "border-edge text-content-muted hover:bg-surface-hover",
-        disabled && "cursor-not-allowed opacity-40 hover:bg-transparent",
-      )}
-    >
-      {label}
-    </button>
-  );
-}
-
 const inputCls =
   "min-w-0 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
 
@@ -697,5 +669,287 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="mb-0.5 block text-[0.7857em] font-medium text-content-muted">{label}</span>
       {children}
     </label>
+  );
+}
+
+/* ───────── Import Skills Dialog ───────── */
+
+/** Human-readable labels for each external tool. */
+const TOOL_LABELS: Record<SkillTool, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  zcode: "Zcode",
+};
+
+/** Tool badge color classes - each tool gets a distinct tint. */
+const TOOL_BADGE_CLS: Record<SkillTool, string> = {
+  "claude-code": "bg-accent/12 text-accent",
+  codex: "bg-purple-500/15 text-purple-500",
+  zcode: "bg-blue-500/15 text-blue-500",
+};
+
+/** Modal dialog for importing skills from external tools (Claude Code, Codex,
+ *  Zcode) into Mcode's own ~/.mcode/skills directory. On open, scans all
+ *  external sources; presents a grouped, checkbox-selectable list; and copies
+ *  the selected skill directories on confirm. Skills already present at the
+ *  destination are marked and excluded from selection. */
+function ImportSkillsDialog({
+  open,
+  onOpenChange,
+  projectPath,
+  onImported,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  projectPath: string | null;
+  onImported: () => void;
+}) {
+  const [sources, setSources] = useState<ExternalSkillInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [existing, setExisting] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    imported: string[];
+    skipped: string[];
+    errors: Array<{ name: string; error: string }>;
+  } | null>(null);
+
+  // Scan external sources whenever the dialog opens.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    setSelected(new Set());
+    setExisting(new Set());
+    void (async () => {
+      try {
+        // Scan external tools and (if we have a project) fetch the current
+        // global skills to mark already-imported ones as "existing".
+        const promises: [Promise<{ sources: ExternalSkillInfo[] }>, Promise<{ skills: SkillInfo[] }> | null] = [
+          api.skills.scanSources({}),
+          null,
+        ];
+        if (projectPath) {
+          promises[1] = api.skills.list({ projectPath });
+        }
+        const [scanRes, listRes] = await Promise.all(promises);
+        if (cancelled) return;
+        setSources(scanRes.sources);
+        const existingNames = new Set<string>();
+        if (listRes) {
+          for (const s of listRes.skills) {
+            if (s.source === "global") existingNames.add(s.name);
+          }
+        }
+        setExisting(existingNames);
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectPath]);
+
+  // Selection key is sourcePath (unique per skill per tool).
+  const toggle = (sourcePath: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sourcePath)) next.delete(sourcePath);
+      else next.add(sourcePath);
+      return next;
+    });
+  };
+
+  // Group sources by tool for display.
+  const grouped = sources.reduce<Record<SkillTool, ExternalSkillInfo[]>>(
+    (acc, s) => {
+      (acc[s.tool] ??= []).push(s);
+      return acc;
+    },
+    {} as Record<SkillTool, ExternalSkillInfo[]>,
+  );
+  const toolOrder: SkillTool[] = ["claude-code", "codex", "zcode"];
+
+  const selectedCount = selected.size;
+
+  const doImport = async () => {
+    if (selectedCount === 0) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const items = sources
+        .filter((s) => selected.has(s.sourcePath))
+        .map((s) => ({ sourcePath: s.sourcePath, name: s.name }));
+      const res = await api.skills.import({ skills: items });
+      setResult(res);
+      setSelected(new Set());
+      // Refresh the existing set so imported skills show as "already present".
+      setExisting((prev) => {
+        const next = new Set(prev);
+        for (const name of res.imported) next.add(name);
+        return next;
+      });
+      onImported();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const close = () => {
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Backdrop />
+        <Dialog.Popup className="flex max-h-[80vh] w-[560px] flex-col p-0">
+          <Dialog.Title className="px-4 pt-4">导入 Skill</Dialog.Title>
+          <Dialog.Description className="px-4 pt-1">
+            从 Claude Code / Codex / Zcode 导入 skill 到{" "}
+            <code className="rounded bg-surface-muted px-0.5">~/.mcode/skills</code>
+          </Dialog.Description>
+          <Dialog.Close />
+
+          {/* Body: scrollable skill list */}
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+            {loading ? (
+              <div className="flex items-center justify-center gap-2 py-8 text-[0.7857em] text-content-subtle">
+                <IconLoader2 size={14} className="animate-spin" />
+                扫描中…
+              </div>
+            ) : sources.length === 0 ? (
+              <div className="py-8 text-center text-[0.7857em] leading-relaxed text-content-subtle">
+                未发现可导入的 skill。
+                <br />
+                请先在 Claude Code / Codex / Zcode 中安装 skill。
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {toolOrder.map((tool) => {
+                  const items = grouped[tool];
+                  if (!items || items.length === 0) return null;
+                  return (
+                    <div key={tool}>
+                      <div className="mb-1 flex items-center gap-1.5">
+                        <span
+                          className={cn(
+                            "rounded px-1.5 py-0.5 text-[10px] font-medium",
+                            TOOL_BADGE_CLS[tool],
+                          )}
+                        >
+                          {TOOL_LABELS[tool]}
+                        </span>
+                        <span className="text-[0.7143em] text-content-subtle">
+                          {items.length} 个 skill
+                        </span>
+                      </div>
+                      <div className="space-y-0.5">
+                        {items.map((s) => {
+                          const isExisting = existing.has(s.name);
+                          const isChecked = selected.has(s.sourcePath);
+                          return (
+                            <label
+                              key={s.sourcePath}
+                              className={cn(
+                                "flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 transition-colors",
+                                isExisting
+                                  ? "opacity-50"
+                                  : isChecked
+                                    ? "bg-accent/8"
+                                    : "hover:bg-surface-hover/60",
+                              )}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                disabled={isExisting}
+                                onChange={() => toggle(s.sourcePath)}
+                                className="mt-0.5 shrink-0"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1">
+                                  <span className="truncate text-[0.7857em] font-medium text-content">
+                                    {s.name}
+                                  </span>
+                                  {isExisting && (
+                                    <span className="shrink-0 rounded bg-surface-hover px-1 text-[9px] text-content-subtle">
+                                      已存在
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="truncate text-[0.7143em] text-content-subtle">
+                                  {s.description || "(无描述)"}
+                                </p>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Import result summary */}
+            {result && (
+              <div className="mt-3 rounded border border-edge bg-surface/40 p-2 text-[0.7143em]">
+                {result.imported.length > 0 && (
+                  <p className="text-accent">
+                    已导入 {result.imported.length} 个: {result.imported.join(", ")}
+                  </p>
+                )}
+                {result.skipped.length > 0 && (
+                  <p className="text-content-subtle">
+                    跳过 {result.skipped.length} 个(已存在): {result.skipped.join(", ")}
+                  </p>
+                )}
+                {result.errors.length > 0 && (
+                  <p className="text-danger">
+                    失败 {result.errors.length} 个:{" "}
+                    {result.errors.map((e) => `${e.name}(${e.error})`).join("; ")}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {error && (
+              <div className="mt-2 text-[0.7857em] text-danger">{error}</div>
+            )}
+          </div>
+
+          {/* Footer: selected count + actions */}
+          <div className="flex items-center gap-2 border-t border-edge px-4 py-3">
+            <span className="text-[0.7143em] text-content-subtle">
+              {selectedCount > 0 ? `已选 ${selectedCount} 个` : ""}
+            </span>
+            <div className="flex-1" />
+            <Button variant="ghost" size="sm" onClick={close} disabled={importing}>
+              {result ? "关闭" : "取消"}
+            </Button>
+            {!result && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void doImport()}
+                disabled={importing || selectedCount === 0}
+              >
+                {importing ? "导入中…" : `导入${selectedCount > 0 ? ` (${selectedCount})` : ""}`}
+              </Button>
+            )}
+          </div>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

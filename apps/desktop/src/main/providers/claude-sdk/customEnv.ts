@@ -66,6 +66,17 @@
 import type { ApiConfig, RoleBindings, RoleBinding, CustomModelRoleKey } from "@contracts/customModel";
 import { CUSTOM_MODEL_ROLES } from "@contracts/customModel";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import { homedir } from "node:os";
+import path from "node:path";
+
+/** Mcode's own Claude config directory. We always set CLAUDE_CONFIG_DIR to
+ *  this path so the bundled claude binary reads its user-level config
+ *  (settings.json, skills/, commands/) from here instead of ~/.claude.
+ *  This decouples Mcode from the user's Claude Code CLI installation: tools
+ *  like "cc switch" that overwrite ~/.claude/settings.json no longer affect
+ *  Mcode's turns, and user-level skills live under ~/.mcode/skills where
+ *  Mcode's import feature places them. */
+export const MCODE_CONFIG_DIR = path.join(homedir(), ".mcode");
 
 /** Map each role key to the env var the claude binary reads for that tier. */
 const ROLE_ENV_VAR: Record<CustomModelRoleKey, string> = {
@@ -222,6 +233,15 @@ export function buildCustomEnv(cfg: ApiConfig): NonNullable<Options["env"]> {
   if (cfg.timeoutMs && cfg.timeoutMs > 0) {
     env.API_TIMEOUT_MS = String(cfg.timeoutMs);
   }
+
+  // Always redirect the claude binary's user-level config root to Mcode's
+  // own directory (~/.mcode). This is the key mechanism that makes user-level
+  // skills load on custom endpoints: with the config root moved here, the
+  // binary's user skill auto-load scans ~/.mcode/skills/ (where Mcode's import
+  // feature places skills) instead of ~/.claude/skills/. It also means the
+  // cc-switch-controlled ~/.claude/settings.json is never read, so we no
+  // longer need to drop "user" from settingSources to protect the env.
+  env.CLAUDE_CONFIG_DIR = MCODE_CONFIG_DIR;
 
   return env;
 }

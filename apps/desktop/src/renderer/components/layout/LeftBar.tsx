@@ -38,6 +38,7 @@ import {
   IconPalette,
 } from "@renderer/lib/icons.js";
 import { Button, ConfirmDialog, Dialog, Input } from "@renderer/components/ui/index.js";
+import { BrandLogo } from "./BrandLogo.js";
 import { api } from "@renderer/lib/api.js";
 import { hexToTriplet, tripletToHex } from "@renderer/lib/colorUtils.js";
 import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
@@ -396,6 +397,33 @@ export function LeftBar() {
 
   return (
     <div className="flex h-full flex-col px-2 py-2 [font-size:var(--right-panel-font-size)]">
+      {/* Brand header — 应用名称与 logo,置于项目列表之上。
+          点击打开设置(与底部「设置」入口一致,顶部作为身份锚点)。 */}
+      <button
+        type="button"
+        onClick={() => setSettingsOpen(true)}
+        className={cn(
+          "group mb-2 flex items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors",
+          "hover:bg-surface-muted/60",
+        )}
+        title="关于 Mcode"
+      >
+        <BrandLogo size={30} />
+        <span className="flex min-w-0 flex-col leading-tight">
+          <span className="flex items-baseline gap-1">
+            <span className="truncate text-[1.07em] font-semibold tracking-tight text-content">
+              Mcode
+            </span>
+            <span className="text-content-subtle/70 [font-size:var(--rp-fs-sm)]">
+              my Code
+            </span>
+          </span>
+          <span className="truncate text-content-subtle [font-size:var(--rp-fs-sm)]">
+            智能编码工作台
+          </span>
+        </span>
+      </button>
+
       {/* Header */}
       <div className="group mb-1 flex items-center justify-between px-1">
         <h3 className="font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--rp-fs-md)]">

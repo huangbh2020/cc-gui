@@ -16,17 +16,23 @@ import { useSessionStore } from "./stores/sessionStore.js";
 import { useTheme } from "./lib/theme.js";
 import { useChatAppearance, useRightPanelAppearance } from "./lib/appearance.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
-import { PlanViewer } from "./components/chat/PlanViewer.js";
 
-// Lazy-load the Monaco-backed editor and git-diff dialog so the large
+// Lazy-load the Monaco-backed editor, diff dialog and plan viewer so the large
 // monaco-editor library (and its web workers) stay out of the initial renderer
-// chunk. Both are only needed once the user opens a file or a diff dialog -
-// well after first paint. Vite splits them into separate chunks automatically.
+// chunk. PlanViewer statically imports monacoSetup.ts (the worker bootstrap),
+// so an eager import here would pull all of Monaco into the first-paint
+// critical path — exactly the slowness lazy-loading FileEditor was meant to
+// avoid. All three are only needed once the user opens a file, a diff dialog
+// or the plan tab — well after first paint. Vite splits them into separate
+// chunks automatically.
 const FileEditor = lazy(() =>
   import("./components/ide/FileEditor.js").then((m) => ({ default: m.FileEditor })),
 );
 const GitDiffDialog = lazy(() =>
   import("./components/ide/GitDiffDialog.js").then((m) => ({ default: m.GitDiffDialog })),
+);
+const PlanViewer = lazy(() =>
+  import("./components/chat/PlanViewer.js").then((m) => ({ default: m.PlanViewer })),
 );
 
 export function App() {
@@ -306,12 +312,20 @@ function EditorColumn({ filePath }: { filePath: string | null }) {
       {editorMode === "tabs" && <OpenTabsBar />}
       <div className="min-h-0 flex-1">
         {showPlan ? (
-          <PlanViewer
-            plan={planText!}
-            sessionId={activeSessionId!}
-            isApprovalPending={planApprovalPending}
-            onClose={() => activeSessionId && closePlanDrawer(activeSessionId)}
-          />
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-content-subtle">
+                加载编辑器…
+              </div>
+            }
+          >
+            <PlanViewer
+              plan={planText!}
+              sessionId={activeSessionId!}
+              isApprovalPending={planApprovalPending}
+              onClose={() => activeSessionId && closePlanDrawer(activeSessionId)}
+            />
+          </Suspense>
         ) : filePath && projectPath ? (
           <Suspense
             fallback={

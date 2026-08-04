@@ -1,0 +1,455 @@
+/**
+ * Monaco language-provider bridge for LSP.
+ *
+ * Registers `definition`, `references`, and `hover` providers on Monaco
+ * language ids; each provider forwards the request to the main-process
+ * `LspManager` via `api.lsp.request` and translates the LSP response back into
+ * Monaco types. Also exposes a diagnostics hook that subscribes to the
+ * `lsp:event` push channel and applies `publishDiagnostics` to the model.
+ *
+ * Coordinate convention: LSP positions are 0-based (line/character); Monaco
+ * positions are 1-based (lineNumber/column). Every conversion happens here so
+ * the rest of the editor never sees LSP coordinates.
+ *
+ * Providers are registered once per language id (Monaco dedupes), guarded by a
+ * module-level Set so re-mounting EditPane doesn't double-register. Each
+ * registration returns an `IDisposable`; we keep them for the app lifetime
+ * (cheap - they just hold a closure).
+ */
+import type { editor, languages, IDisposable, IRange, MarkerSeverity, Uri } from "monaco-editor";
+import type { LspDiagnostic, LspLanguageId } from "@contracts/ipc";
+import { api } from "@renderer/lib/api.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useEffect, useRef } from "react";
+
+/** Map a Monaco language id to the LSP language id we route requests through.
+ *  TS server handles both typescript + javascript, so both map to "typescript". */
+function monacoLanguageToLsp(languageId: string): LspLanguageId | null {
+  switch (languageId) {
+    case "typescript":
+    case "javascript":
+      return "typescript";
+    case "python":
+      return "python";
+    case "go":
+      return "go";
+    case "java":
+      return "java";
+    default:
+      return null;
+  }
+}
+
+/** Languages we've already registered providers for (Monaco registers per
+ *  language id globally, not per model). */
+const registeredLanguages = new Set<string>();
+
+/** Disposers for all registered providers (kept for app lifetime). */
+const providerDisposers: IDisposable[] = [];
+
+/** Register definition/references/hover providers for `languageId` if not
+ *  already registered. Returns nothing; disposers are retained internally. */
+export function ensureLspProviders(
+  monaco: typeof import("monaco-editor"),
+  languageId: string,
+): void {
+  if (registeredLanguages.has(languageId)) return;
+  const lspLang = monacoLanguageToLsp(languageId);
+  if (!lspLang) return;
+  registeredLanguages.add(languageId);
+
+  /** Resolve the workspace root for the currently-active project. The LSP
+   *  server was spawned with this root; requests must carry it so the manager
+   *  routes to the right server. */
+  const workspacePath = (): string | null => {
+    const s = useSessionStore.getState();
+    const pid = s.activeProjectId;
+    if (!pid) return null;
+    return s.projects.find((p) => p.id === pid)?.path ?? null;
+  };
+
+  /** Forward an LSP request to main and return the result (or null on error). */
+  const lspRequest = async (method: string, params: unknown): Promise<unknown> => {
+    const wp = workspacePath();
+    if (!wp) return null;
+    const res = await api.lsp.request({
+      workspacePath: wp,
+      language: lspLang,
+      method,
+      params,
+    });
+    if ("error" in res) {
+      // Silent - the server may not support this method or the position may
+      // have no definition. Log to console for debugging.
+      console.debug(`lsp.request ${method} failed:`, res.error.message);
+      return null;
+    }
+    return res.result;
+  };
+
+  // textDocument/definition. When the target is in a different file, we open
+  // it via the store (which mounts the EditPane + reveals the line) and return
+  // null so Monaco doesn't try to navigate to a model that doesn't exist yet.
+  // When the target is the same file, we return the Location so Monaco handles
+  // the in-file scroll natively (smoother, keeps cursor history).
+  providerDisposers.push(
+    monaco.languages.registerDefinitionProvider(languageId, {
+      provideDefinition: async (model, position) => {
+        const docUri = modelToLspUri(model);
+        const result = await lspRequest("textDocument/definition", {
+          textDocument: { uri: docUri },
+          position: toLspPosition(position),
+        });
+        const locs = toMonacoLocations(result, monaco);
+        if (!locs || locs.length === 0) return null;
+        // Extract the path from the RAW LSP result (not from Monaco's Uri,
+        // which lowercases the Windows drive letter). This preserves the
+        // original case so openFileInIde's path matches the store.
+        const firstRaw = firstRawLocation(result);
+        if (firstRaw) {
+          const targetPath = uriToFilePath(decodeURIComponentSafe(firstRaw.uri));
+          const currentPath = uriToFilePath(decodeURIComponentSafe(docUri));
+          if (targetPath !== currentPath) {
+            // Cross-file: open via the store.
+            gotoLocation(
+              targetPath,
+              firstRaw.range.start.line + 1,
+              firstRaw.range.start.character + 1,
+            );
+            return null;
+          }
+        }
+        // Same-file (or raw extraction failed): return locations so Monaco
+        // navigates natively.
+        return locs;
+      },
+    }),
+  );
+
+  // textDocument/references
+  providerDisposers.push(
+    monaco.languages.registerReferenceProvider(languageId, {
+      provideReferences: async (model, position) => {
+        const result = await lspRequest("textDocument/references", {
+          textDocument: { uri: modelToLspUri(model) },
+          position: toLspPosition(position),
+          context: { includeDeclaration: true },
+        });
+        return toMonacoLocations(result, monaco);
+      },
+    }),
+  );
+
+  // textDocument/hover
+  providerDisposers.push(
+    monaco.languages.registerHoverProvider(languageId, {
+      provideHover: async (model, position) => {
+        const result = await lspRequest("textDocument/hover", {
+          textDocument: { uri: modelToLspUri(model) },
+          position: toLspPosition(position),
+        });
+        return toMonacoHover(result, monaco);
+      },
+    }),
+  );
+}
+
+/* ──────────────────────── coordinate / type conversion ──────────────────────── */
+
+function toLspPosition(p: { lineNumber: number; column: number }): {
+  line: number;
+  character: number;
+} {
+  return { line: p.lineNumber - 1, character: p.column - 1 };
+}
+
+/** LSP Location[] -> Monaco Location[] (for both definition + references). */
+function toMonacoLocations(
+  result: unknown,
+  monaco: typeof import("monaco-editor"),
+): languages.Location[] | null {
+  if (!result) return null;
+  if (isLocation(result)) {
+    return [locationToMonaco(result, monaco)];
+  }
+  if (Array.isArray(result)) {
+    const locs = result.filter(isLocation).map((l) => locationToMonaco(l, monaco));
+    return locs.length > 0 ? locs : null;
+  }
+  return null;
+}
+
+interface LspLocation {
+  uri: string;
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+}
+
+function isLocation(v: unknown): v is LspLocation {
+  return (
+    !!v &&
+    typeof v === "object" &&
+    typeof (v as LspLocation).uri === "string" &&
+    !!(v as LspLocation).range
+  );
+}
+
+/** Extract the first LspLocation from a raw LSP definition/references result.
+ *  Works with both a single Location and a Location[]. Returns null if the
+ *  result doesn't contain a usable location. */
+function firstRawLocation(result: unknown): LspLocation | null {
+  if (isLocation(result)) return result;
+  if (Array.isArray(result)) {
+    return result.find(isLocation) ?? null;
+  }
+  return null;
+}
+
+/** decodeURIComponent that returns the input unchanged on failure (some LSP
+ *  servers send URIs with characters that throw). */
+function decodeURIComponentSafe(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+function locationToMonaco(
+  loc: LspLocation,
+  monaco: typeof import("monaco-editor"),
+): languages.Location {
+  return {
+    uri: monaco.Uri.parse(loc.uri) as Uri,
+    range: lspRangeToMonaco(loc.range, monaco),
+  };
+}
+
+function lspRangeToMonaco(
+  range: { start: { line: number; character: number }; end: { line: number; character: number } },
+  monaco: typeof import("monaco-editor"),
+): IRange {
+  return new monaco.Range(
+    range.start.line + 1,
+    range.start.character + 1,
+    range.end.line + 1,
+    range.end.character + 1,
+  );
+}
+
+interface LspHover {
+  contents:
+    | string
+    | { language?: string; value: string }
+    | Array<string | { language?: string; value: string }>;
+  range?: { start: { line: number; character: number }; end: { line: number; character: number } };
+}
+
+function toMonacoHover(
+  result: unknown,
+  monaco: typeof import("monaco-editor"),
+): languages.Hover | null {
+  if (!result) return null;
+  const hover = result as LspHover;
+  // Monaco wants IMarkdownString[] for `contents`.
+  const contents = Array.isArray(hover.contents) ? hover.contents : [hover.contents];
+  const mdContents = contents.map((c) => {
+    if (typeof c === "string") return { value: c };
+    if (c && typeof c === "object" && "value" in c) {
+      return c.language
+        ? { value: "```" + c.language + "\n" + c.value + "\n```" }
+        : { value: c.value };
+    }
+    return { value: String(c) };
+  });
+  return {
+    contents: mdContents,
+    range: hover.range ? lspRangeToMonaco(hover.range, monaco) : undefined,
+  };
+}
+
+/* ──────────────────────── diagnostics subscription hook ──────────────────────── */
+
+/** Severity mapping LSP (1=Error..4=Hint) -> Monaco MarkerSeverity. */
+function lspSeverityToMonaco(sev: number, monaco: typeof import("monaco-editor")): MarkerSeverity {
+  switch (sev) {
+    case 1:
+      return monaco.MarkerSeverity.Error;
+    case 2:
+      return monaco.MarkerSeverity.Warning;
+    case 3:
+      return monaco.MarkerSeverity.Info;
+    case 4:
+      return monaco.MarkerSeverity.Hint;
+    default:
+      return monaco.MarkerSeverity.Error;
+  }
+}
+
+/** React hook: subscribe to `lsp:event` diagnostics for `filePath`'s model and
+ *  apply them as Monaco markers. Clears markers on unmount. Returns nothing;
+ *  the side effect is on the model.
+ *
+ *  The model is created with `path={filePathToUri(filePath)}` (a `file://`
+ *  URI), so `Uri.parse(filePathToUri(filePath))` finds it, and the server's
+ *  diagnostics `uri` (also a `file://` URI) matches directly. */
+export function useLspDiagnostics(
+  filePath: string,
+  getMonaco: () => typeof import("monaco-editor") | null,
+  getEditor: () => editor.IStandaloneCodeEditor | null,
+): void {
+  const versionRef = useRef(0);
+  useEffect(() => {
+    const monaco = getMonaco();
+    if (!monaco) return;
+    const lspUri = filePathToUri(filePath);
+    const modelUri = monaco.Uri.parse(lspUri);
+    const unsub = api.on.lspEvent((msg) => {
+      if (msg.type !== "diagnostics") return;
+      const payload = msg.payload as { uri: string; diagnostics: LspDiagnostic[] };
+      if (payload.uri !== lspUri) return;
+      const model = monaco.editor.getModel(modelUri);
+      if (!model) return;
+      const markers = payload.diagnostics.map((d) => ({
+        startLineNumber: d.range.start.line + 1,
+        startColumn: d.range.start.character + 1,
+        endLineNumber: d.range.end.line + 1,
+        endColumn: d.range.end.character + 1,
+        message: d.message,
+        severity: lspSeverityToMonaco(d.severity, monaco),
+        source: d.source,
+      }));
+      monaco.editor.setModelMarkers(model, "lsp", markers);
+      versionRef.current++;
+    });
+    return () => {
+      unsub();
+      // Clear markers when the file closes.
+      const m = monaco.editor.getModel(modelUri);
+      if (m) monaco.editor.setModelMarkers(m, "lsp", []);
+    };
+  }, [filePath, getMonaco, getEditor]);
+}
+
+/* ──────────────────────── uri helper (mirrors LspManager) ──────────────────────── */
+
+/** Convert an absolute file path to a `file://` URI. Must match the main
+ *  process's `filePathToUri` so diagnostics URIs line up with model URIs.
+ *  Exported so FileEditor can use it as the Monaco model `path` prop -- this
+ *  ensures `model.uri.toString()` yields the same `file://` URI the server
+ *  uses, avoiding a URI-mismatch bug where Monaco would otherwise parse a bare
+ *  Windows path as a `d:`-scheme URI. */
+export function filePathToUri(p: string): string {
+  const norm = p.replace(/\\/g, "/");
+  const prefixed = /^[a-zA-Z]:/.test(norm) ? `/${norm}` : norm;
+  return `file://${prefixed}`;
+}
+
+/** Inverse of filePathToUri: `file:///c:/foo.ts` -> `C:\foo\bar.ts` (Windows,
+ *  with native backslashes + UPPERCASE drive letter) or `/home/foo.ts` (POSIX).
+ *  Used to turn a cross-file definition Location's URI back into a filesystem
+ *  path for openFileInIde -- the path must match the OS-native form stored in
+ *  the session store (file tree uses backslashes + uppercase drive on Windows).
+ *  The drive letter is uppercased because Monaco/LSP may lowercase it, but the
+ *  file tree + store preserve the user's original casing. */
+function uriToFilePath(uri: string): string {
+  let p = uri.replace(/^file:\/\//, "");
+  // Windows: leading `/c:/` -> `c:/`, then uppercase the drive letter.
+  p = p.replace(/^\/([a-zA-Z]):/, (_, letter) => letter.toUpperCase() + ":");
+  // Windows: convert forward slashes to backslashes to match the OS-native
+  // paths the file tree + session store use. Detect Windows by drive letter.
+  if (/^[a-zA-Z]:/.test(p)) {
+    p = p.replace(/\//g, "\\");
+  }
+  return p;
+}
+
+/** Convert a Monaco model's URI to the canonical `file://` URI the LSP server
+ *  expects. Since FileEditor creates models with `path={filePathToUri(filePath)}`
+ *  (a `file://` URI), `model.uri.toString()` already yields the canonical form.
+ *  The fsPath fallback exists for safety in case a model was created with a
+ *  bare path (e.g. legacy code or test harnesses). */
+function modelToLspUri(model: { uri: Uri }): string {
+  const uriStr = model.uri.toString();
+  if (uriStr.startsWith("file:")) return uriStr;
+  // Fallback: bare path model -- re-encode via fsPath.
+  const fsPath = (model.uri as unknown as { fsPath?: string }).fsPath;
+  if (fsPath) return filePathToUri(fsPath);
+  return uriStr;
+}
+
+/* ──────────────────────── document sync helpers ──────────────────────── */
+
+/** Open a document in the LSP server (didOpen). Called from EditPane onMount.
+ *  Resolves silently on failure (server not enabled / not installed) so the
+ *  editor still works without LSP. */
+export async function openLspDocument(
+  workspacePath: string,
+  filePath: string,
+  languageId: string,
+): Promise<void> {
+  const lspLang = monacoLanguageToLsp(languageId);
+  if (!lspLang) return;
+  try {
+    await api.lsp.openDocument({ workspacePath, filePath, language: lspLang });
+  } catch (err) {
+    console.debug("lsp.openDocument failed:", err);
+  }
+}
+
+/** Notify the server of a content change (didChange). Debounce in the caller. */
+export async function notifyLspChange(
+  workspacePath: string,
+  filePath: string,
+  languageId: string,
+  text: string,
+  version: number,
+): Promise<void> {
+  const lspLang = monacoLanguageToLsp(languageId);
+  if (!lspLang) return;
+  try {
+    await api.lsp.didChange({ workspacePath, filePath, text, version });
+  } catch (err) {
+    console.debug("lsp.didChange failed:", err);
+  }
+}
+
+/** Notify the server of a save (didSave). */
+export async function notifyLspSave(
+  workspacePath: string,
+  filePath: string,
+  languageId: string,
+  text: string,
+): Promise<void> {
+  const lspLang = monacoLanguageToLsp(languageId);
+  if (!lspLang) return;
+  try {
+    await api.lsp.didSave({ workspacePath, filePath, text });
+  } catch (err) {
+    console.debug("lsp.didSave failed:", err);
+  }
+}
+
+/** Close a document (didClose). Called from EditPane unmount. */
+export async function closeLspDocument(
+  workspacePath: string,
+  filePath: string,
+): Promise<void> {
+  try {
+    await api.lsp.closeDocument({ workspacePath, filePath });
+  } catch (err) {
+    console.debug("lsp.closeDocument failed:", err);
+  }
+}
+
+/** Goto-definition navigation helper: open `filePath` at (line, column) in the
+ *  IDE editor via the store, which triggers the EditPane reveal effect. */
+export function gotoLocation(
+  filePath: string,
+  line: number,
+  character: number,
+): void {
+  useSessionStore.getState().openFileInIde(filePath, {
+    line: line + 1, // LSP 0-based -> 1-based
+    column: character + 1,
+  });
+}

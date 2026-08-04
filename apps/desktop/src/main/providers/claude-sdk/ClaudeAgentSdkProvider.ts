@@ -17,7 +17,7 @@ import type {
 } from "@contracts/provider";
 import type { AskUserQuestionItem, PermissionMode } from "@contracts/runtime";
 import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
-import { buildCustomEnv } from "./customEnv.js";
+import { buildCustomEnv, MCODE_CONFIG_DIR } from "./customEnv.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { resolveSdkBinaryPath } from "./sdkBinaryPath.js";
 
@@ -146,61 +146,42 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // version control.
     options.settings = { plansDirectory: ".claude/plans" };
 
-    // Custom endpoint injection: when the host provides apiConfig, route this
-    // turn to the user's Anthropic-compatible endpoint by setting the SDK env.
+    // Always redirect the claude binary's user-level config root to Mcode's
+    // own directory (~/.mcode) via CLAUDE_CONFIG_DIR. This decouples Mcode from
+    // the user's Claude Code CLI installation: tools like "cc switch" that
+    // overwrite ~/.claude/settings.json no longer affect Mcode's turns, and
+    // user-level skills are loaded from ~/.mcode/skills/ (where Mcode's import
+    // feature places them). Applied to BOTH the standard and custom-endpoint
+    // paths so behavior is consistent.
     //
-    // The model id is driven through ANTHROPIC_MODEL (set inside buildCustomEnv
-    // from the selected role's requestModel, with the `[1m]` suffix when the
-    // role declares supports1m). We deliberately do NOT also set options.model
-    // here: for a custom config the session's `model` field is a ROLE KEY
-    // (e.g. "fable"), not a model id, and the binary already reads
-    // ANTHROPIC_MODEL as its native model-override channel (verified in the
-    // bundled binary's env-var allowlist). Driving both channels risks them
-    // disagreeing (one bare, one suffixed) which produced "selected model may
-    // not exist" failures against third-party gateways. ANTHROPIC_MODEL alone
-    // matches DeepSeek's official Claude Code integration config.
-    //
-    // buildCustomEnv spreads process.env first (the SDK's env REPLACES the
-    // subprocess env, so PATH/HOME/etc. must survive) then layers on auth,
-    // per-tier background bindings, ANTHROPIC_MODEL, and non-essential-traffic
-    // flags per the config.
+    // The SDK's Options.env REPLACES the subprocess env entirely (per sdk.d.ts),
+    // so we always spread process.env first - otherwise PATH/HOME disappear and
+    // the binary can't boot.
     if (req.apiConfig) {
+      // Custom endpoint: buildCustomEnv layers on auth, per-tier model bindings,
+      // and CLAUDE_CONFIG_DIR on top of process.env.
       options.env = buildCustomEnv(req.apiConfig);
+    } else {
+      // Standard Anthropic endpoint: still redirect the config root so Mcode
+      // manages its own skills/settings, but no auth/model overrides needed.
+      options.env = { ...process.env, CLAUDE_CONFIG_DIR: MCODE_CONFIG_DIR };
+    }
 
-      // CRITICAL: stop the bundled binary from reading ~/.claude/settings.json
-      // and clobbering the env we just built.
-      //
-      // The claude binary re-reads filesystem settings AFTER spawn (function
-      // Lft() inside claude.exe) and UNCONDITIONALLY overwrites process.env
-      // with each settings source's `env` field — including
-      // ~/.claude/settings.json (the "user" source). Tools like "cc switch"
-      // (Claude Code Switch) write their active provider config to that file's
-      // `env` block. So if cc switch currently points at, say, a MiniMax
-      // gateway, those ANTHROPIC_BASE_URL / ANTHROPIC_DEFAULT_*_MODEL values
-      // overwrite our DeepSeek routing mid-boot, and the turn is sent to the
-      // wrong endpoint with the wrong model name → gateway 404 "model may not
-      // exist". This is exactly why a custom model only worked when cc switch
-      // happened to be pointed at the SAME provider.
-      //
-      // The SDK exposes an official escape hatch: `settingSources` (→ the
-      // `--setting-sources` CLI flag). Omitting it defaults to
-      // ['user','project','local'] (CLI defaults), which includes the cc-switch
-      // file. We pass ['project','local'] to SKIP the user-level file while
-      // still loading project-level .claude/settings.json and CLAUDE.md (the
-      // docstring notes `project` is required for CLAUDE.md). Project settings
-      // are repo-scoped and intentional, so they're safe to keep; only the
-      // global user file (cc switch's territory) is excluded.
-      //
-      // Only applied when apiConfig is set: the default Anthropic path leaves
-      // settingSources untouched so normal ~/.claude/settings.json use (auth,
-      // prefs) keeps working as the CLI intends.
-      options.settingSources = ["project", "local"];
+    // NOTE: we do NOT set `settingSources` here. The default
+    // ["user","project","local"] is safe because CLAUDE_CONFIG_DIR points at
+    // ~/.mcode - the cc-switch-controlled ~/.claude/settings.json is never
+    // read (the config root moved). The "user" source now resolves to
+    // ~/.mcode/settings.json (which Mcode controls), and user-level skills
+    // under ~/.mcode/skills/ are discovered by the binary's auto-load. The
+    // previous settingSources:["project","local"] workaround is no longer
+    // needed and was actively harmful: it disabled user-level skill discovery.
 
-      // Diagnostic: dump the effective env actually handed to the SDK
-      // subprocess, so model-routing failures against third-party gateways can
-      // be triaged without a packet capture. Only the Anthropic-* / Claude-*
-      // vars matter for routing; PATH/HOME/etc are filtered out for brevity.
-      // Mask the auth token (keep first 2 / last 4) — never log cleartext.
+    // Diagnostic: dump the effective env actually handed to the SDK
+    // subprocess, so model-routing failures against third-party gateways can
+    // be triaged without a packet capture. Only the Anthropic-* / Claude-*
+    // vars matter for routing; PATH/HOME/etc are filtered out for brevity.
+    // Mask the auth token (keep first 2 / last 4) - never log cleartext.
+    if (req.apiConfig) {
       const diagEnv: Record<string, string | undefined> = {};
       const diagKeys = [
         "ANTHROPIC_BASE_URL",
@@ -222,7 +203,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       const tok = e.ANTHROPIC_AUTH_TOKEN ?? e.ANTHROPIC_API_KEY;
       diagEnv.__authTokenMasked = tok ? `${tok.slice(0, 2)}***${tok.slice(-4)} (mode=${e.ANTHROPIC_API_KEY ? "api_key" : "auth_token"})` : "(none)";
       ctx.log.info(
-        `claude custom env: selectedRole=${req.apiConfig.selectedRole} settingSources=${JSON.stringify(options.settingSources)} betas=${JSON.stringify(options.betas ?? null)} env=${JSON.stringify(diagEnv)}`,
+        `claude custom env: selectedRole=${req.apiConfig.selectedRole} betas=${JSON.stringify(options.betas ?? null)} env=${JSON.stringify(diagEnv)}`,
       );
     }
 

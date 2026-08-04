@@ -50,6 +50,7 @@ import {
   type SkillInfo,
   type ShortcutBindings,
   type Accelerator,
+  type LspLanguageState,
 } from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
 
@@ -601,6 +602,19 @@ export interface SessionState {
    *  the visibility toggle. */
   ideFocusNonce: number;
 
+  /** Pending goto-definition reveal target. When non-null, the EditPane for
+   *  `filePath` should scroll to (line, column) and place the caret there on
+   *  mount/nonce-bump, then clear this. Driven by `openFileInIde` line/col. */
+  idePendingReveal: { filePath: string; line: number; column: number } | null;
+  /** Monotonic counter bumped whenever idePendingReveal is set, so an
+   *  already-mounted EditPane re-runs its reveal effect. */
+  ideRevealNonce: number;
+
+  /** Language server states, hydrated from `api.lsp.list()` in initDeferred.
+   *  Empty array until first load completes. Not persisted (re-fetched each
+   *  startup from the main process). */
+  lspLanguages: LspLanguageState[];
+
   /** True once `init()` has started - guards against React StrictMode's
    *  double-effect in dev firing init twice. */
   _initStarted: boolean;
@@ -758,6 +772,11 @@ export interface SessionState {
   setEffort: (effort: EffortLevel) => void;
   setCustomModel: (id: string | null, model?: string) => void;
   reloadCustomModels: () => Promise<void>;
+  /** Re-fetch language server states from main. Called on init and after any
+   *  lsp mutation (install/toggle/setPath). Best-effort; failures are logged
+   *  and leave the existing state. Also re-applies the TS-Worker diagnostic
+   *  suppression when the typescript server is enabled. */
+  reloadLspLanguages: () => Promise<void>;
   /** Re-fetch the skill list for the active project from main (scans
    *  ~/.claude/skills + the project's .claude/skills). Safe to call anytime;
    *  no-op silently when there is no active project. */
@@ -854,9 +873,15 @@ export interface SessionState {
   removeCustomCommand: (projectId: string, id: string) => void;
   /** Open a file in the Monaco editor (dedup + append to ideOpenFiles, set
    *  active). `opts.diff` opens it in diff mode (used by the 审查 button when
-   *  a before-snapshot exists). Also bumps ideFocusNonce so App opens the
-   *  right panel if it's collapsed. */
-  openFileInIde: (filePath: string, opts?: { diff?: boolean; before?: string }) => void;
+   *  a before-snapshot exists). `opts.line`/`opts.column` (1-based) request a
+   *  goto-definition reveal once the editor mounts. Also bumps ideFocusNonce
+   *  so App opens the right panel if it's collapsed. */
+  openFileInIde: (
+    filePath: string,
+    opts?: { diff?: boolean; before?: string; line?: number; column?: number },
+  ) => void;
+  /** Clear a consumed pending reveal (called by EditPane after applying it). */
+  clearIdePendingReveal: () => void;
   /** Remove a file from the editor's open list; active shifts to the
    *  previous file (or next, or null). */
   closeFileInIde: (filePath: string) => void;
@@ -2048,6 +2073,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   conflictResolveModel: null,
   collapsedGitRepos: {} as Record<string, boolean>,
   ideFocusNonce: 0,
+  idePendingReveal: null,
+  ideRevealNonce: 0,
+  lspLanguages: [] as LspLanguageState[],
 
   /** True once `init()` has started, to guard against React StrictMode's
    *  double-effect in dev (which would otherwise fire init twice). */
@@ -2222,6 +2250,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Skill list for the composer `/` menu (scans ~/.claude/skills + the
     // active project's .claude/skills).
     void get().reloadSkills();
+
+    // Language server states (install/running) for the settings panel + Monaco.
+    void get().reloadLspLanguages();
 
     // Appearance extras (right-panel font size, user-message bg, accent color).
     // chatFontSize was already loaded in init() - only the rest here.
@@ -4087,6 +4118,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  reloadLspLanguages: async () => {
+    try {
+      const { languages } = await api.lsp.list();
+      set({ lspLanguages: languages });
+      // When the TypeScript server is enabled, suppress Monaco's built-in
+      // tsWorker diagnostics so we don't get duplicate squiggles. The setup
+      // module exposes this toggle; it's a no-op if Monaco isn't loaded yet.
+      try {
+        const tsEnabled = languages.some((l) => l.language === "typescript" && l.enabled);
+        await import("@renderer/lib/monacoSetup.js").then((m) => {
+          if (typeof m.setTsWorkerDiagnosticsEnabled === "function") {
+            m.setTsWorkerDiagnosticsEnabled(!tsEnabled);
+          }
+        });
+      } catch {
+        // Monaco not yet imported (no editor mounted) - skip; will be applied
+        // on next reload once monacoSetup is loaded.
+      }
+    } catch (err) {
+      console.error("reloadLspLanguages failed:", err);
+    }
+  },
+
   reloadSkills: async () => {
     // Resolve the active project's path. skills.list scans that root's
     // .claude/skills in addition to the user-global dir; without a project
@@ -4411,15 +4465,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!pid) return; // no active project - nothing to scope to
     const prev = get().ideOpenFilesByProject[pid] ?? [];
     const mode = get().ideEditorMode;
+    // Normalize for case-insensitive dedup on Windows/macOS: if the file is
+    // already open under a different case (e.g. LSP returns `d:\foo` but the
+    // file tree stored `D:\foo`), reuse the existing path string so we don't
+    // create a duplicate tab. On Linux paths are case-sensitive as-is.
+    const lowerFile = filePath.toLowerCase();
+    const existing = prev.find((p) => p.toLowerCase() === lowerFile);
+    const canonicalPath = existing ?? filePath;
     // In "replace" mode, opening a file discards everything else - at most
     // one file is open at a time. In "tabs" mode, files accumulate (dedup:
     // re-opening an already-open file just activates it).
-    const open = mode === "replace" ? [filePath] : prev.includes(filePath) ? prev : [...prev, filePath];
+    const open =
+      mode === "replace"
+        ? [canonicalPath]
+        : existing
+          ? prev
+          : [...prev, canonicalPath];
     const prevViewMode = get().ideFileViewModeByProject[pid] ?? {};
     const viewMode = { ...prevViewMode };
     // A review/diff request is an explicit intent -> force diff mode (don't
     // leave a stale "edit" the user may have toggled for a different purpose).
-    if (opts?.diff) viewMode[filePath] = "diff";
+    if (opts?.diff) viewMode[canonicalPath] = "diff";
     // Files that render as a read-only preview default to "preview" on FIRST
     // open (no prior view-mode for this file): Markdown (rendered), images
     // (<img> via app-resource://), and unsupported binary types (Office docs,
@@ -4427,10 +4493,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // the user's earlier choice (e.g. they switched to "edit") since the entry
     // already exists. A diff request above takes precedence over this default.
     else if (
-      !(filePath in prevViewMode) &&
-      (isMarkdownPath(filePath) || isImagePath(filePath) || isUnsupportedPath(filePath))
+      !(canonicalPath in prevViewMode) &&
+      (isMarkdownPath(canonicalPath) || isImagePath(canonicalPath) || isUnsupportedPath(canonicalPath))
     ) {
-      viewMode[filePath] = "preview";
+      viewMode[canonicalPath] = "preview";
     }
     // A before-snapshot passed by a turn-files card (works for HISTORICAL
     // turns whose snapshot is gone from turnFilesByProject). Stashed
@@ -4438,17 +4504,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const prevDiffBefore = get().ideDiffBeforeByProject[pid] ?? {};
     const diffBefore =
       opts?.diff && opts.before != null
-        ? { ...prevDiffBefore, [filePath]: opts.before }
+        ? { ...prevDiffBefore, [canonicalPath]: opts.before }
         : prevDiffBefore;
     set((s) => ({
       ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
-      ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: filePath },
+      ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: canonicalPath },
       ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
       ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: diffBefore },
       // Bump the focus nonce so App opens the right panel if collapsed.
       ideFocusNonce: s.ideFocusNonce + 1,
+      // If a line was requested (goto-definition), stash a reveal target +
+      // bump the nonce so the EditPane scrolls to it once mounted/active.
+      ...(opts?.line != null
+        ? {
+            idePendingReveal: {
+              filePath: canonicalPath,
+              line: opts.line,
+              column: opts.column ?? 1,
+            },
+            ideRevealNonce: s.ideRevealNonce + 1,
+          }
+        : {}),
     }));
     persistIdeBuckets(get());
+  },
+
+  clearIdePendingReveal: () => {
+    if (get().idePendingReveal) set({ idePendingReveal: null });
   },
 
   closeFileInIde: (filePath) => {
