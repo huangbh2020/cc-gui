@@ -2475,12 +2475,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   toggleProjectExpanded: (projectId) =>
-    set((s) => ({
-      expandedProjects: {
-        ...s.expandedProjects,
-        [projectId]: !s.expandedProjects[projectId],
-      },
-    })),
+    set((s) => {
+      const wasExpanded = !!s.expandedProjects[projectId];
+      // Collapsing resets the per-project pagination cache back to the first
+      // page so the next expand shows the initial slice again (instead of the
+      // full list accumulated by "加载更多"). The server-side total is
+      // unchanged, so `hasMore` is recomputed from it; the list is trimmed in
+      // place — no IPC, no flicker.
+      if (!wasExpanded) {
+        return {
+          expandedProjects: { ...s.expandedProjects, [projectId]: true },
+        };
+      }
+      const prevList = s.sessionsByProject[projectId] ?? EMPTY_SESSIONS;
+      const total = s.sessionsTotalByProject[projectId] ?? prevList.length;
+      const trimmed = prevList.slice(0, SESSION_PAGE_SIZE);
+      const isActive = projectId === s.activeProjectId;
+      return {
+        expandedProjects: { ...s.expandedProjects, [projectId]: false },
+        sessionsByProject: { ...s.sessionsByProject, [projectId]: trimmed },
+        sessionsHasMoreByProject: {
+          ...s.sessionsHasMoreByProject,
+          [projectId]: total > SESSION_PAGE_SIZE,
+        },
+        sessions: isActive ? trimmed : s.sessions,
+      };
+    }),
 
   setArchivedViewOpen: (open) => set({ archivedViewOpen: open }),
 
@@ -3128,7 +3148,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => {
       const pid = updated.projectId;
       const prevList = s.sessionsByProject[pid] ?? [];
-      const nextList = prevList.map((sess) => (sess.id === updated.id ? updated : sess));
+      // Sending a message makes this session the most recently active, so move
+      // it to the head of the list (mirrors the `updated_at DESC` server order
+      // and the head-insert done by `startSession`). Replace-in-place would
+      // leave a stale position; unshift keeps the left bar in sync with activity.
+      const rest = prevList.filter((sess) => sess.id !== updated.id);
+      const nextList = [updated, ...rest];
       return {
         sessionsByProject: { ...s.sessionsByProject, [pid]: nextList },
         sessions: pid === s.activeProjectId ? nextList : s.sessions,
@@ -3230,7 +3255,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => {
       const pid = updated.projectId;
       const prevList = s.sessionsByProject[pid] ?? [];
-      const nextList = prevList.map((sess) => (sess.id === updated.id ? updated : sess));
+      // Sending a message makes this session the most recently active, so move
+      // it to the head of the list (mirrors the `updated_at DESC` server order
+      // and the head-insert done by `startSession`). Replace-in-place would
+      // leave a stale position; unshift keeps the left bar in sync with activity.
+      const rest = prevList.filter((sess) => sess.id !== updated.id);
+      const nextList = [updated, ...rest];
       return {
         sessionsByProject: { ...s.sessionsByProject, [pid]: nextList },
         sessions: pid === s.activeProjectId ? nextList : s.sessions,
@@ -3797,7 +3827,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     schedulePaneWidthPersist(get);
   },
   adjustEditorWidthPct: (deltaPx) => {
-    const next = clampEditorWidthPct(get().editorWidthPct + deltaPx);
+    // The divider sits to the LEFT of the editor column. Dragging it RIGHT
+    // (delta>0) should move the divider rightward, which SHRINKS the editor
+    // (the pane on the right of the handle) — same sign flip as the right-bar
+    // and bottom-terminal dividers. Without the flip the divider moved
+    // opposite to the cursor (drag left → editor shrank → handle appeared to
+    // jump right).
+    const next = clampEditorWidthPct(get().editorWidthPct - deltaPx);
     set({ editorWidthPct: next });
     schedulePaneWidthPersist(get);
   },

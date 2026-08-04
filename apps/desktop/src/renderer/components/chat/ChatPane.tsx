@@ -1361,7 +1361,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           )}
           <div
             className={cn(
-              "relative flex flex-col rounded-2xl border border-edge-input bg-surface-muted/30 transition-all duration-200",
+              "relative flex flex-col rounded-2xl border border-edge-input bg-white transition-all duration-200",
               "focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgb(var(--accent)/0.12)]",
               // Highlight the composer while a file-tree drag hovers over it.
               dragOver && "border-accent ring-4 ring-accent/20",

@@ -394,19 +394,35 @@ body,
 }
 
 /* Inline skill pills in the message stream (rendered by the Markdown
-   preprocessor). Same visual language as the composer pills. */
+   preprocessor). Mirrors the composer's solid-accent pill - same fill,
+   border, text color, padding, shadow and hover - so a skill reads as the
+   same color block in both the input and the transcript. Keep this in
+   sync with the `skill-pill` Tailwind classes in ComposerEditor.tsx. */
 .skill-pill-inline {
   display: inline-flex;
   align-items: center;
   gap: 0.125rem;
-  border-radius: 0.375rem;
-  border: 1px solid rgb(var(--accent) / 0.5);
-  background: rgb(var(--accent) / 0.25);
-  padding: 0.05rem 0.375rem;
-  font-size: 0.85em;
+  border-radius: 0.25rem;
+  border: 1px solid rgb(var(--accent));
+  background: rgb(var(--accent));
+  padding: 1px 0.25rem;
+  vertical-align: baseline;
+  font-size: 0.8em;
   font-weight: 600;
-  color: rgb(var(--accent));
+  color: rgb(var(--surface));
   white-space: nowrap;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  transition: color 0.15s, background-color 0.15s, border-color 0.15s, filter 0.15s;
+}
+
+.skill-pill-inline:hover {
+  filter: brightness(1.1);
+}
+
+.skill-pill-inline::before {
+  content: "✦ ";
+  font-size: 0.8em;
+  opacity: 0.8;
 }
 
 

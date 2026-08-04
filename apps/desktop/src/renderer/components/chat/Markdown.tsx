@@ -360,7 +360,7 @@ function SkillAwareText({ text, skillRe }: { text: string; skillRe: RegExp | nul
     if (start > last) parts.push(text.slice(last, start));
     parts.push(
       <span key={`s${idx++}`} className="skill-pill-inline" title={`Skill: /${name}`}>
-        ✦/{name}
+        /{name}
       </span>,
     );
     last = start + m[0].length;

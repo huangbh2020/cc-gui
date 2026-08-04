@@ -241,12 +241,15 @@ export const SessionRepo = {
     persist();
   },
 
-  /** List sessions for a project, newest first.
+  /** List sessions for a project, most recently active first.
    *
-   *  `opts.limit` / `opts.offset` paginate (used by the left-bar tree, which
-   *  loads the first page and appends on "load more"). `opts.archived` filters
-   *  by the soft-delete flag: omit for all, `false` for the active thread list,
-   *  `true` for the archived bin. */
+   *  Ordered by `updated_at DESC` so a session floats to the top whenever it
+   *  is touched (new message, title/status change, snapshot save, …); ties
+   *  fall back to `created_at DESC` for a stable order. `opts.limit` /
+   *  `opts.offset` paginate (used by the left-bar tree, which loads the first
+   *  page and appends on "load more"). `opts.archived` filters by the
+   *  soft-delete flag: omit for all, `false` for the active thread list, `true`
+   *  for the archived bin. */
   listByProject(
     projectId: string,
     opts?: { limit?: number; offset?: number; archived?: boolean },
@@ -258,7 +261,7 @@ export const SessionRepo = {
       where.push("archived = ?");
       params.push(opts.archived ? 1 : 0);
     }
-    let sql = `SELECT * FROM sessions WHERE ${where.join(" AND ")} ORDER BY created_at DESC`;
+    let sql = `SELECT * FROM sessions WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, created_at DESC`;
     if (opts?.limit !== undefined) {
       sql += " LIMIT ?";
       params.push(v(opts.limit));

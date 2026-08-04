@@ -210,7 +210,9 @@ function CenterPane() {
   const splitRef = useRef<HTMLDivElement>(null);
 
   // Convert a px drag delta into a percentage-point delta relative to the
-  // container width. Dragging the divider RIGHT (delta>0) grows the editor.
+  // container width. The divider sits to the LEFT of the editor column, so the
+  // sign flip (growing the editor shrinks as the handle moves right) lives in
+  // adjustEditorWidthPct — here we just translate px to percentage points.
   const handleEditorResize = (deltaPx: number) => {
     const el = splitRef.current;
     if (!el) return;
