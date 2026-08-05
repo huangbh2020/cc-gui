@@ -15,13 +15,13 @@ import type { UserInputAnswers } from "@contracts/provider";
 /**
  * Prompt card shown when claude invokes the AskUserQuestion tool.
  *
- * Anchored to the bottom of the ChatPane root (`relative`), positioned so
- * it visually replaces the composer: the outer wrapper mirrors the
- * composer's horizontal sizing — `px-[var(--chat-gutter)]` side gutters + `mx-auto max-w-5xl`
- * inner column — so the card is exactly as wide as the input box and left/
- * right-aligned with the message stream. It sits slightly above the pane's
- * bottom edge (`pb-3`, matching the composer wrapper) so its rounded
- * corners and drop shadow read as a floating card rather than a flush bar.
+ * Rendered in-flow inside the composer's width-constrained column (see
+ * ChatPane), directly above the input box - mirroring PlanApprovalPrompt.
+ * Because it participates in the ChatPane's vertical flex layout (rather
+ * than overlaying it absolutely), the card pushes the message stream up to
+ * make room instead of covering the streaming data. The composer stays
+ * visible below but is locked (`textareaLocked`) while a question is
+ * pending, so the user can't type a competing prompt.
  *
  * Layout: a single rounded, bordered, elevated card with three stacked
  * regions — a fixed header (title + step indicator + dismiss), a body that
@@ -145,23 +145,23 @@ export function QuestionPrompt({
   const a = answers[step];
 
   return (
-    // Outer wrapper mirrors the composer's horizontal sizing so the card is
-    // exactly as wide as the input box: `px-[var(--chat-gutter)]` side
-    // gutters (responsive to pane width - see styles.css) + `mx-auto
-    // max-w-5xl` centered inner column. `pb-3` lifts the card off the pane's
-    // bottom edge so the rounded corners + shadow read as a floating card
-    // (matches the composer wrapper's own bottom padding).
-    <div className="absolute inset-x-0 bottom-0 z-30 px-[var(--chat-gutter)] pb-3">
-      <div
-        role="dialog"
-        aria-modal="false"
-        aria-label="Claude 正在提问"
-        className={cn(
-          "mx-auto flex max-h-[70%] max-w-5xl flex-col overflow-hidden rounded-2xl",
-          "border border-edge-input bg-surface text-xs text-content shadow-2xl",
-          "animate-[qa-sheet-in_140ms_ease-out]",
-        )}
-      >
+    // Rendered in-flow above the composer (see ChatPane). `mb-2` lifts the card
+    // off the input box below so the rounded corners + shadow read as a floating
+    // card, mirroring PlanApprovalPrompt. The card participates in the ChatPane
+    // flex column so the message stream shrinks to make room (instead of being
+    // overlaid). `max-h-[60vh]` caps growth so the body scrolls internally rather
+    // than pushing the stream entirely out of view (vh is used because the
+    // in-flow parent has no explicit height, so % wouldn't resolve).
+    <div
+      role="dialog"
+      aria-modal="false"
+      aria-label="Claude 正在提问"
+      className={cn(
+        "mb-2 flex max-h-[60vh] flex-col overflow-hidden rounded-2xl",
+        "border border-edge-input bg-surface text-xs text-content shadow-2xl",
+        "animate-[qa-sheet-in_140ms_ease-out]",
+      )}
+    >
         {/* Header — fixed at top */}
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-edge px-4 py-2.5">
           <div className="flex min-w-0 items-center gap-1.5">
@@ -325,6 +325,5 @@ export function QuestionPrompt({
           </div>
         </div>
       </div>
-    </div>
   );
 }

@@ -620,6 +620,12 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
   // can type ahead and enqueue the next prompt. Still hard-locked when an
   // approval / AskUserQuestion is pending (that panel owns the input area).
   const textareaLocked = !!headApproval || !!pendingQuestion;
+  // Any of the three bottom prompts (tool approval / plan approval / question)
+  // currently visible. When one is shown the composer card is hidden entirely
+  // - the prompt takes its place in the flow, pushing the message stream up
+  // instead of overlaying it. The composer stays mounted (state + Tiptap
+  // history preserved) via `hidden` (display:none); it just isn't rendered.
+  const hasPendingPrompt = !!headApproval || !!pendingPlanApproval || !!pendingQuestion;
 
   // Per-session prompt queue (FIFO). Survives tab switches — it lives in the
   // store, not component state, so draining from the turn-done handler can
@@ -1429,8 +1435,8 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           {/* Plan-approval card (ExitPlanMode) - the model drafted a plan in
               plan mode and is awaiting the user's approve/reject decision.
               Rendered inside the composer column so it sits directly above the
-              input box (mirrors ApprovalPrompt); yields to a pending tool
-              approval (which blocks everything). */}
+              input box; yields to a pending tool approval (which blocks
+              everything). */}
           {pendingPlanApproval && !headApproval && (
             <PlanApprovalPrompt
               sessionId={sessionId}
@@ -1450,12 +1456,58 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
               }}
             />
           )}
+
+          {/* Tool-approval card (canUseTool). Rendered in-flow above the input
+              box so the message stream shrinks to make room instead of being
+              overlaid - the user keeps seeing the streaming data while deciding.
+              Highest precedence of the three prompts: plan approval and
+              AskUserQuestion are suppressed while a tool approval is the head of
+              the queue. */}
+          {headApproval && (
+            <ApprovalPrompt
+              key={headApproval.requestId}
+              toolName={headApproval.toolName}
+              input={headApproval.input}
+              description={headApproval.description}
+              queuePosition={
+                pendingApprovals.filter((p) => p.sessionId === sessionId).findIndex(
+                  (p) => p.requestId === headApproval.requestId,
+                ) + 1
+              }
+              queueTotal={
+                pendingApprovals.filter((p) => p.sessionId === sessionId).length
+              }
+              onDecide={(granted, always) =>
+                void decideApproval(headApproval.requestId, granted, always)
+              }
+            />
+          )}
+
+          {/* AskUserQuestion card. Rendered in-flow above the input box so the
+              message stream shrinks to make room instead of being overlaid. The
+              composer stays visible below but is locked (`textareaLocked`) while
+              a question is pending. Renders only when no tool approval or plan
+              approval is pending (those take precedence). */}
+          {activeQuestion && !headApproval && !pendingPlanApproval && (
+            <QuestionPrompt
+              questions={activeQuestion}
+              onSubmit={(answers) => {
+                void submitQuestion(answers);
+              }}
+              onDismiss={dismissQuestion}
+            />
+          )}
           <div
             className={cn(
               "relative flex flex-col rounded-2xl border border-edge-input bg-white transition-all duration-200",
               "focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgb(var(--accent)/0.12)]",
               // Highlight the composer while a file-tree drag hovers over it.
               dragOver && "border-accent ring-4 ring-accent/20",
+              // Hide the composer card entirely while a bottom prompt (approval /
+              // plan approval / question) is visible - the prompt takes its place
+              // in the flow. `hidden` (display:none) keeps the component mounted
+              // so state (draft, tags, Tiptap history) survives the hide/show.
+              hasPendingPrompt && "hidden",
             )}
             onDragOver={(e) => {
               // Only react to OUR file drag (custom MIME). External drags
@@ -1681,50 +1733,6 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           />
         </div>
       </div>
-
-      {/* Tool-approval bottom sheet — anchored to the bottom of the whole
-          ChatPane (not just the input box) as an absolute overlay, so it
-          visually replaces/covers the composer while a decision is pending
-          (mirrors QuestionPrompt). Highest precedence of the three prompts:
-          pending plan approval and AskUserQuestion are suppressed while a
-          tool approval is the head of the queue. */}
-      {headApproval && (
-        <ApprovalPrompt
-          key={headApproval.requestId}
-          toolName={headApproval.toolName}
-          input={headApproval.input}
-          description={headApproval.description}
-          queuePosition={
-            pendingApprovals.filter((p) => p.sessionId === sessionId).findIndex(
-              (p) => p.requestId === headApproval.requestId,
-            ) + 1
-          }
-          queueTotal={
-            pendingApprovals.filter((p) => p.sessionId === sessionId).length
-          }
-          onDecide={(granted, always) =>
-            void decideApproval(headApproval.requestId, granted, always)
-          }
-        />
-      )}
-
-      {/* AskUserQuestion bottom sheet — anchored to the bottom of the
-          whole ChatPane (not just the input box) so it can grow upward
-          beyond the composer height. Sits in a `relative` root and uses
-          absolute positioning pinned to the bottom edge; the sheet sizes
-          to its content with a max height and scrolls internally. This
-          forces the user to answer before they can type a competing
-          prompt. Renders only when no tool approval or plan approval is
-          pending (those take precedence). */}
-      {activeQuestion && !headApproval && !pendingPlanApproval && (
-        <QuestionPrompt
-          questions={activeQuestion}
-          onSubmit={(answers) => {
-            void submitQuestion(answers);
-          }}
-          onDismiss={dismissQuestion}
-        />
-      )}
 
     </div>
   );
