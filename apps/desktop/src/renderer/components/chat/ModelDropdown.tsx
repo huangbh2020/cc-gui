@@ -121,12 +121,12 @@ export function ModelDropdown() {
       <button
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ease-out",
+          "composer-chip flex min-w-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ease-out",
           "text-content-muted hover:scale-105 hover:bg-accent/10 hover:text-accent active:scale-95",
         )}
         title="选择模型"
       >
-        <span className="max-w-[180px] truncate">
+        <span className="min-w-0 max-w-[180px] truncate">
           {chipLabel}
         </span>
         <IconChevronDown size={11} className="shrink-0 opacity-60" />

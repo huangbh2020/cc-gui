@@ -227,7 +227,7 @@ export function OpenTabsBar() {
   const overflowing = canScrollLeft || canScrollRight;
 
   return (
-    <div className="flex shrink-0 items-end gap-0.5 border-b border-edge bg-surface/40 px-2 pt-1.5">
+    <div className="flex shrink-0 items-center gap-0.5 border-b border-edge bg-surface/40 px-2 py-1.5">
       {/* Left chevron — only when there's content scrolled off the left edge. */}
       {canScrollLeft && (
         <TabBarChevronButton
@@ -245,7 +245,7 @@ export function OpenTabsBar() {
           ref={scrollRef}
           onScroll={recomputeScrollState}
           onWheel={onWheel}
-          className="no-scrollbar flex items-end gap-0.5 overflow-x-auto"
+          className="no-scrollbar flex items-center gap-0.5 overflow-x-auto"
         >
           <DndContext
             sensors={sensors}
@@ -302,13 +302,13 @@ export function OpenTabsBar() {
                 }
               }}
               className={cn(
-                "group flex min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 text-[11px] transition-colors",
+                "group flex min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] transition-colors",
                 // Match the file-tab width rules: active plan tab gets a
                 // min-width so its label + close button are fully visible.
                 planTabActive ? "min-w-[100px] max-w-[200px]" : "max-w-[160px]",
                 planTabActive
-                  ? "border-accent bg-surface text-content"
-                  : "border-transparent text-content-muted hover:bg-surface-muted/50 hover:text-content",
+                  ? "bg-accent/15 text-accent"
+                  : "text-content-muted hover:bg-surface-muted/50 hover:text-content",
               )}
             >
               <IconClipboard size={12} className="shrink-0 text-accent" />
@@ -482,15 +482,15 @@ function SortableFileTab({
       aria-selected={isActive}
       title={path}
       className={cn(
-        "group flex min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 text-[11px] transition-colors",
+        "group flex min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] transition-colors",
         // The active tab gets a min-width so its name + close button are
         // always fully visible (not truncated by sibling tabs). Background
         // tabs can shrink more aggressively since their close button is
         // hover-only.
         isActive ? "min-w-[140px] max-w-[240px]" : "max-w-[160px]",
         isActive
-          ? "border-accent bg-surface text-content"
-          : "border-transparent text-content-muted hover:bg-surface-muted/50 hover:text-content",
+          ? "bg-accent/15 text-accent"
+          : "text-content-muted hover:bg-surface-muted/50 hover:text-content",
         isDragging && "shadow-lg",
       )}
     >

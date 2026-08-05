@@ -32,6 +32,7 @@ import {
 import type { SkillInfo, BuiltInCommand } from "@renderer/lib/slashCommands.js";
 import { MessageBlocks, TurnPanel, type ProceduralBlock, type BeforeContentMap } from "./MessageBlocks.js";
 import { ComposerToolbar } from "./ComposerToolbar.js";
+import { ComposerToolbarToggle } from "./ComposerToolbarToggle.js";
 import { QuestionPrompt } from "./QuestionPrompt.js";
 import { ApprovalPrompt } from "./ApprovalPrompt.js";
 import { PlanApprovalPrompt } from "./PlanApprovalPrompt.js";
@@ -1499,7 +1500,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
           )}
           <div
             className={cn(
-              "relative flex flex-col rounded-2xl border border-edge-input bg-white transition-all duration-200",
+              "relative flex min-w-0 flex-col overflow-hidden rounded-2xl border border-edge-input bg-white transition-all duration-200",
               "focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgb(var(--accent)/0.12)]",
               // Highlight the composer while a file-tree drag hovers over it.
               dragOver && "border-accent ring-4 ring-accent/20",
@@ -1624,8 +1625,8 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 tags.length > 0 && "pt-1.5",
               )}
             />
-            <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-1.5">
-              <div className="flex items-center gap-1">
+            <div className="composer-action-row flex flex-wrap items-center justify-between gap-2 px-2.5 pb-2 pt-1.5">
+              <div className="composer-chips flex min-w-0 flex-1 items-center gap-1">
                 <button
                   type="button"
                   onClick={openAttachPicker}
@@ -1633,7 +1634,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                   title="添加上下文文件"
                   aria-label="添加上下文文件"
                   className={cn(
-                    "inline-flex h-8 w-8 items-center justify-center rounded-xl text-content-muted transition-all duration-150 ease-out",
+                    "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-content-muted transition-all duration-150 ease-out",
                     "hover:scale-110 hover:bg-accent/10 hover:text-accent active:scale-95",
                     "disabled:scale-100 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted disabled:hover:scale-100",
                   )}
@@ -1641,6 +1642,9 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                   <IconPaperclip size={18} />
                 </button>
                 <ComposerToolbar />
+                {/* Narrow-mode entry: hidden in wide mode (CSS), replaces the chip
+                    row when the pane < 30rem. Pops a panel hosting the same chips. */}
+                <ComposerToolbarToggle />
               </div>
               {sessionBusy ? (
                 <button
@@ -1648,7 +1652,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                   title="停止生成"
                   aria-label="停止生成"
                   className={cn(
-                    "inline-flex h-8 w-8 items-center justify-center rounded-xl bg-danger text-surface transition-all duration-150 ease-out",
+                    "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-danger text-surface transition-all duration-150 ease-out",
                     "hover:scale-105 hover:brightness-110 active:scale-95 active:brightness-95",
                   )}
                 >
@@ -1660,7 +1664,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                   disabled={!value.trim() && tags.length === 0}
                   title="发送"
                   className={cn(
-                    "inline-flex h-8 w-8 items-center justify-center rounded-xl bg-accent text-surface shadow-sm transition-all duration-150 ease-out",
+                    "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-surface shadow-sm transition-all duration-150 ease-out",
                     "hover:scale-110 hover:brightness-110 hover:shadow-md hover:shadow-accent/20",
                     "active:scale-95 active:brightness-95",
                     "disabled:scale-100 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle disabled:shadow-none disabled:hover:scale-100",

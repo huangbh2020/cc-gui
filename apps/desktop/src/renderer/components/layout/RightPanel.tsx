@@ -25,7 +25,7 @@ type TabDef = {
 };
 
 const TABS: TabDef[] = [
-  { id: "files", label: "Files", icon: IconFolder },
+  { id: "files", label: "文件", icon: IconFolder },
   { id: "git", label: "Git", icon: IconGitBranch },
 ];
 
@@ -35,8 +35,8 @@ export function RightPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Tab strip — icon + label, active marked by an accent underline. */}
-      <div className="flex shrink-0 border-b border-edge">
+      {/* Tab strip — icon + label, active marked by a filled rounded pill. */}
+      <div className="flex shrink-0 items-center gap-1 border-b border-edge px-2 py-1.5">
         {TABS.map((t) => {
           const Icon = t.icon;
           const active = tab === t.id;
@@ -46,10 +46,10 @@ export function RightPanel() {
               type="button"
               onClick={() => setTab(t.id)}
               className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 px-2 py-2 font-medium uppercase tracking-wide transition-colors [font-size:var(--rp-fs-sm)]",
+                "flex items-center gap-1.5 rounded-full px-3 py-1 font-medium uppercase tracking-wide transition-colors [font-size:var(--rp-fs-sm)]",
                 active
-                  ? "border-b-2 border-accent text-content"
-                  : "border-b-2 border-transparent text-content-subtle hover:text-content-muted",
+                  ? "bg-accent/15 text-accent"
+                  : "text-content-subtle hover:bg-surface-muted/50 hover:text-content-muted",
               )}
               title={t.label}
             >

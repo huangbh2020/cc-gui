@@ -144,6 +144,8 @@ export {
   IconArrowBarToDown,
   IconArrowBarToUp,
   IconStack2,
+  IconStackFilled,
+  IconCategoryFilled,
   IconChartBar,
   IconCalendarStats,
   // Editing / actions
@@ -261,6 +263,7 @@ export { RiApps2Line } from "react-icons/ri";
 
 // Simple Icons (brands)
 export { SiGithub } from "react-icons/si";
+export { SiClaude } from "react-icons/si";
 
 // VS Code icons
 export { VscMcp } from "react-icons/vsc";

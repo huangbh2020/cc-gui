@@ -16,7 +16,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@renderer/lib/cn.js";
-import { IconX } from "@renderer/lib/icons.js";
+import { IconX, SiClaude } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Session } from "@contracts/session";
 import { TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
@@ -130,7 +130,7 @@ export function SessionTabs() {
   const overflowing = canScrollLeft || canScrollRight;
 
   return (
-    <div className="flex shrink-0 items-end gap-0.5 border-b border-edge bg-surface/40 px-2 pt-1.5">
+    <div className="flex shrink-0 items-center gap-0.5 border-b border-edge bg-surface/40 px-2 py-1.5">
       {/* Left chevron — only when there's content scrolled off the left edge. */}
       {canScrollLeft && (
         <TabBarChevronButton
@@ -310,13 +310,15 @@ function SortableTab({
       aria-selected={isActive}
       title={title}
       className={cn(
-        "group flex max-w-[200px] min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 text-[11px] transition-colors",
+        "group flex max-w-[200px] min-w-0 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] transition-colors",
         isActive
-          ? "border-accent bg-surface text-content"
-          : "border-transparent text-content-muted hover:bg-surface-muted/50 hover:text-content",
+          ? "bg-accent/15 text-accent"
+          : "text-content-muted hover:bg-surface-muted/50 hover:text-content",
         isDragging && "shadow-lg",
       )}
     >
+      {/* Claude brand mark, fixed at the leading edge of the tab. */}
+      <SiClaude size={13} className="shrink-0 text-[#D97757]" />
       {/* Running indicator: solid dot when active+idle, pulsing when turn
           in flight. Uses Tailwind's animate-pulse so the user can see at a
           glance which background tabs are still working. */}

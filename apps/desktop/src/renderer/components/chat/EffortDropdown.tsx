@@ -45,13 +45,13 @@ export function EffortDropdown() {
     <Menu.Root>
       <Menu.Trigger
         className={cn(
-          "flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ease-out",
+          "composer-chip flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ease-out",
           "text-content-muted hover:scale-105 hover:bg-accent/10 hover:text-accent active:scale-95",
         )}
         title="Reasoning effort for the next session"
       >
         <IconBolt size={13} className="shrink-0 opacity-80" />
-        <span>{EFFORT_LABEL[effort] ?? effort}</span>
+        <span className="min-w-0 truncate">{EFFORT_LABEL[effort] ?? effort}</span>
         <IconChevronDown size={11} className="shrink-0 opacity-60" />
       </Menu.Trigger>
       <Menu.Portal>

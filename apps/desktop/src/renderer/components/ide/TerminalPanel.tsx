@@ -276,10 +276,10 @@ export function TerminalPanel({ active }: { active: boolean }) {
               <div
                 key={s.key}
                 className={cn(
-                  "group flex max-w-[9rem] shrink-0 items-center gap-0.5 rounded-t px-1.5 py-1 text-[11px]",
+                  "group flex max-w-[9rem] shrink-0 items-center gap-0.5 rounded-full px-2 py-1 text-[11px] transition-colors",
                   isActive
-                    ? "bg-surface text-content"
-                    : "text-content-subtle hover:bg-surface-hover hover:text-content-muted",
+                    ? "bg-accent/15 text-accent"
+                    : "text-content-subtle hover:bg-surface-muted/50 hover:text-content-muted",
                 )}
               >
                 <button
@@ -309,7 +309,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
                 <button
                   type="button"
                   className={cn(
-                    "rounded p-0.5 text-content-subtle hover:bg-surface-hover hover:text-content",
+                    "rounded p-0.5 transition-colors text-content-subtle hover:bg-surface-hover hover:text-content",
                     !isActive && "opacity-0 group-hover:opacity-100",
                   )}
                   title="关闭终端"

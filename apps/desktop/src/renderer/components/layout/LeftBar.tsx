@@ -21,7 +21,6 @@ import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconFolder,
-  IconMessage,
   IconChevronRight,
   IconPlus,
   IconArchive,
@@ -33,10 +32,11 @@ import {
   IconPencil,
   IconCopy,
   IconList,
-  IconStack2,
+  IconCategoryFilled,
   IconArrowRight,
   IconPalette,
   IconSearch,
+  SiClaude,
 } from "@renderer/lib/icons.js";
 import { Button, ConfirmDialog, Dialog, Input } from "@renderer/components/ui/index.js";
 import { BrandLogo } from "./BrandLogo.js";
@@ -475,7 +475,7 @@ export function LeftBar() {
               title="分组视图（按分组折叠）"
               aria-pressed={projectView === "grouped"}
             >
-              <IconStack2 size={13} />
+              <IconCategoryFilled size={13} />
             </button>
           </div>
           <button
@@ -599,7 +599,7 @@ export function LeftBar() {
                     {sessions.map((s) => (
                       <ArchivedRow
                         key={s.id}
-                        icon={<IconMessage size={14} className="opacity-60" />}
+                        icon={<SiClaude size={14} className="opacity-60" />}
                         title={s.title}
                         onRestore={() => void archiveSession(s.id, false)}
                         onDelete={() => {
@@ -941,7 +941,7 @@ function SessionRow({
       )}
       title={`${session.title}\n${formatFullTime(session.updatedAt)}`}
     >
-      <IconMessage size={14} className="shrink-0" />
+      <SiClaude size={14} className="shrink-0 text-[#D97757]" />
       <span className="min-w-0 flex-1 truncate">{session.title}</span>
 
       {/* Relative time of the last activity (updatedAt), docked to the right
@@ -1333,7 +1333,7 @@ function GroupNode({
           onClick={onToggle}
           className="flex min-w-0 flex-1 items-center gap-1 text-left font-medium"
         >
-          <IconStack2
+          <IconCategoryFilled
             size={13}
             className="shrink-0"
             style={colorHex ? { color: colorHex } : undefined}
@@ -1518,7 +1518,7 @@ function ProjectContextMenu({
                     onClick={() => project && onMoveToGroup(project.id, g)}
                     className={itemClass}
                   >
-                    <IconStack2 size={14} className="shrink-0" />
+                    <IconCategoryFilled size={14} className="shrink-0" />
                     <span className="flex-1 truncate">{g}</span>
                     {currentGroup === g && <IconCheck size={13} className="shrink-0 text-accent" />}
                   </Menu.Item>
