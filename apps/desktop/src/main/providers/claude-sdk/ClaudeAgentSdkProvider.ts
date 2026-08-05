@@ -406,6 +406,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       snapshot,
       ac.signal,
       q,
+      req.initialTodos ?? [],
     );
 
     let finished = false;

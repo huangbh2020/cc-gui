@@ -152,7 +152,7 @@ export function Titlebar({
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             title={"返回工作台" + hintFor("layout.toggle-browser")}
           >
-            <IconLayoutSidebarLeftExpand size={16} className="shrink-0" />
+            <IconArrowLeft size={16} className="shrink-0" />
             返回工作台
           </button>
         ) : (

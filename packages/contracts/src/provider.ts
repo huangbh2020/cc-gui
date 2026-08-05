@@ -18,6 +18,7 @@
  */
 import type { RuntimeEvent, PermissionMode, EffortLevel, AskUserQuestionItem } from "./runtime.js";
 import type { ApiConfig } from "./customModel.js";
+import type { SessionTodoItem } from "./session.js";
 
 /** What a provider can do — used by the UI to enable/disable features. */
 export interface ProviderCapabilities {
@@ -63,6 +64,12 @@ export interface StartTurnRequest {
    *  only and never trigger the Skill tool on their own. Omitted/empty falls
    *  back to `skills: "all"` (let the model self-discover). */
   skills?: string[];
+  /** Persisted todos from the previous turn(s). The provider seeds its
+   *  in-memory task list with these so that incremental TaskUpdate calls
+   *  (which reference a 1-based taskId from earlier turns) still resolve
+   *  correctly instead of being silently dropped on a fresh adapter that
+   *  starts with an empty task list. */
+  initialTodos?: SessionTodoItem[];
 }
 
 /** Approval request passed from provider → host (for canUseTool-style callbacks). */

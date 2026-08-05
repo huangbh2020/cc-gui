@@ -83,26 +83,15 @@ export function getContextBreakdown(s: ContextSnapshot): {
   const freshInput = Math.max(0, s.usedTokens - cacheRead - cacheCreation);
   const rows: ContextBreakdownRow[] = [
     { key: "input", label: "输入", value: fmtTokens(freshInput) },
+    { key: "cache-read", label: "缓存读取", value: fmtTokens(cacheRead) },
+    { key: "cache-write", label: "缓存写入", value: fmtTokens(cacheCreation) },
+    { key: "output", label: "输出", value: fmtTokens(s.outputTokens) },
+    {
+      key: "processed",
+      label: "本轮处理",
+      value: fmtTokens(s.totalProcessedTokens),
+    },
   ];
-  if (cacheRead > 0) {
-    rows.push({ key: "cache-read", label: "缓存读取", value: fmtTokens(cacheRead) });
-  }
-  if (cacheCreation > 0) {
-    rows.push({ key: "cache-write", label: "缓存写入", value: fmtTokens(cacheCreation) });
-  }
-  rows.push({ key: "output", label: "输出", value: fmtTokens(s.outputTokens) });
-  rows.push({
-    key: "processed",
-    label: "本轮处理",
-    value: fmtTokens(s.totalProcessedTokens),
-  });
-  if (s.costUsd != null) {
-    rows.push({
-      key: "cost",
-      label: "费用",
-      value: `$${s.costUsd.toFixed(4)}`,
-    });
-  }
   return {
     title: "上下文占用",
     subtitle: `${fmtTokens(s.usedTokens)} / ${fmtTokens(s.maxTokens)} · ${s.pct}%`,

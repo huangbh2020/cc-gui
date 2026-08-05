@@ -20,12 +20,15 @@ import { AboutPanel } from "./AboutPanel.js";
  * workspace - the only difference is the right sidebar is collapsed and the
  * left sidebar hosts the settings navigation instead of the project tree.
  *
- * Available sections:
+ * Available sections (grouped: 个性化 -> 核心 AI 配置 -> IDE 能力 -> 关于):
+ *  - 外观    (AppearancePanel - flat one-row-per-feature list)
+ *  - 快捷键  (ShortcutsPanel)
  *  - 模型配置 (CustomModelsPanel - two-column: provider list + config form)
  *  - Skills  (SkillsPanel - two-column: skill list + raw SKILL.md editor)
- *  - 外观    (AppearancePanel - flat one-row-per-feature list)
+ *  - 线程名称 (TitleGenPanel)
  *  - Git     (GitPanel)
  *  - 终端    (TerminalPanel - shell override + per-project commands)
+ *  - 语言服务器 (LspLanguagesPanel)
  *  - 关于    (AboutPanel - version / license / repo links)
  *
  * (“通用” section temporarily hidden - not yet implemented.)
@@ -42,14 +45,15 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   // { id: "general", label: "通用" }, // 暂时屏蔽:通用设置尚未实现,日后恢复
-  { id: "custom-models", label: "模型配置" },
-  { id: "skills", label: "Skills" },
+  // 分组顺序:个性化 -> 核心 AI 配置 -> IDE 能力 -> 关于
   { id: "appearance", label: "外观" },
   { id: "shortcuts", label: "快捷键" },
+  { id: "custom-models", label: "模型配置" },
+  { id: "skills", label: "Skills" },
+  { id: "title-gen", label: "线程名称" },
   { id: "git", label: "Git" },
   { id: "terminal", label: "终端" },
   { id: "lsp-languages", label: "语言服务器" },
-  { id: "title-gen", label: "线程名称" },
   { id: "about", label: "关于" },
 ];
 
@@ -116,14 +120,14 @@ export function SettingsPage() {
           className="min-h-0 h-full overflow-y-auto px-6 py-5"
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
-          {active === "custom-models" && <CustomModelsPanel />}
-          {active === "skills" && <SkillsPanel />}
           {active === "appearance" && <AppearancePanel />}
           {active === "shortcuts" && <ShortcutsPanel />}
+          {active === "custom-models" && <CustomModelsPanel />}
+          {active === "skills" && <SkillsPanel />}
+          {active === "title-gen" && <TitleGenPanel />}
           {active === "git" && <GitPanel />}
           {active === "terminal" && <TerminalPanel />}
           {active === "lsp-languages" && <LspLanguagesPanel />}
-          {active === "title-gen" && <TitleGenPanel />}
           {active === "about" && <AboutPanel />}
         </div>
       }

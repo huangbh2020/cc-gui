@@ -267,6 +267,10 @@ class RuntimeManager {
       resumeProviderSessionId: rt.providerSessionId,
       apiConfig,
       skills: input.skills,
+      // Seed the adapter with the persisted todo list so that incremental
+      // TaskUpdate(taskId=N) calls in this turn can resolve against tasks
+      // created in earlier turns (the adapter is recreated fresh each turn).
+      initialTodos: session.todos ?? undefined,
     };
 
     const handle = await provider.startTurn(req, rt.ctx);

@@ -201,7 +201,7 @@ function HistoryView({
                 const turnNo = history.length - i;
                 const pct =
                   maxTokens > 0
-                    ? Math.min(100, Math.round((r.usedTokens / maxTokens) * 100))
+                    ? Math.min(100, Math.round((r.usedTokens / maxTokens) * 1000) / 10)
                     : 0;
                 const input = Math.max(
                   0,

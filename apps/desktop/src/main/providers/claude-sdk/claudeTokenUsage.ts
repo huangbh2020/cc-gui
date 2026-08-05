@@ -181,7 +181,7 @@ export function normalizeClaudeTokenUsage(
     claudePromptTokensFromRawUsage(raw),
     maxTokens,
   );
-  const pct = Math.min(100, Math.round((usedTokens / maxTokens) * 100));
+  const pct = round1(Math.min(100, (usedTokens / maxTokens) * 100));
   const warning: ContextWarning =
     pct >= 90 ? "critical" : pct >= 70 ? "near-window" : "ok";
   const warnings = decideClaudeContextUsageWarnings(raw, maxTokens);
@@ -233,7 +233,7 @@ export function buildCompactSnapshot(opts: {
     ?? resolveEffectiveContextWindow({ model: opts.model });
 
   const usedTokens = Math.min(postTokens, maxTokens);
-  const pct = Math.min(100, Math.round((usedTokens / maxTokens) * 100));
+  const pct = round1(Math.min(100, (usedTokens / maxTokens) * 100));
   const warning: ContextWarning =
     pct >= 90 ? "critical" : pct >= 70 ? "near-window" : "ok";
 
@@ -285,7 +285,7 @@ export function mergeClaudeTokenUsageSnapshot(
 ): ContextSnapshot {
   // usedTokens = the path-A window read, clamped to the resolved ceiling.
   const usedTokens = Math.min(lastKnown.usedTokens, maxTokens);
-  const pct = Math.min(100, Math.round((usedTokens / maxTokens) * 100));
+  const pct = round1(Math.min(100, (usedTokens / maxTokens) * 100));
   const warning: ContextWarning =
     pct >= 90 ? "critical" : pct >= 70 ? "near-window" : "ok";
   return {
@@ -302,6 +302,13 @@ export function mergeClaudeTokenUsageSnapshot(
 
 function positiveOrZero(n: number | undefined | null): number {
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Round to 1 decimal place (e.g. 0.18 -> 0.2, 83.456 -> 83.5). Used for
+ *  `pct` so the context ring shows "0.2%" instead of "0%" for small but
+ *  non-zero occupancy. */
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
 }
 
 function dedupeWarnings(ws: ContextWarningKind[]): ContextWarningKind[] {
@@ -329,7 +336,7 @@ export function buildSnapshotFromControlChannel(
   accumulated: ContextSnapshot,
 ): ContextSnapshot {
   const usedTokens = Math.min(cc.totalTokens, cc.maxTokens);
-  const pct = Math.min(100, Math.round(cc.percentage));
+  const pct = round1(Math.min(100, cc.percentage));
   const warning: ContextWarning =
     pct >= 90 ? "critical" : pct >= 70 ? "near-window" : "ok";
 

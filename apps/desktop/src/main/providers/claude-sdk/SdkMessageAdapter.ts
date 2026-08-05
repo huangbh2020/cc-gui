@@ -275,6 +275,12 @@ interface AdapterState {
    *  false on the matching ExitPlanMode or when a `mode.change` to default
    *  arrives (covers rejection / interruption). Drives `plan.update` emit. */
   inPlanMode: boolean;
+  /** In-flight `Query.getContextUsage()` promise kicked off at the last
+   *  `handleAssistant` (while the CLI process is still alive). Awaited at
+   *  turn-end in `emitTurnEndSnapshot` so we can read the authoritative
+   *  context-window occupancy before the generator closes. If the promise
+   *  rejects (e.g. Query already closed) we fall back to path C. */
+  pendingContextUsage?: Promise<unknown> | null;
   /** Whether turn.done has been emitted for this turn. Guards against double
    *  emits when both a result message and flushFinal() fire it. */
   turnDoneEmitted: boolean;
@@ -319,15 +325,22 @@ export class SdkMessageAdapter {
      *  context-window snapshot (path B). Falls back to path-A/C merge when
      *  `null` or when the control-channel call fails. */
     private query: Query | null = null,
+    /** Initial todos seeded from the persisted session state. Lets a fresh
+     *  adapter resolve TaskUpdate(taskId=N) from earlier turns instead of
+     *  silently dropping it when state.tasks is empty (the adapter is
+     *  recreated each turn, so without seeding a cross-turn TaskUpdate has
+     *  no list to index into). */
+    initialTodos: TodoUpdateEvent["todos"] = [],
   ) {
     this.state = {
       blockMessageIds: new Map(),
       emittedToolUse: new Set(),
-      tasks: [],
+      tasks: [...initialTodos],
       textScanners: new Map(),
       lastKnownContextWindow: 0,
       subagents: new Map(),
       inPlanMode: false,
+      pendingContextUsage: null,
       turnDoneEmitted: false,
       backgroundTaskIds: new Set(),
     };
@@ -736,6 +749,24 @@ export class SdkMessageAdapter {
     // forwards zeros from some proxies / non-Anthropic gateways).
     this.emitTokenUsage(message.usage, message.model, undefined);
 
+    // Path B kickoff: fire off `Query.getContextUsage()` now while the CLI
+    // process is still alive (during assistant-message processing). The result
+    // is awaited at turn-end (emitTurnEndSnapshot). This is critical: calling
+    // getContextUsage() only at result-time fails with "Query closed before
+    // response received" because the generator is already tearing down. We
+    // don't await here - just kick it off and let it resolve in the background.
+    if (this.query && !this.state.pendingContextUsage) {
+      this.state.pendingContextUsage = this.query.getContextUsage().catch((err) => {
+        // Swallow - the await in emitTurnEndSnapshot will see the rejection
+        // via the stored promise and fall back to path C. Logging here helps
+        // diagnose persistent failures (e.g. SDK version regressions).
+        this.ctx.log.warn(
+          `getContextUsage (kickoff) rejected: ${(err as Error).message}`,
+        );
+        throw err;
+      });
+    }
+
     for (const b of blocks) {
       if (b.type === "tool_use" && b.id && b.name) {
         if (this.state.emittedToolUse.has(b.id)) continue;
@@ -805,7 +836,18 @@ export class SdkMessageAdapter {
             });
           }
         } else if (b.name === "TaskCreate") {
-          const subject = readStr((b.input as Record<string, unknown> | undefined)?.subject);
+          // TaskCreate's input field name varies by model: MiniMax-M3 uses
+          // { subject, description, activeForm }, but other models may use a
+          // different primary field. Accept any of them (first non-empty
+          // wins) so the task actually enters the list - otherwise a later
+          // TaskUpdate(taskId=N) has nothing to index into and the activity
+          // capsule never reflects the status change.
+          const inp = (b.input ?? {}) as Record<string, unknown>;
+          const subject =
+            readStr(inp.subject) ||
+            readStr(inp.description) ||
+            readStr(inp.activeForm) ||
+            readStr(inp.content);
           if (subject) {
             this.state.tasks.push({ content: subject, status: "pending", priority: "medium" });
             this.ctx.emit({
@@ -817,8 +859,21 @@ export class SdkMessageAdapter {
         } else if (b.name === "TaskUpdate") {
           const taskId = Number((b.input as Record<string, unknown> | undefined)?.taskId);
           const status = readStr((b.input as Record<string, unknown> | undefined)?.status);
-          if (Number.isInteger(taskId) && taskId >= 1 && taskId <= this.state.tasks.length) {
+          if (Number.isInteger(taskId) && taskId >= 1) {
             const norm = status === "completed" ? "completed" : status === "in_progress" ? "in_progress" : "pending";
+            // Pad with placeholder items if taskId exceeds the current list.
+            // This happens when TaskCreate used a field name we don't read
+            // (see the TaskCreate branch below), or when the seeded list
+            // doesn't cover this id. Better to surface a completed
+            // placeholder than to silently drop the update and leave the
+            // activity capsule stuck on a stale status.
+            while (this.state.tasks.length < taskId) {
+              this.state.tasks.push({
+                content: `Task #${this.state.tasks.length + 1}`,
+                status: "pending",
+                priority: "medium",
+              });
+            }
             this.state.tasks[taskId - 1] = { ...this.state.tasks[taskId - 1], status: norm };
             this.ctx.emit({
               type: "todo.update",
@@ -1140,9 +1195,10 @@ export class SdkMessageAdapter {
     } satisfies ContextUsageEvent);
   }
 
-  /** Emit the turn-end context-usage snapshot. Tries path B (control channel)
-   *  first for authoritative window occupancy; falls back to path C (accumulated
-   *  result.usage merged with path A's last known window read). */
+/** Emit the turn-end context-usage snapshot. Awaits the `getContextUsage()`
+   *  promise kicked off at the last `handleAssistant` (path B) for authoritative
+   *  window occupancy; falls back to path C (accumulated result.usage merged
+   *  with path A's last known window read) if path B never fired or rejected. */
   private async emitTurnEndSnapshot(
     accumulatedRaw: RawClaudeUsage,
     model: string | undefined,
@@ -1150,10 +1206,14 @@ export class SdkMessageAdapter {
     lastKnown: ContextSnapshot | undefined,
   ): Promise<void> {
     // Path B: control channel. The most authoritative source for window
-    // occupancy — the CLI reports the live context-window size directly.
-    if (this.query) {
+    // occupancy - the CLI reports the live context-window size directly. We
+    // await the promise kicked off at handleAssistant time (before the
+    // generator started tearing down).
+    const pending = this.state.pendingContextUsage;
+    this.state.pendingContextUsage = null; // one-shot
+    if (pending) {
       try {
-        const cc = await this.query.getContextUsage();
+        const cc = await pending as Awaited<ReturnType<Query["getContextUsage"]>>;
         const accumulated = normalizeClaudeTokenUsage(
           accumulatedRaw,
           { reported: reportedWindow, lastKnown: this.state.lastKnownContextWindow },
@@ -1165,7 +1225,7 @@ export class SdkMessageAdapter {
         }
       } catch (err) {
         this.ctx.log.warn(
-          `getContextUsage failed, falling back to path C: ${(err as Error).message}`,
+          `getContextUsage (await) failed, falling back to path C: ${(err as Error).message}`,
         );
       }
     }
@@ -1173,7 +1233,7 @@ export class SdkMessageAdapter {
     // Path C fallback: accumulated result.usage for throughput/billing,
     // merged with path A's last known window read for occupancy.
     if (!lastKnown) {
-      // No path-A snapshot — emit accumulated directly as better-than-nothing.
+      // No path-A snapshot - emit accumulated directly as better-than-nothing.
       this.emitTokenUsage(accumulatedRaw, model, reportedWindow);
       return;
     }

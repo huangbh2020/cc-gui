@@ -12,7 +12,6 @@ import {
   IconArrowBarToUp,
   IconChartBar,
   IconChevronRight,
-  IconCoins,
   IconDatabase,
   IconStack2,
 } from "@renderer/lib/icons.js";
@@ -156,8 +155,6 @@ function rowIcon(key: string) {
       return IconArrowBarToUp;
     case "processed":
       return IconStack2;
-    case "cost":
-      return IconCoins;
     default:
       return IconStack2;
   }
