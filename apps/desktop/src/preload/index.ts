@@ -64,6 +64,16 @@ const api = {
       ipcRenderer.invoke(IPC.SETTING_SET, input)) as RpcMap["setting.set"],
   },
 
+  /** Notification preferences + OS notification click handling. */
+  notification: {
+    getPrefs: (() =>
+      ipcRenderer.invoke(IPC.NOTIFICATION_GET_PREFS)) as RpcMap["notification.getPrefs"],
+    setPrefs: ((input) =>
+      ipcRenderer.invoke(IPC.NOTIFICATION_SET_PREFS, input)) as RpcMap["notification.setPrefs"],
+    focusSession: ((input) =>
+      ipcRenderer.invoke(IPC.NOTIFICATION_FOCUS_SESSION, input)) as RpcMap["notification.focusSession"],
+  },
+
   /** Provider list — returns all registered backends with capabilities. */
   provider: {
     list: (() => ipcRenderer.invoke(IPC.PROVIDER_LIST)) as RpcMap["provider.list"],
@@ -401,6 +411,30 @@ const api = {
       ipcRenderer.on(IPC.UPDATE_DOWNLOADED, listener);
       return () => {
         ipcRenderer.off(IPC.UPDATE_DOWNLOADED, listener);
+      };
+    },
+    /** Fires when the main window gains or loses focus (app switch, minimize,
+     *  restore). The renderer uses this to decide whether background events
+     *  warrant an OS notification or just an in-app badge. */
+    windowFocusChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "window:focusChanged" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.WINDOW_FOCUS_CHANGED) handler(msg);
+      };
+      ipcRenderer.on(IPC.WINDOW_FOCUS_CHANGED, listener);
+      return () => {
+        ipcRenderer.off(IPC.WINDOW_FOCUS_CHANGED, listener);
+      };
+    },
+    /** Fires when the user clicks an OS notification. Main has already shown +
+     *  focused the window; this event tells the renderer which session to
+     *  navigate to. */
+    notificationFocusSession(handler: (msg: Extract<MainToRendererMessage, { channel: "notification:focusSession" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.NOTIFICATION_FOCUS_SESSION) handler(msg);
+      };
+      ipcRenderer.on(IPC.NOTIFICATION_FOCUS_SESSION, listener);
+      return () => {
+        ipcRenderer.off(IPC.NOTIFICATION_FOCUS_SESSION, listener);
       };
     },
   },

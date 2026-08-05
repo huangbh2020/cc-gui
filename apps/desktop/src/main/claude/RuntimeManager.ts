@@ -53,6 +53,16 @@ const approvalBridge = new ApprovalBridge();
 
 class RuntimeManager {
   private sessions = new Map<string, SessionRuntime>();
+  /** Optional observer fired for every emitted RuntimeEvent (after the
+   *  renderer push + persistence). Used by the NotificationManager to decide
+   *  whether an OS notification is warranted. Set via {@link setObserver}. */
+  private observer: ((e: RuntimeEvent) => void) | null = null;
+
+  /** Register a global event observer. Only one at a time (the
+   *  NotificationManager). Pass null to detach. */
+  setObserver(fn: ((e: RuntimeEvent) => void) | null): void {
+    this.observer = fn;
+  }
 
   /** Create or reuse the runtime state for a GUI session. Idempotent. */
   bindSession(session: Session): void {
@@ -125,13 +135,21 @@ class RuntimeManager {
           log.error(`failed to persist turn files: ${(err as Error).message}`);
         }
       } else if (e.type === "turn.rewound") {
-        // A rewind voids the last turn's edits — clear the persisted snapshot
+        // A rewind voids the last turn's edits - clear the persisted snapshot
         // too, otherwise the card would reappear on reopen after being dismissed.
         try {
           SessionRepo.updateTurnFiles(session.id, null);
         } catch (err) {
           log.error(`failed to clear turn files after rewind: ${(err as Error).message}`);
         }
+      }
+      // Notify the global observer (NotificationManager) after the renderer
+      // push + persistence. Fire-and-forget; errors in the observer must not
+      // disrupt the event stream.
+      try {
+        this.observer?.(e);
+      } catch (err) {
+        log.error(`notification observer error: ${(err as Error).message}`);
       }
     };
 

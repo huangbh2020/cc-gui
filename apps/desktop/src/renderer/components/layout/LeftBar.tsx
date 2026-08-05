@@ -102,6 +102,7 @@ export function LeftBar() {
   const archiveSession = useSessionStore((s) => s.archiveSession);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   const runningBySession = useSessionStore((s) => s.runningBySession);
+  const unreadBySession = useSessionStore((s) => s.unreadBySession);
   const renameSession = useSessionStore((s) => s.renameSession);
   const projectView = useSessionStore((s) => s.projectView);
   const setProjectView = useSessionStore((s) => s.setProjectView);
@@ -374,6 +375,7 @@ export function LeftBar() {
           isActiveProject={p.id === activeProjectId}
           activeSessionId={activeSessionId}
           runningBySession={runningBySession}
+          unreadBySession={unreadBySession}
           onToggleExpand={() => toggleProjectExpanded(p.id)}
           onNewSession={() => void startSession(p.id)}
           onLoadMore={() => void loadMoreSessions(p.id)}
@@ -739,6 +741,7 @@ interface ProjectNodeProps {
   isActiveProject: boolean;
   activeSessionId: string | null;
   runningBySession: Record<string, boolean>;
+  unreadBySession: Record<string, number>;
   onToggleExpand: () => void;
   onNewSession: () => void;
   onLoadMore: () => void;
@@ -769,7 +772,7 @@ interface ProjectNodeProps {
 function ProjectNode(props: ProjectNodeProps) {
   const {
     project, sessions, hasMore, total, expanded, isActiveProject, activeSessionId,
-    runningBySession,
+    runningBySession, unreadBySession,
     onToggleExpand, onNewSession, onLoadMore, onSelectSession,
     onDelete, onArchiveSession, onDeleteSession,
     registerNode, onContextSession, onContextProject,
@@ -851,6 +854,7 @@ function ProjectNode(props: ProjectNodeProps) {
                 session={s}
                 active={s.id === activeSessionId}
                 isRunning={!!runningBySession[s.id]}
+                unreadCount={unreadBySession[s.id] ?? 0}
                 onSelect={() => onSelectSession(s.id)}
                 onArchive={() => onArchiveSession(s.id)}
                 onDelete={() => onDeleteSession(s)}
@@ -881,11 +885,14 @@ function ProjectNode(props: ProjectNodeProps) {
 /* ── Session row (leaf) ── */
 
 function SessionRow({
-  session, active, isRunning, onSelect, onArchive, onDelete, registerNode, onContext,
+  session, active, isRunning, unreadCount, onSelect, onArchive, onDelete, registerNode, onContext,
 }: {
   session: Session;
   active: boolean;
   isRunning: boolean;
+  /** Unread event count for this session (0 = no badge). Only rendered when
+   *  the row is idle (not running) and the count is > 0. */
+  unreadCount: number;
   onSelect: () => void;
   onArchive: () => void;
   onDelete: () => void;
@@ -899,8 +906,14 @@ function SessionRow({
   // always-reserved action buttons leaving a gap.
   const [hovered, setHovered] = useState(false);
   const idle = pendingConfirm === null && !isRunning;
-  const showTime = idle && !hovered;
+  const hasUnread = unreadCount > 0;
+  // When there are unread events, suppress the time label so the badge can
+  // hug the right edge - the badge is more actionable information than the
+  // timestamp. On hover the action buttons take precedence (so the user can
+  // archive/delete without the badge getting in the way).
+  const showTime = idle && !hovered && !hasUnread;
   const showActions = idle && hovered;
+  const showUnreadBadge = idle && !hovered && hasUnread;
 
   const handleRowClick = () => {
     setPendingConfirm(null);
@@ -941,6 +954,23 @@ function SessionRow({
       {showTime && (
         <span className="shrink-0 text-content-subtle/70 [font-size:var(--rp-fs-sm)]">
           {formatRelativeTime(session.updatedAt)}
+        </span>
+      )}
+
+      {/* Unread badge - shown when this session has events the user hasn't
+          seen (turn done, error, blocking approval, background task finished)
+          and the row is idle (not running, not hovered, no pending confirm).
+          A count > 9 renders "9+" to keep the badge compact. Uses the accent
+          color so it pops without clashing with the running spinner. */}
+      {showUnreadBadge && (
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-1.5 leading-none text-white [font-size:var(--rp-fs-sm)]",
+            "min-w-[16px] text-center",
+            active ? "bg-accent" : "bg-accent/80",
+          )}
+        >
+          {unreadCount > 9 ? "9+" : unreadCount}
         </span>
       )}
 

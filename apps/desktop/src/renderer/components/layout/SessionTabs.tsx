@@ -46,6 +46,7 @@ export function SessionTabs() {
   const activeId = useSessionStore((s) => s.activeSessionId);
   const sessionsByProject = useSessionStore((s) => s.sessionsByProject);
   const runningBySession = useSessionStore((s) => s.runningBySession);
+  const unreadBySession = useSessionStore((s) => s.unreadBySession);
   const selectSession = useSessionStore((s) => s.selectSession);
   const closeTab = useSessionStore((s) => s.closeTab);
   const reorderTab = useSessionStore((s) => s.reorderTab);
@@ -162,6 +163,7 @@ export function SessionTabs() {
                 const sess = findSession(sessionsByProject, id);
                 const isActive = id === activeId;
                 const running = !!runningBySession[id];
+                const unread = unreadBySession[id] ?? 0;
                 return (
                   <SortableTab
                     key={id}
@@ -169,6 +171,7 @@ export function SessionTabs() {
                     sessionId={id}
                     isActive={isActive}
                     running={running}
+                    unreadCount={unread}
                     registerNode={(node) => {
                       if (node) tabNodes.current.set(id, node);
                       else tabNodes.current.delete(id);
@@ -229,6 +232,10 @@ interface SortableTabProps {
   sessionId: string;
   isActive: boolean;
   running: boolean;
+  /** Unread event count for this session (0 = no badge). Rendered as a small
+   *  accent-colored count badge on non-active tabs so the user can see which
+   *  background tabs have new activity. */
+  unreadCount: number;
   registerNode: (node: HTMLDivElement | null) => void;
   onActivate: () => void;
   onClose: () => void;
@@ -239,6 +246,7 @@ function SortableTab({
   sessionId,
   isActive,
   running,
+  unreadCount,
   registerNode,
   onActivate,
   onClose,
@@ -324,7 +332,20 @@ function SortableTab({
         )}
       />
       <span className="truncate">{title}</span>
-      {/* Close button — explicit stopPropagation so it never starts a drag
+      {/* Unread badge - shown on non-active tabs with pending unread events.
+          Suppresses on hover so the close button has room; the badge clears
+          when the tab is activated (selectSession). */}
+      {!isActive && unreadCount > 0 && (
+        <span
+          className={cn(
+            "shrink-0 rounded-full bg-accent px-1 text-center text-[9px] font-medium leading-[14px] text-white",
+            "min-w-[14px] transition-opacity group-hover:opacity-0",
+          )}
+        >
+          {unreadCount > 9 ? "9+" : unreadCount}
+        </span>
+      )}
+      {/* Close button - explicit stopPropagation so it never starts a drag
           and never activates the tab. */}
       <button
         type="button"

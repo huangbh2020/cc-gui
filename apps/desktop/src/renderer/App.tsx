@@ -11,6 +11,7 @@ import { SettingsPage } from "./components/settings/SettingsPage.js";
 import { CommandPalette } from "./components/layout/CommandPalette.js";
 import { SearchDialog } from "./components/ide/SearchDialog.js";
 import { BrowserPanel } from "./components/browser/BrowserPanel.js";
+import { Toaster } from "./components/layout/Toaster.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts.js";
 import { useSessionStore } from "./stores/sessionStore.js";
@@ -175,6 +176,9 @@ export function App() {
           </Suspense>
         </>
       )}
+      {/* Global toast stack - mounted at the root so it overlays everything.
+          Renders null when empty. */}
+      <Toaster />
     </div>
   );
 }

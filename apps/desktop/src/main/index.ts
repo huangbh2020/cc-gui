@@ -1,13 +1,14 @@
 import { app, BrowserWindow, session } from "electron";
 import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
-import { initDb, closeDb } from "@main/store/db.js";
+import { initDb, closeDb, awaitDb } from "@main/store/db.js";
 import { initTheme } from "@main/lib/theme.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { lspManager } from "@main/lsp/LspManager.js";
 import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { initUpdater } from "@main/updater.js";
+import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { is } from "@main/utils.js";
 import { logStartup } from "@main/lib/startupTimer.js";
 import { log } from "@main/lib/logger.js";
@@ -95,6 +96,19 @@ app.whenReady().then(async () => {
   // Fire-and-forget: the first check is delayed 10s anyway, and the updater
   // module is lazy-loaded, so this never blocks window creation.
   void initUpdater();
+
+  // Start the notification system. Fire-and-forget: it awaits DB readiness
+  // internally (to load prefs), then attaches its event observer to the
+  // RuntimeManager. Until the observer attaches, events are simply not
+  // observed (no notification) - safe to race with window creation.
+  void (async () => {
+    try {
+      await awaitDb();
+      notificationManager.start();
+    } catch (err) {
+      log.error(`NotificationManager failed to start: ${(err as Error).message}`);
+    }
+  })();
 
   app.on("activate", () => {
     // macOS: re-create a window when the dock icon is clicked.

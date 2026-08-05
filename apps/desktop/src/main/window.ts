@@ -4,6 +4,7 @@ import { is } from "@main/utils.js";
 import { getEffectiveTheme } from "@main/lib/theme.js";
 import { log } from "@main/lib/logger.js";
 import { logStartup } from "@main/lib/startupTimer.js";
+import { IPC } from "@contracts/ipc";
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -88,6 +89,19 @@ export function createMainWindow(): BrowserWindow {
     logStartup("ready-to-show");
     mainWindow?.show();
   });
+
+  // Forward window focus/blur to the renderer so it can make notification
+  // decisions (OS notification vs in-app toast vs silent badge). The renderer
+  // also tracks document.visibilityState for tab-hide, but the Electron-level
+  // focus event is the authoritative "is our app frontmost?" signal.
+  // `blur`/`focus` fire on app switch, dock click, minimize, and restore.
+  const pushFocus = (focused: boolean) => sendToRenderer(IPC.WINDOW_FOCUS_CHANGED, { focused });
+  mainWindow.on("focus", () => pushFocus(true));
+  mainWindow.on("blur", () => pushFocus(false));
+  // On macOS, minimize doesn't trigger blur reliably in all versions, so also
+  // hook the minimize/restore pair for a deterministic signal.
+  mainWindow.on("minimize", () => pushFocus(false));
+  mainWindow.on("restore", () => pushFocus(true));
   // Null out the reference once the window is gone so the optional chains in
   // sendToRenderer / updateTitleBarOverlay / getMainWindow short-circuit
   // instead of operating on a destroyed BrowserWindow. Without this, async

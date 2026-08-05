@@ -41,6 +41,9 @@ const APP_NAME = "Mcode";
 const APP_DESC = "基于 Claude Agent SDK 构建的桌面端 GUI(Electron 三栏 IDE)";
 /** GitHub repo URL. */
 const REPO_URL = "https://github.com/huangbh2020/mcode";
+/** GitHub Releases latest URL — where the user lands to manually download on
+ *  macOS when Squirrel.Mac can't auto-install (ad-hoc signature). */
+const RELEASES_URL = "https://github.com/huangbh2020/mcode/releases/latest";
 /** SPDX license identifier. */
 const LICENSE = "MIT";
 
@@ -51,7 +54,7 @@ type UpdateState =
   | { kind: "up-to-date"; version: string }
   | { kind: "available"; version: string }
   | { kind: "downloading"; percent: number; transferred: number; total: number }
-  | { kind: "downloaded"; version: string }
+  | { kind: "downloaded"; version: string; manualInstallRequired: boolean }
   | { kind: "error"; message: string };
 
 /** Format a byte count as a human-readable string (e.g. "12.3 MB"). */
@@ -80,7 +83,11 @@ function stateFromPersisted(persisted: PersistedUpdateState | null): UpdateState
     };
   }
   if (persisted.status === "downloaded") {
-    return { kind: "downloaded", version: persisted.version };
+    return {
+      kind: "downloaded",
+      version: persisted.version,
+      manualInstallRequired: persisted.manualInstallRequired ?? false,
+    };
   }
   return null;
 }
@@ -161,7 +168,11 @@ export function AboutPanel() {
       });
     });
     const offDownloaded = api.on.updateDownloaded((msg) => {
-      setUpdateState({ kind: "downloaded", version: msg.version });
+      setUpdateState({
+        kind: "downloaded",
+        version: msg.version,
+        manualInstallRequired: msg.manualInstallRequired ?? false,
+      });
     });
     return () => {
       offAvailable();
@@ -229,6 +240,12 @@ export function AboutPanel() {
     }
   };
 
+  /** macOS ad-hoc fallback: the update has been downloaded but Squirrel.Mac
+   *  can't apply it, so open the releases page for a manual install. */
+  const onGoToDownload = () => {
+    openExternal(RELEASES_URL);
+  };
+
   const rows: { label: string; value: string }[] = [
     { label: "版本", value: info ? `v${info.appVersion}` : "-" },
     { label: "许可证", value: LICENSE },
@@ -279,6 +296,7 @@ export function AboutPanel() {
         state={updateState}
         onDownload={onDownloadUpdate}
         onInstall={onQuitAndInstall}
+        onGoToDownload={onGoToDownload}
       />
 
       {/* Action buttons */}
@@ -343,10 +361,12 @@ function UpdateBanner({
   state,
   onDownload,
   onInstall,
+  onGoToDownload,
 }: {
   state: UpdateState;
   onDownload: () => void;
   onInstall: () => void;
+  onGoToDownload: () => void;
 }) {
   if (state.kind === "idle" || state.kind === "checking") return null;
 
@@ -400,9 +420,22 @@ function UpdateBanner({
       tone = "accent";
       break;
     case "downloaded":
-      icon = <IconRocket size={16} className="text-accent" />;
-      message = `v${state.version} 已就绪,重启后安装`;
-      action = { label: "重启安装", onClick: onInstall, icon: <IconRocket size={14} /> };
+      if (state.manualInstallRequired) {
+        // macOS ad-hoc: Squirrel.Mac can't apply the update. Guide the user to
+        // the releases page for a manual download/install instead of offering
+        // a no-op "restart & install".
+        icon = <IconExternalLink size={16} className="text-accent" />;
+        message = `v${state.version} 已下载,需手动安装`;
+        action = {
+          label: "前往下载",
+          onClick: onGoToDownload,
+          icon: <IconExternalLink size={14} />,
+        };
+      } else {
+        icon = <IconRocket size={16} className="text-accent" />;
+        message = `v${state.version} 已就绪,重启后安装`;
+        action = { label: "重启安装", onClick: onInstall, icon: <IconRocket size={14} /> };
+      }
       tone = "accent";
       break;
     case "error":

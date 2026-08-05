@@ -10,6 +10,7 @@ import { GitPanel } from "./GitPanel.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { LspLanguagesPanel } from "./LspLanguagesPanel.js";
 import { TitleGenPanel } from "./TitleGenPanel.js";
+import { NotificationsPanel } from "./NotificationsPanel.js";
 import { AboutPanel } from "./AboutPanel.js";
 
 /**
@@ -26,6 +27,7 @@ import { AboutPanel } from "./AboutPanel.js";
  *  - 模型配置 (CustomModelsPanel - two-column: provider list + config form)
  *  - Skills  (SkillsPanel - two-column: skill list + raw SKILL.md editor)
  *  - 线程名称 (TitleGenPanel)
+ *  - 消息通知 (NotificationsPanel - toggle per notification category)
  *  - Git     (GitPanel)
  *  - 终端    (TerminalPanel - shell override + per-project commands)
  *  - 语言服务器 (LspLanguagesPanel)
@@ -36,7 +38,7 @@ import { AboutPanel } from "./AboutPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "custom-models" | "skills" | "appearance" | "shortcuts" | "git" | "terminal" | "lsp-languages" | "title-gen" | "about";
+type SectionId = "general" | "custom-models" | "skills" | "appearance" | "shortcuts" | "notifications" | "git" | "terminal" | "lsp-languages" | "title-gen" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -51,6 +53,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "custom-models", label: "模型配置" },
   { id: "skills", label: "Skills" },
   { id: "title-gen", label: "线程名称" },
+  { id: "notifications", label: "消息通知" },
   { id: "git", label: "Git" },
   { id: "terminal", label: "终端" },
   { id: "lsp-languages", label: "语言服务器" },
@@ -125,6 +128,7 @@ export function SettingsPage() {
           {active === "custom-models" && <CustomModelsPanel />}
           {active === "skills" && <SkillsPanel />}
           {active === "title-gen" && <TitleGenPanel />}
+          {active === "notifications" && <NotificationsPanel />}
           {active === "git" && <GitPanel />}
           {active === "terminal" && <TerminalPanel />}
           {active === "lsp-languages" && <LspLanguagesPanel />}

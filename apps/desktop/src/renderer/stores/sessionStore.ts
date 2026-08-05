@@ -57,6 +57,7 @@ import {
   type PickedElement,
 } from "@contracts/ipc";
 import type { UserInputAnswers } from "@contracts/provider";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /** True for `.md` / `.markdown` files - used to default the editor into preview
  *  mode on first open. Kept here (not in lib/path) because it's a content-type
@@ -355,6 +356,19 @@ export interface SessionState {
    *  -- 用户的中断是权威意图。NOT persisted - 仅内存态,随 deleteSession
    *  一并清理。 */
   interruptedBySession: Record<string, boolean>;
+  /** Per-session unread event counter. Incremented in `ingestEvent` whenever a
+   *  noteworthy event (turn done, error, blocking approval/question, background
+   *  subagent completion) arrives for a session that is NOT the active session.
+   *  Cleared to 0 when the user selects/opens that session (selectSession /
+   *  openTab). Drives the red dot badge in the left bar + tab strip. NOT
+   *  persisted - unread state is transient and shouldn't survive a restart. */
+  unreadBySession: Record<string, number>;
+  /** Whether the main window is currently focused (frontmost + not minimized +
+   *  the renderer tab is visible). Fed from the Electron `window:focusChanged`
+   *  push event + `document.visibilitychange`. The notification layer reads
+   *  this to decide between an OS notification (window unfocused) vs an in-app
+   *  toast (window focused). NOT persisted. */
+  isWindowFocused: boolean;
   claudeInstalled: boolean | null;
   /** Settings modal visibility (opened from the LeftBar ⚙ footer and the CLI-missing CTA). */
   settingsOpen: boolean;
@@ -707,6 +721,11 @@ export interface SessionState {
   ) => Promise<void>;
   interrupt: () => Promise<void>;
   ingestEvent: (e: RuntimeEvent) => void;
+  /** Update the window-focus flag. Called from useClaudeEvents on Electron
+   *  `window:focusChanged` + `document.visibilitychange`. When the window
+   *  regains focus, the active session's unread counter is cleared (the user
+   *  is looking at it now). */
+  setWindowFocused: (focused: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
   /** Toggle the Cmd/Ctrl+K command palette open/closed. */
   setCommandPaletteOpen: (open: boolean) => void;
@@ -2046,6 +2065,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   runningBySession: {},
   runningTurnStartedAt: {},
   interruptedBySession: {},
+  unreadBySession: {},
+  isWindowFocused: true,
   claudeInstalled: null,
   settingsOpen: false,
   commandPaletteOpen: false,
@@ -2648,7 +2669,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     hydrateCapsule(set, get, sessionId);
     hydrateTurnFiles(set, get, sessionId);
     hydrateUsageHistory(set, get, sessionId);
-    set({ activeSessionId: sessionId });
+    set((s) => {
+      // Clear the unread badge - the user is now looking at this session.
+      if (!s.unreadBySession[sessionId]) return { activeSessionId: sessionId };
+      const unreadBySession = { ...s.unreadBySession };
+      delete unreadBySession[sessionId];
+      return { activeSessionId: sessionId, unreadBySession };
+    });
     if (get().messagesBySession[sessionId]) return;
     const { messages } = await api.session.messages({ sessionId });
     set((s) => ({
@@ -2668,12 +2695,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     hydrateCapsule(set, get, sessionId);
     hydrateTurnFiles(set, get, sessionId);
     hydrateUsageHistory(set, get, sessionId);
-    set((s) => ({
-      activeSessionId: sessionId,
-      // Append only if not already present; preserves the order in which
-      // tabs were opened (newer tabs on the right).
-      openTabs: s.openTabs.includes(sessionId) ? s.openTabs : [...s.openTabs, sessionId],
-    }));
+    set((s) => {
+      // Clear the unread badge - the user is now looking at this session.
+      const unreadBySession = { ...s.unreadBySession };
+      delete unreadBySession[sessionId];
+      return {
+        activeSessionId: sessionId,
+        // Append only if not already present; preserves the order in which
+        // tabs were opened (newer tabs on the right).
+        openTabs: s.openTabs.includes(sessionId) ? s.openTabs : [...s.openTabs, sessionId],
+        unreadBySession,
+      };
+    });
     if (!get().messagesBySession[sessionId]) {
       const { messages } = await api.session.messages({ sessionId });
       set((s) => ({
@@ -2711,11 +2744,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
       }
       // If the new active tab changed, sync its config so the composer
-      // chips reflect the right model/effort/permission.
+      // chips reflect the right model/effort/permission. Also clear its
+      // unread badge - it's now the visible session.
       if (nextActive && nextActive !== s.activeSessionId) {
         // Defer to the set body: we can't call syncConfigFromSession
         // here because it uses the same `set`. Inline the same lookup.
         const sess = findSession(s.sessionsByProject, s.archivedSessionsByProject, nextActive);
+        const unreadBySession = { ...s.unreadBySession };
+        delete unreadBySession[nextActive];
         return {
           openTabs: nextTabs,
           activeSessionId: nextActive,
@@ -2723,6 +2759,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           effort: sess?.effort ?? s.effort,
           permissionMode: sess?.permissionMode ?? s.permissionMode,
           customModelId: sess?.customModelId ?? s.customModelId,
+          unreadBySession,
         };
       }
       return { openTabs: nextTabs, activeSessionId: nextActive };
@@ -2893,6 +2930,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete runningTurnStartedAt[id];
       const interruptedBySession = { ...s.interruptedBySession };
       delete interruptedBySession[id];
+      const unreadBySession = { ...s.unreadBySession };
+      delete unreadBySession[id];
       const todosBySession = { ...s.todosBySession };
       delete todosBySession[id];
       const planBySession = { ...s.planBySession };
@@ -2935,6 +2974,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           messagesBySession,
           runningBySession,
           runningTurnStartedAt,
+          interruptedBySession,
+          unreadBySession,
           todosBySession,
           planBySession,
           subagentsBySession,
@@ -2967,6 +3008,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // model/effort/permission.
       const finalActive = nextActive ?? nextInProject?.id ?? null;
       const sess = finalActive ? findSession(sessionsByProject, archivedByProject, finalActive) : undefined;
+      // Clear the new active session's unread badge - it's now visible.
+      if (finalActive) delete unreadBySession[finalActive];
       return {
         sessionsByProject,
         archivedSessionsByProject: archivedByProject,
@@ -2976,6 +3019,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         runningBySession,
         runningTurnStartedAt,
         interruptedBySession,
+        unreadBySession,
         todosBySession,
         planBySession,
         subagentsBySession,
@@ -3068,6 +3112,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const sess = nextActiveId
         ? findSession(sessionsByProject, archivedByProject, nextActiveId)
         : undefined;
+      // Clear the new active session's unread badge - it's now visible.
+      const unreadBySession = { ...s.unreadBySession };
+      if (nextActiveId) delete unreadBySession[nextActiveId];
       return {
         sessionsByProject,
         archivedSessionsByProject: archivedByProject,
@@ -3080,6 +3127,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         effort: sess?.effort ?? s.effort,
         permissionMode: sess?.permissionMode ?? s.permissionMode,
         customModelId: sess?.customModelId ?? s.customModelId,
+        unreadBySession,
       };
     });
   },
@@ -3419,6 +3467,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   ingestEvent: (e) => {
     const sid = e.sessionId;
 
+    // Bump the unread counter for non-active sessions on noteworthy events.
+    // The counter drives the red-dot badge in the left bar + tab strip so the
+    // user knows "this background thread has new activity you haven't seen."
+    // Cleared on selectSession/openTab (user looked at it). We do NOT bump for
+    // streaming deltas / thinking / tool-use-start / plan-drafting - those are
+    // mid-turn noise that would make the badge flicker incessantly. Only
+    // terminal and blocking events count: the user actually needs to act or
+    // the result is ready.
+    const bumpUnread = () => {
+      if (sid === get().activeSessionId) return;
+      set((s) => ({
+        unreadBySession: { ...s.unreadBySession, [sid]: (s.unreadBySession[sid] ?? 0) + 1 },
+      }));
+    };
+    // Push an in-app toast for non-active sessions when the window is focused.
+    // When the window is unfocused, the main-process NotificationManager
+    // handles OS notifications instead. Toasts are always supplemented by the
+    // badge (bumpUnread), so the user sees both the dot + the detail card.
+    const pushToast = (kind: "info" | "warning" | "error", title: string, body?: string) => {
+      if (sid === get().activeSessionId) return;
+      if (!get().isWindowFocused) return;
+      useToastStore.getState().push({ kind, title, body, sessionId: sid });
+    };
+
     // Terminal events: flush any buffered deltas before processing the
     // turn-end event so no content is lost when the stream closes.
     if (e.type === "turn.done" || e.type === "error") {
@@ -3508,6 +3580,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // subagents. Those would resurrect a "killed" subagent and re-lock the
       // composer. Filter any `running` entry down to `killed` so the user's
       // stop intent wins. REPLACE semantics otherwise.
+      // Bump unread when a backgrounded subagent just finished (transitioned
+      // to completed/failed) - the user asked something to run in the
+      // background and it's now done; they'd want to know without watching.
+      const prevAgents = get().subagentsBySession[sid] ?? [];
+      const prevRunning = new Set(prevAgents.filter((a) => a.status === "running").map((a) => a.taskId));
+      const justFinished = e.agents.some(
+        (a) => (a.status === "completed" || a.status === "failed") && prevRunning.has(a.taskId),
+      );
+      if (justFinished) {
+        bumpUnread();
+        pushToast("info", "后台任务完成", "子代理任务已结束");
+      }
       set((s) => {
         const agents = s.interruptedBySession[sid]
           ? e.agents.map((a) => (a.status === "running" ? { ...a, status: "killed" as const } : a))
@@ -3544,6 +3628,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return;
     }
     if (e.type === "question.ask") {
+      bumpUnread();
+      pushToast("warning", "Agent 有问题要问你", e.questions[0]?.question);
       set((s) => ({
         pendingQuestionBySession: {
           ...s.pendingQuestionBySession,
@@ -3555,6 +3641,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (e.type === "approval.request") {
       // Mirror the main-side ApprovalBridge queue: head = element 0.
       // De-dup by requestId so a re-emitted event doesn't double-push.
+      bumpUnread();
+      pushToast("warning", "需要审批工具调用", e.toolName);
       set((s) => ({
         pendingApprovals: [
           ...s.pendingApprovals.filter((p) => p.requestId !== e.requestId),
@@ -3567,8 +3655,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // ExitPlanMode: the model drafted a plan and is awaiting the user's
       // approve/reject decision. One-at-a-time per session (the model calls
       // ExitPlanMode once per plan). REPLACE so a re-emit doesn't stack.
-      // Also refresh the inline plan block's hasApproval flag → true so its
+      // Also refresh the inline plan block's hasApproval flag -> true so its
       // badge flips to 待审阅, mirroring the composer approval sheet.
+      bumpUnread();
+      pushToast("warning", "计划待审批", "查看并批准执行计划");
       set((s) => {
         const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
         // The plan text on the approval request is the model's ExitPlanMode
@@ -3770,7 +3860,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         case "error": {
           next = [...next, { id: `err_${Date.now()}`, sessionId: sid, role: "assistant", blocks: [{ kind: "error", message: e.message }], createdAt: Date.now() }];
-          // An error terminates the turn just like turn.done — stamp the
+          // An error terminates the turn just like turn.done - stamp the
           // end time so the duration row freezes.
           const errEndedAt = Date.now();
           next = next.map((m) =>
@@ -3778,6 +3868,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               ? { ...m, turnMeta: { ...m.turnMeta, endedAt: errEndedAt } }
               : m,
           );
+          bumpUnread();
+          pushToast("error", "发生错误", e.message);
           set((s) => {
             const runningTurnStartedAt = { ...s.runningTurnStartedAt };
             delete runningTurnStartedAt[sid];
@@ -3794,6 +3886,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           break;
         }
         case "turn.done": {
+          // Bump unread for non-active sessions on turn completion - the
+          // result is ready and the user may have switched away. Skipped for
+          // interrupted turns (the user initiated the stop, no surprise) and
+          // for tool_use turns (the adapter will resume streaming shortly;
+          // the intermediate result is not a "done" signal).
+          if (e.reason !== "interrupted" && e.reason !== "tool_use") {
+            bumpUnread();
+            pushToast("info", "回合完成", "Agent 已完成本轮任务");
+          }
           // Close out any tool_use still "running": the turn ended without a
           // matching tool.result (plan mode, or interrupted).
           next = next.map((m) => ({
@@ -3935,6 +4036,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+
+  setWindowFocused: (focused) => {
+    set({ isWindowFocused: focused });
+    // When the window regains focus, the active session is by definition
+    // "seen" - clear its unread badge so the dot doesn't linger after the
+    // user returns. Non-active sessions keep their badges (the user hasn't
+    // looked at those yet).
+    if (focused) {
+      const activeId = get().activeSessionId;
+      if (activeId && get().unreadBySession[activeId]) {
+        set((s) => {
+          const unreadBySession = { ...s.unreadBySession };
+          delete unreadBySession[activeId];
+          return { unreadBySession };
+        });
+      }
+    }
+  },
 
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
   setSearchDialogOpen: (open) => set({ searchDialogOpen: open }),

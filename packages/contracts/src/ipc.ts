@@ -273,6 +273,52 @@ export const UI_TITLE_GEN_MODEL_SETTING_KEY = "ui.titleGenModel";
 export const UI_GIT_COLLAPSED_REPOS_SETTING_KEY = "ui.gitCollapsedRepos";
 
 /**
+ * Setting key under which the user's notification preferences are persisted as
+ * a JSON-encoded {@link NotificationPrefs} object. Controls whether OS-level
+ * notifications fire (window unfocused) and which event categories trigger
+ * them. Hydrated by the main-process NotificationManager at boot.
+ */
+export const NOTIFICATION_PREFS_SETTING_KEY = "notifications.prefs";
+
+/** User-controllable notification preferences. Persisted under
+ *  {@link NOTIFICATION_PREFS_SETTING_KEY}. */
+export interface NotificationPrefs {
+  /** Master switch for OS-level notifications. When false, no OS
+   *  notifications are shown (in-app badges + toasts still work). Default
+   *  true. */
+  osEnabled: boolean;
+  /** Notify on turn completion (non-active session). Default true. */
+  turnComplete: boolean;
+  /** Notify on errors (non-active session). Default true. */
+  errors: boolean;
+  /** Notify on blocking events (approval request / question / plan approval).
+   *  Default true - these are the highest-value notifications since the agent
+   *  is stalled until the user responds. */
+  blocking: boolean;
+  /** Notify when a backgrounded subagent finishes. Default true. */
+  backgroundTasks: boolean;
+}
+
+/** Default notification prefs: everything on. The user can dial back via the
+ *  settings panel. */
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
+  osEnabled: true,
+  turnComplete: true,
+  errors: true,
+  blocking: true,
+  backgroundTasks: true,
+};
+
+/** zod schema for the notification prefs JSON blob. */
+export const NotificationPrefsSchema = z.object({
+  osEnabled: z.boolean().default(true),
+  turnComplete: z.boolean().default(true),
+  errors: z.boolean().default(true),
+  blocking: z.boolean().default(true),
+  backgroundTasks: z.boolean().default(true),
+});
+
+/**
  * Setting key under which the user's saved terminal quick-commands are
  * persisted. Value is a JSON-encoded `CustomCommand[]` (name + command + id).
  *
@@ -558,6 +604,24 @@ export type GetSettingInput = z.infer<typeof GetSettingSchema>;
 export const SetSettingSchema = z.object({ key: z.string(), value: z.string() });
 export type SetSettingInput = z.infer<typeof SetSettingSchema>;
 
+/* ── Notifications ── */
+
+/** Input for getting/setting notification preferences. The prefs are persisted
+ *  under {@link NOTIFICATION_PREFS_SETTING_KEY} as JSON; these RPCs provide a
+ *  typed wrapper so the renderer doesn't hand-roll the JSON parse/stringify. */
+export const GetNotificationPrefsSchema = z.object({});
+export type GetNotificationPrefsInput = z.infer<typeof GetNotificationPrefsSchema>;
+
+export const SetNotificationPrefsSchema = NotificationPrefsSchema;
+export type SetNotificationPrefsInput = NotificationPrefs;
+
+/** Input for focusing a session after an OS notification click. The main
+ *  process brings the window to the front (show + focus), then pushes a
+ *  `notification:focusSession` event so the renderer can navigate to the
+ *  session (selectSession / openTab). */
+export const FocusSessionSchema = z.object({ sessionId: z.string() });
+export type FocusSessionInput = z.infer<typeof FocusSessionSchema>;
+
 /* ── Custom model configs (user-defined Anthropic-compatible endpoints) ── */
 
 /** Single tier binding within a custom-model config. Every field is optional;
@@ -668,13 +732,22 @@ export interface UpdateAvailableMessage {
 }
 
 /** Pushed when a downloaded update is ready to install. The renderer offers a
- *  "restart & install" button that calls `app.quitAndInstall`. */
+ *  "restart & install" button that calls `app.quitAndInstall`.
+ *
+ *  On macOS with an ad-hoc signed app (no Apple Developer ID), Squirrel.Mac
+ *  silently fails to apply the update — the button appears to do nothing.
+ *  When `manualInstallRequired` is true the renderer should instead guide the
+ *  user to manually download from the releases page. */
 export interface UpdateDownloadedMessage {
   channel: "update:downloaded";
   /** Version string of the downloaded update. */
   version: string;
   /** Release notes (markdown or plain) from the release, if any. */
   releaseNotes?: string;
+  /** True when Squirrel.Mac can't auto-install the update (e.g. macOS ad-hoc
+   *  signature). The renderer should offer a "go to download" action instead
+   *  of "restart & install". Always false on Windows. */
+  manualInstallRequired?: boolean;
 }
 
 /** Pushed repeatedly while an update downloads, carrying live progress so the
@@ -712,6 +785,10 @@ export interface PersistedUpdateState {
   total: number;
   /** ISO timestamp of when this snapshot was written. */
   updatedAt: string;
+  /** Mirrors {@link UpdateDownloadedMessage.manualInstallRequired} so the
+   *  banner restores the correct action (manual download vs restart & install)
+   *  after app restart. Only meaningful for "downloaded". */
+  manualInstallRequired?: boolean;
 }
 
 /* ── File operations (read / list dir / write) ── */
@@ -1521,6 +1598,30 @@ export interface BrowserEventMessage {
   payload: unknown;
 }
 
+/**
+ * Pushed from main -> renderer whenever the main window gains or loses focus.
+ * The renderer uses this as the basis for notification decisions: when the
+ * window is unfocused (minimized or another app is frontmost), background
+ * session events warrant a stronger notification (OS notification); when
+ * focused, only in-app toasts / badges are needed.
+ */
+export interface WindowFocusChangedMessage {
+  channel: "window:focusChanged";
+  /** True when the main window is focused (frontmost + not minimized). */
+  focused: boolean;
+}
+
+/**
+ * Pushed from main -> renderer when the user clicks an OS notification. The
+ * main process has already shown + focused the window; this event tells the
+ * renderer which session to navigate to (selectSession / openTab) so the user
+ * lands directly on the thread that generated the notification.
+ */
+export interface NotificationFocusSessionMessage {
+  channel: "notification:focusSession";
+  sessionId: string;
+}
+
 export type MainToRendererMessage =
   | ClaudeEventMessage
   | SessionTitleUpdatedMessage
@@ -1531,7 +1632,9 @@ export type MainToRendererMessage =
   | ThemeChangedMessage
   | UpdateAvailableMessage
   | UpdateDownloadProgressMessage
-  | UpdateDownloadedMessage;
+  | UpdateDownloadedMessage
+  | WindowFocusChangedMessage
+  | NotificationFocusSessionMessage;
 
 /* ── Integrated terminal (xterm.js + node-pty) ──
  *  PTY processes live in main. Renderer only sees opaque terminalIds and
@@ -1754,6 +1857,14 @@ export interface RpcMap {
   // Settings
   "setting.get": (input: GetSettingInput) => Promise<{ value: string | null }>;
   "setting.set": (input: SetSettingInput) => Promise<void>;
+  // Notifications
+  /** Get the user's notification preferences (typed wrapper over settings). */
+  "notification.getPrefs": () => Promise<{ prefs: NotificationPrefs }>;
+  /** Set (persist) the user's notification preferences. */
+  "notification.setPrefs": (input: SetNotificationPrefsInput) => Promise<{ prefs: NotificationPrefs }>;
+  /** Focus a session after an OS notification click. Main shows + focuses the
+   *  window, then pushes `notification:focusSession` so the renderer navigates. */
+  "notification.focusSession": (input: FocusSessionInput) => Promise<void>;
   // Custom models (user-defined Anthropic-compatible endpoints)
   "customModel.list": () => Promise<{ models: CustomModelPublic[] }>;
   "customModel.save": (input: SaveCustomModelInput) => Promise<{ models: CustomModelPublic[] }>;
@@ -1957,6 +2068,10 @@ export const IPC = {
   // Settings
   SETTING_GET: "setting:get",
   SETTING_SET: "setting:set",
+  // Notifications
+  NOTIFICATION_GET_PREFS: "notification:getPrefs",
+  NOTIFICATION_SET_PREFS: "notification:setPrefs",
+  NOTIFICATION_FOCUS_SESSION: "notification:focusSession",
   // Custom models (user-defined Anthropic-compatible endpoints)
   CUSTOM_MODEL_LIST: "customModel:list",
   CUSTOM_MODEL_SAVE: "customModel:save",
@@ -2056,6 +2171,7 @@ export const IPC = {
   UPDATE_AVAILABLE: "update:available",
   UPDATE_DOWNLOAD_PROGRESS: "update:downloadProgress",
   UPDATE_DOWNLOADED: "update:downloaded",
+  WINDOW_FOCUS_CHANGED: "window:focusChanged",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
