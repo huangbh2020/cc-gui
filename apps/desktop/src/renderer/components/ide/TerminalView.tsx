@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ContextMenu } from "@base-ui/react/context-menu";
 import "@xterm/xterm/css/xterm.css";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { IconCopy, IconClipboard } from "@renderer/lib/icons.js";
 import type { ITheme } from "@xterm/xterm";
 
 export type TerminalSessionStatus = "starting" | "running" | "exited" | "error";
@@ -31,20 +29,6 @@ interface Props {
   onReady?: (handle: TerminalViewHandle) => void;
   className?: string;
 }
-
-/** Right-click menu styling — mirrors the file/git context menus (see
- *  FileTree.MENU_POPUP_CLASS) so the terminal menu reads as the same control
- *  family. Defined here to keep TerminalView self-contained. */
-const CTX_MENU_POPUP_CLASS = cn(
-  "z-50 min-w-[140px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
-  "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
-  "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
-  "transition-[transform,opacity] duration-100",
-);
-const CTX_MENU_ITEM_CLASS = cn(
-  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted",
-  "disabled:pointer-events-none disabled:opacity-40",
-);
 
 /** Zinc/emerald mirrors of styles.css tokens — xterm needs explicit hex. */
 function buildTheme(dark: boolean): ITheme {
@@ -158,8 +142,8 @@ export function TerminalView({
   };
 
   // Tracks whether the user has an active text selection in the terminal, so
-  // the right-click menu can enable/disable the "复制" item and we can decide
-  // whether Cmd/Ctrl+C copies or falls through to the shell (SIGINT).
+  // we can decide whether a right-click (or Cmd/Ctrl+C) copies the selection
+  // or falls through to the shell (SIGINT).
   const [hasSelection, setHasSelection] = useState(false);
 
   // Copy the current xterm selection to the clipboard. No-ops when nothing is
@@ -236,6 +220,37 @@ export function TerminalView({
     },
     [copySelection, pasteFromClipboard],
   );
+
+  // Right-click = copy if there's a selection, otherwise paste. Mirrors
+  // Windows Terminal / iTerm2: one right-click gesture does the obvious thing,
+  // no menu needed. We intercept 'contextmenu' in the CAPTURE phase on the host
+  // so we run BEFORE xterm's own bubble-phase 'contextmenu' listener (which
+  // would otherwise move its hidden textarea under the cursor and let the
+  // browser show the native menu). preventDefault + stopImmediatePropagation
+  // keep xterm's rightClickHandler from running at all.
+  //
+  // hasSelectionRef mirrors the hasSelection state so this native listener
+  // (registered once) always reads the current selection without re-binding.
+  const hasSelectionRef = useRef(false);
+  useEffect(() => {
+    hasSelectionRef.current = hasSelection;
+  }, [hasSelection]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (hasSelectionRef.current) {
+        void copySelection();
+      } else {
+        void pasteFromClipboard();
+      }
+    };
+    host.addEventListener("contextmenu", onContextMenu, true);
+    return () => host.removeEventListener("contextmenu", onContextMenu, true);
+  }, [copySelection, pasteFromClipboard]);
 
   // Create xterm once per sessionKey.
   useEffect(() => {
@@ -516,43 +531,15 @@ export function TerminalView({
   }, [active, sessionKey]);
 
   return (
-    <ContextMenu.Root>
-      <ContextMenu.Trigger
-        render={
-          <div
-            ref={hostRef}
-            className={cn("h-full min-h-0 w-full overflow-hidden", className)}
-            data-terminal-session={sessionKey}
-            // xterm needs a non-zero box; parent supplies flex-1 min-h-0.
-            style={{ padding: "4px 6px 6px" }}
-          />
-        }
-      />
-      <ContextMenu.Portal>
-        <ContextMenu.Positioner>
-          <ContextMenu.Popup className={CTX_MENU_POPUP_CLASS}>
-            <ContextMenu.Item
-              className={CTX_MENU_ITEM_CLASS}
-              disabled={!hasSelection}
-              onClick={() => void copySelection()}
-            >
-              <span className="shrink-0">
-                <IconCopy size={12} />
-              </span>
-              <span>复制</span>
-            </ContextMenu.Item>
-            <ContextMenu.Item
-              className={CTX_MENU_ITEM_CLASS}
-              onClick={() => void pasteFromClipboard()}
-            >
-              <span className="shrink-0">
-                <IconClipboard size={12} />
-              </span>
-              <span>粘贴</span>
-            </ContextMenu.Item>
-          </ContextMenu.Popup>
-        </ContextMenu.Positioner>
-      </ContextMenu.Portal>
-    </ContextMenu.Root>
+    // xterm host. xterm registers its own native 'contextmenu' listener here
+    // during term.open; our capture-phase listener (above) intercepts before it
+    // so right-click performs copy/paste directly instead of showing any menu.
+    <div
+      ref={hostRef}
+      className={cn("h-full min-h-0 w-full overflow-hidden", className)}
+      data-terminal-session={sessionKey}
+      // xterm needs a non-zero box; parent supplies flex-1 min-h-0.
+      style={{ padding: "4px 6px 6px" }}
+    />
   );
 }

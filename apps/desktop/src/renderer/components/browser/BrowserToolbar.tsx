@@ -38,8 +38,13 @@ export interface BrowserToolbarProps {
   onTogglePickMode: () => void;
   /** Switch the device emulation preset. */
   onDeviceChange: (device: BrowserDevicePreset) => void;
-  /** Close the browser panel and return to the main workspace. */
+  /** Return to the main workspace: hide the browser overlay but keep the
+   *  WebContentsViews alive (browsing state preserved). Bound to the back
+   *  arrow AND the thread-title chip. */
   onClose: () => void;
+  /** Request to destroy the browser entirely — the parent opens a
+   *  confirmation dialog; on confirm all tabs/views are torn down. */
+  onRequestDestroy: () => void;
 }
 
 /** Compact square icon button used across the toolbar. Mirrors the Titlebar's
@@ -92,6 +97,7 @@ export function BrowserToolbar({
   onTogglePickMode,
   onDeviceChange,
   onClose,
+  onRequestDestroy,
 }: BrowserToolbarProps) {
   const devices: {
     id: BrowserDevicePreset;
@@ -178,7 +184,7 @@ export function BrowserToolbar({
 
       <div className="mx-1 h-5 w-px bg-edge" />
 
-      <ToolButton onClick={onClose} title="关闭浏览器">
+      <ToolButton onClick={onRequestDestroy} title="关闭浏览器">
         <IconX size={16} />
       </ToolButton>
     </div>

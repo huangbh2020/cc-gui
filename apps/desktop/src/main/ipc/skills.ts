@@ -202,6 +202,45 @@ async function scanSkillsRoot(rootDir: string, source: SkillSource, into: Map<st
   }
 }
 
+/** Scan a user-picked local directory for skills, with auto-detection of
+ *  whether the directory itself is a single skill or a collection of skills:
+ *  - If `<dir>/SKILL.md` exists → treat `dir` as ONE skill (folder name is the
+ *    skill name fallback).
+ *  - Otherwise → treat `dir` as a skills ROOT and scan each SKILL.md-bearing
+ *    subdirectory (same logic as scanning a tool's install location).
+ *  Appends results to `into` keyed by `local:${dir}:${name}` so the same
+ *  folder scanned twice doesn't double-add. Never throws. */
+async function scanLocalSkillDir(
+  dir: string,
+  into: Map<string, ExternalSkillInfo>,
+): Promise<void> {
+  const real = await safeRealPath(dir);
+  if (!real) return;
+  // Ensure it's a directory; silently skip otherwise (defensive — the picker
+  // only returns directories, but realpath could resolve to something else).
+  try {
+    const st = await fs.stat(real);
+    if (!st.isDirectory()) return;
+  } catch {
+    return;
+  }
+  // Case 1: the directory itself is a skill (contains SKILL.md directly).
+  const ownMd = await readTextHead(path.join(real, "SKILL.md"));
+  if (ownMd != null) {
+    const fm = parseSkillFrontmatter(ownMd);
+    const name = fm.name?.trim() || path.basename(real);
+    into.set(`local:${real}:${name}`, {
+      name,
+      description: fm.description?.trim() ?? "",
+      tool: "local",
+      sourcePath: real,
+    });
+    return;
+  }
+  // Case 2: treat as a skills root — scan each subdirectory.
+  await scanExternalSkillsRoot(real, "local", into);
+}
+
 /**
  * Scan one external tool's skills root dir and append its skills to `into`.
  * Similar to {@link scanSkillsRoot} but records the source directory path and
@@ -433,9 +472,12 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   // ── Scan external tools for skills available to import ──
   // Scans Claude Code (~/.claude/skills), Codex (~/.codex/skills), and Zcode
   // (~/.agents/skills + ~/.zcode/skills + plugin cache) for SKILL.md-bearing
-  // directories. Returns a flat list with the tool origin and source path for
-  // each, so the UI can present them and the import handler can copy them.
-  ipcMain.handle(IPC.SKILLS_SCAN_SOURCES, async () => {
+  // directories. When the caller supplies a `localDir`, that user-picked
+  // directory is scanned too (auto-detecting single-skill vs skills-collection).
+  // Returns a flat list with the tool origin and source path for each, so the
+  // UI can present them and the import handler can copy them.
+  ipcMain.handle(IPC.SKILLS_SCAN_SOURCES, async (_evt, raw) => {
+    const input = SkillsScanSourcesSchema.parse(raw);
     const byKey = new Map<string, ExternalSkillInfo>();
     try {
       const dirs = getExternalSkillDirs();
@@ -448,12 +490,22 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
       for (const dir of pluginDirs) {
         await scanExternalSkillsRoot(dir, "zcode", byKey);
       }
+      // User-picked local directory (import dialog's "select folder" flow).
+      if (input.localDir) {
+        await scanLocalSkillDir(input.localDir, byKey);
+      }
     } catch (err) {
       log.warn(`skills.scanSources failed: ${(err as Error).message}`);
     }
-    // Sort by tool then name for stable display.
+    // Sort by tool then name for stable display. Tool order is fixed so the
+    // UI grouping is deterministic (localeCompare would put "local" after
+    // "zcode", but we want it last as the "additional source" section).
+    const toolOrder: SkillTool[] = ["claude-code", "codex", "zcode", "local"];
+    const toolRank = (t: SkillTool) => toolOrder.indexOf(t);
     const sources = [...byKey.values()].sort((a, b) => {
-      if (a.tool !== b.tool) return a.tool.localeCompare(b.tool);
+      const ra = toolRank(a.tool);
+      const rb = toolRank(b.tool);
+      if (ra !== rb) return ra - rb;
       return a.name.localeCompare(b.name);
     });
     return { sources };

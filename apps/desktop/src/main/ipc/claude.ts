@@ -23,6 +23,7 @@ import { SessionRepo, ProjectRepo, MessageRepo, SettingRepo } from "@main/store/
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { providerRegistry } from "@main/providers/registry.js";
 import { log } from "@main/lib/logger.js";
+import { generateSessionTitle } from "@main/ipc/titleGen.js";
 
 export function registerClaudeHandlers(ipcMain: IpcMain): void {
   // ── health check: is the default provider's binary functional? ──
@@ -78,7 +79,8 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
 	    // Auto-title from the first user message, if the title is still the default.
 	    let updated = session;
-	    if (session.title === "New session" && input.prompt.trim()) {
+	    const isFirstMessage = session.title === "New session" && input.prompt.trim().length > 0;
+	    if (isFirstMessage) {
 	      const title = input.prompt.trim().slice(0, 40) + (input.prompt.trim().length > 40 ? "…" : "");
 	      SessionRepo.updateTitle(session.id, title);
 	      updated = { ...session, title };
@@ -110,6 +112,16 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       cwd: project.path,
       skills: input.skills,
     });
+    // Background auto-title generation: on the first user message, fire a
+    // one-shot LLM call to produce a short Chinese title and overwrite the
+    // placeholder. Fire-and-forget - never blocks the turn, and if the feature
+    // is disabled (or fails) the placeholder title above already covers the
+    // UI. See titleGen.ts for the full rationale.
+    if (isFirstMessage) {
+      void generateSessionTitle(updated, input.prompt).catch((err) =>
+        log.warn(`title generation failed for ${session.id}: ${(err as Error).message}`),
+      );
+    }
     return { session: SessionRepo.get(session.id) ?? updated };
   });
 

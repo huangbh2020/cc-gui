@@ -51,6 +51,7 @@ import {
   IconSparkles,
   IconLoader2,
   IconDownload,
+  IconFolder,
 } from "@renderer/lib/icons.js";
 import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool } from "@contracts/ipc";
 
@@ -679,6 +680,7 @@ const TOOL_LABELS: Record<SkillTool, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   zcode: "Zcode",
+  local: "本地",
 };
 
 /** Tool badge color classes - each tool gets a distinct tint. */
@@ -686,6 +688,7 @@ const TOOL_BADGE_CLS: Record<SkillTool, string> = {
   "claude-code": "bg-accent/12 text-accent",
   codex: "bg-purple-500/15 text-purple-500",
   zcode: "bg-blue-500/15 text-blue-500",
+  local: "bg-surface-hover text-content-muted",
 };
 
 /** Modal dialog for importing skills from external tools (Claude Code, Codex,
@@ -715,22 +718,27 @@ function ImportSkillsDialog({
     skipped: string[];
     errors: Array<{ name: string; error: string }>;
   } | null>(null);
+  // User-picked local directory (the import dialog's "select folder" flow).
+  // When set, its scanned skills appear under the "本地" group. Reset every
+  // time the dialog opens.
+  const [localDir, setLocalDir] = useState<string | null>(null);
 
-  // Scan external sources whenever the dialog opens.
+  // Scan external sources whenever the dialog opens or the local folder changes.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
     setResult(null);
-    setSelected(new Set());
+    if (localDir === null) setSelected(new Set());
     setExisting(new Set());
     void (async () => {
       try {
-        // Scan external tools and (if we have a project) fetch the current
-        // global skills to mark already-imported ones as "existing".
+        // Scan external tools (+ the picked local dir if any) and (if we have
+        // a project) fetch the current global skills to mark already-imported
+        // ones as "existing".
         const promises: [Promise<{ sources: ExternalSkillInfo[] }>, Promise<{ skills: SkillInfo[] }> | null] = [
-          api.skills.scanSources({}),
+          api.skills.scanSources(localDir ? { localDir } : {}),
           null,
         ];
         if (projectPath) {
@@ -755,7 +763,8 @@ function ImportSkillsDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, projectPath]);
+    // localDir is a dep: picking a new folder re-scans with it included.
+  }, [open, projectPath, localDir]);
 
   // Selection key is sourcePath (unique per skill per tool).
   const toggle = (sourcePath: string) => {
@@ -775,7 +784,7 @@ function ImportSkillsDialog({
     },
     {} as Record<SkillTool, ExternalSkillInfo[]>,
   );
-  const toolOrder: SkillTool[] = ["claude-code", "codex", "zcode"];
+  const toolOrder: SkillTool[] = ["claude-code", "codex", "zcode", "local"];
 
   const selectedCount = selected.size;
 
@@ -808,6 +817,26 @@ function ImportSkillsDialog({
     onOpenChange(false);
   };
 
+  // Pick a local folder to scan for skills (in addition to the fixed external
+  // tool dirs). Sets localDir, which triggers the open-effect to re-scan with
+  // the folder included. Clearing selection first avoids stale picks pointing
+  // at a folder that's no longer in the list.
+  const pickLocalFolder = async () => {
+    try {
+      const { path: picked } = await api.pickFolder();
+      if (!picked) return; // user cancelled
+      setSelected(new Set());
+      setLocalDir(picked);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const clearLocalFolder = () => {
+    setSelected(new Set());
+    setLocalDir(null);
+  };
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -815,13 +844,61 @@ function ImportSkillsDialog({
         <Dialog.Popup className="flex max-h-[80vh] w-[560px] flex-col p-0">
           <Dialog.Title className="px-4 pt-4">导入 Skill</Dialog.Title>
           <Dialog.Description className="px-4 pt-1">
-            从 Claude Code / Codex / Zcode 导入 skill 到{" "}
+            从 Claude Code / Codex / Zcode 或本地文件夹导入 skill 到{" "}
             <code className="rounded bg-surface-muted px-0.5">~/.mcode/skills</code>
           </Dialog.Description>
           <Dialog.Close />
 
           {/* Body: scrollable skill list */}
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+            {/* ── Local folder picker ──
+                Always shown so the user can import from an arbitrary local
+                directory (a single skill, or a collection of skills). Picking a
+                folder sets localDir → the open-effect re-scans with it and the
+                results appear in the "本地" group below. */}
+            <div className="mb-3 rounded border border-edge bg-surface/40 p-2">
+              <div className="flex items-center gap-2">
+                <IconFolder size={14} className="shrink-0 text-content-subtle" />
+                <span className="text-[0.7143em] font-medium text-content-muted">
+                  本地文件夹
+                </span>
+                <div className="flex-1" />
+                {localDir ? (
+                  <button
+                    type="button"
+                    onClick={clearLocalFolder}
+                    className="text-[0.7143em] text-content-subtle hover:text-content"
+                  >
+                    清除
+                  </button>
+                ) : null}
+              </div>
+              <div className="mt-1.5 flex items-center gap-2">
+                {localDir ? (
+                  <span
+                    className="min-w-0 flex-1 truncate rounded bg-surface px-1.5 py-1 font-mono text-[0.7143em] text-content-subtle"
+                    title={localDir}
+                  >
+                    {localDir}
+                  </span>
+                ) : (
+                  <span className="min-w-0 flex-1 text-[0.7143em] text-content-subtle">
+                    选择本地文件夹导入(支持单个 skill 或 skill 集合)
+                  </span>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void pickLocalFolder()}
+                  disabled={loading}
+                  className="shrink-0 gap-1"
+                >
+                  <IconFolder size={12} />
+                  选择文件夹
+                </Button>
+              </div>
+            </div>
+
             {loading ? (
               <div className="flex items-center justify-center gap-2 py-8 text-[0.7857em] text-content-subtle">
                 <IconLoader2 size={14} className="animate-spin" />
@@ -831,7 +908,8 @@ function ImportSkillsDialog({
               <div className="py-8 text-center text-[0.7857em] leading-relaxed text-content-subtle">
                 未发现可导入的 skill。
                 <br />
-                请先在 Claude Code / Codex / Zcode 中安装 skill。
+                请先在 Claude Code / Codex / Zcode 中安装 skill,
+                或点上方「选择文件夹」从本地导入。
               </div>
             ) : (
               <div className="space-y-3">

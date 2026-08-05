@@ -1,0 +1,135 @@
+import { useMemo } from "react";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { cn } from "@renderer/lib/cn.js";
+import { SettingRow } from "./SettingRow.js";
+import { CUSTOM_MODEL_ROLES, CUSTOM_MODEL_ROLE_LABELS } from "@contracts/customModel";
+
+/**
+ * Thread-title generation settings.
+ *
+ * Two controls:
+ *  - **Auto generate** (toggle): when on, the main process fires a one-shot
+ *    LLM call on a session's first user message to produce a short Chinese
+ *    title, overwriting the default placeholder. When off, the placeholder
+ *    (first 40 chars of the prompt) is kept.
+ *  - **Generation model**: pick a SPECIFIC model (supplier + role binding).
+ *    Only custom-model configs with at least one bound role are listed; the
+ *    user must have configured models first. Unset = built-in Claude model.
+ *
+ * The model value is stored as `"configId:roleKey"` in the settings table,
+ * same shape as the commit-gen / conflict-resolve model selectors.
+ */
+export function TitleGenPanel() {
+  const titleGenEnabled = useSessionStore((s) => s.titleGenEnabled);
+  const titleGenModel = useSessionStore((s) => s.titleGenModel);
+  const setTitleGenEnabled = useSessionStore((s) => s.setTitleGenEnabled);
+  const setTitleGenModel = useSessionStore((s) => s.setTitleGenModel);
+  const customModels = useSessionStore((s) => s.customModels);
+
+  // Build a flat list of selectable models: one entry per (config, bound role).
+  // Each entry's value is `"configId:roleKey"`, label is `"供应商名 -> 角色名"`.
+  const modelOptions = useMemo(() => {
+    const opts: { value: string; label: string }[] = [];
+    for (const cfg of customModels) {
+      for (const role of CUSTOM_MODEL_ROLES) {
+        const binding = cfg.roles[role];
+        if (binding?.requestModel?.trim()) {
+          const roleLabel = binding.displayName || CUSTOM_MODEL_ROLE_LABELS[role];
+          opts.push({
+            value: `${cfg.id}:${role}`,
+            label: `${cfg.name} -> ${roleLabel}`,
+          });
+        }
+      }
+    }
+    return opts;
+  }, [customModels]);
+
+  return (
+    <div className="divide-y divide-edge">
+      <div className="pb-3">
+        <h2 className="font-semibold text-content">线程名称生成</h2>
+        <p className="mt-0.5 text-[0.7857em] text-content-subtle">
+          开启后,在用户发送第一条消息时后台自动调用模型生成简短标题,并覆盖默认标题。生成失败时保留默认占位标题。
+        </p>
+      </div>
+
+      {/* Auto-generate toggle */}
+      <SettingRow
+        title="自动生成"
+        desc="开启后,新会话的首条消息会触发后台标题生成。关闭则沿用首条消息前 40 字符作为标题。"
+        htmlFor="setting-titlegen-enabled"
+      >
+        <Toggle
+          checked={titleGenEnabled}
+          onChange={setTitleGenEnabled}
+          label={titleGenEnabled ? "已开启" : "已关闭"}
+        />
+      </SettingRow>
+
+      {/* Model selector - specific supplier + role binding */}
+      <SettingRow
+        title="生成模型"
+        desc="选择用于生成标题的具体模型。需要先在「模型配置」中添加并绑定角色。未选择则使用内置 Claude 模型。"
+      >
+        {modelOptions.length > 0 ? (
+          <select
+            value={titleGenModel ?? ""}
+            onChange={(e) => setTitleGenModel(e.target.value || null)}
+            disabled={!titleGenEnabled}
+            className={cn(
+              "min-w-[220px] rounded-md border border-edge-input bg-surface px-2 py-1.5 text-[0.8571em] text-content outline-none",
+              "focus:border-accent",
+              !titleGenEnabled && "cursor-not-allowed opacity-50",
+            )}
+          >
+            <option value="">内置模型</option>
+            {modelOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <p className={cn("text-[0.7857em] text-content-subtle", !titleGenEnabled && "opacity-50")}>
+            暂无可用模型,请先在「模型配置」中添加。未选择则使用内置 Claude 模型。
+          </p>
+        )}
+      </SettingRow>
+    </div>
+  );
+}
+
+/** Compact inline toggle switch. Styled to match the existing accent token.
+ *  Mirrors the Toggle in CustomModelsPanel for visual consistency. */
+function Toggle({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      id="setting-titlegen-enabled"
+      aria-checked={checked}
+      title={label}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        "relative h-4 w-7 shrink-0 rounded-full transition-colors",
+        checked ? "bg-accent" : "bg-surface-hover",
+      )}
+    >
+      <span
+        className={cn(
+          "absolute top-0.5 h-3 w-3 rounded-full bg-surface shadow transition-transform",
+          checked ? "left-3.5" : "left-0.5",
+        )}
+      />
+    </button>
+  );
+}

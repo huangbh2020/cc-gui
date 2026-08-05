@@ -137,7 +137,25 @@ export function Titlebar({
             <IconArrowLeft size={16} className="shrink-0" />
             返回工作区
           </button>
-        ) : isBrowserMode ? null : (
+        ) : isBrowserMode ? (
+          // Browser overlay open: show a "返回工作台" button that closes the
+          // browser and returns to the IDE workspace. Mirrors the settings-mode
+          // back button in form (icon + label) so the two "exit this mode"
+          // affordances read consistently. The tooltip appends the effective
+          // toggle-browser shortcut (the same command this button triggers).
+          <button
+            onClick={onToggleBrowser}
+            className={cn(
+              "flex items-center gap-1.5 rounded px-1.5 py-1 text-xs font-medium",
+              "text-content-muted transition-colors hover:bg-surface-hover hover:text-content",
+            )}
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+            title={"返回工作台" + hintFor("layout.toggle-browser")}
+          >
+            <IconLayoutSidebarLeftExpand size={16} className="shrink-0" />
+            返回工作台
+          </button>
+        ) : (
           <button
             onClick={onToggleLeft}
             className={cn(
@@ -179,25 +197,30 @@ export function Titlebar({
                 without closing the open file. Sits right of the branch pill. */}
             <EditorColumnToggle />
             {/* Browser panel toggle - opens the embedded browser overlay. Sits
-                right of the editor toggle; shows a badge with the open-tab count. */}
-            <button
-              onClick={onToggleBrowser}
-              className={cn(
-                "relative flex items-center justify-center rounded p-1.5 transition-colors",
-                browserPanelOpen
-                  ? "bg-surface-hover text-accent"
-                  : "text-content-muted hover:bg-surface-hover hover:text-content",
-              )}
-              title={(browserPanelOpen ? "隐藏浏览器" : "打开浏览器") + hintFor("layout.toggle-browser")}
-              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            >
-              <IconWorld size={16} className="shrink-0" />
-              {browserTabCount > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-bold leading-none text-white">
-                  {browserTabCount}
-                </span>
-              )}
-            </button>
+                right of the editor toggle; shows a badge with the open-tab count.
+                Hidden while the browser overlay is open: in that mode the left
+                strip shows a "返回工作台" button that does the same job, so
+                keeping this toggle would be a redundant exit. */}
+            {!isBrowserMode && (
+              <button
+                onClick={onToggleBrowser}
+                className={cn(
+                  "relative flex items-center justify-center rounded p-1.5 transition-colors",
+                  browserPanelOpen
+                    ? "bg-surface-hover text-accent"
+                    : "text-content-muted hover:bg-surface-hover hover:text-content",
+                )}
+                title={(browserPanelOpen ? "隐藏浏览器" : "打开浏览器") + hintFor("layout.toggle-browser")}
+                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+              >
+                <IconWorld size={16} className="shrink-0" />
+                {browserTabCount > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-bold leading-none text-white">
+                    {browserTabCount}
+                  </span>
+                )}
+              </button>
+            )}
             <div className="flex-1" />
             {/* Bottom terminal toggle — sits just left of the right-panel
                 toggle. Active state highlighted with the accent token. */}

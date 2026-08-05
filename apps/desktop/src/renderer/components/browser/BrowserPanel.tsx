@@ -6,6 +6,7 @@ import type { PickedElement, BrowserDevicePreset } from "@contracts/ipc";
 import { BrowserToolbar } from "./BrowserToolbar.js";
 import { BrowserTabs, type BrowserTabDisplay } from "./BrowserTabs.js";
 import { PickedElementsBar } from "./PickedElementsBar.js";
+import { ConfirmDialog } from "@renderer/components/ui/confirm-dialog.js";
 
 /**
  * Embedded browser panel overlay (multi-tab).
@@ -64,6 +65,10 @@ export function BrowserPanel() {
   const projects = useSessionStore((s) => s.projects);
   const enqueueChatElement = useSessionStore((s) => s.enqueueChatElement);
   const setBrowserTabCount = useSessionStore((s) => s.setBrowserTabCount);
+  /** Confirm-destroy dialog visibility. Opening the dialog first hides the
+   *  active WebContentsView so the (renderer-DOM) dialog isn't covered by the
+   *  OS-level view floating above the stage. */
+  const [confirmDestroy, setConfirmDestroy] = useState(false);
 
   /** All open tabs. Each owns a main-process WebContentsView (by browserId). */
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
@@ -438,6 +443,37 @@ export function BrowserPanel() {
     setOpen(false);
   }, [setOpen]);
 
+  /** "关闭浏览器" button: open a confirmation dialog before tearing down all
+   *  tabs. We hide the active view first so the OS-level WebContentsView can't
+   *  cover the renderer-DOM dialog. Cancel restores the view. */
+  const handleRequestDestroy = useCallback(() => {
+    const tab = activeTabIdRef.current
+      ? tabsRef.current.find((t) => t.id === activeTabIdRef.current)
+      : null;
+    if (tab) {
+      if (tab.pickMode) {
+        void api.browser.setPickMode({ browserId: tab.browserId, enabled: false });
+        patchTab(tab.browserId, { pickMode: false });
+      }
+      void api.browser.hide({ browserId: tab.browserId });
+    }
+    setConfirmDestroy(true);
+  }, [patchTab]);
+
+  /** Confirm: destroy every tab's view in main, clear local state, close the
+   *  panel. Mirrors handleCloseTab's per-tab teardown but applied to all. */
+  const handleConfirmDestroy = useCallback(() => {
+    for (const t of tabsRef.current) {
+      void api.browser.close({ browserId: t.browserId });
+    }
+    setTabs([]);
+    setActiveTabId(null);
+    lastBoundsRef.current = null;
+    setPickedItems([]);
+    setConfirmDestroy(false);
+    setOpen(false);
+  }, [setOpen]);
+
   if (!open) return null;
 
   // Tabs for display (strip browserId - the tab strip doesn't need it).
@@ -472,6 +508,7 @@ export function BrowserPanel() {
         onTogglePickMode={handleTogglePickMode}
         onDeviceChange={handleDeviceChange}
         onClose={handleClose}
+        onRequestDestroy={handleRequestDestroy}
       />
       {/* The stage is the measurement target for the active tab's
           WebContentsView. The view floats above it at OS level, so this div
@@ -515,6 +552,33 @@ export function BrowserPanel() {
           (count + what was picked) that survives beyond the brief flash card.
           Auto-hides when empty. */}
       <PickedElementsBar items={pickedItems} onRemove={handleRemovePicked} onClear={handleClearPicked} onAdd={handleAddPicked} />
+
+      {/* Destroy confirmation. Rendered at panel root so it sits above the
+          stage; the active view was already hidden in handleRequestDestroy so
+          the dialog isn't covered by the OS-level WebContentsView. Cancel
+          restores the view since the panel stays open. */}
+      <ConfirmDialog
+        open={confirmDestroy}
+        title="关闭浏览器？"
+        description="关闭后将销毁所有打开的标签页，未保存的页面内容将丢失。"
+        confirmText="确定关闭"
+        cancelText="取消"
+        danger
+        onOpenChange={(o) => {
+          setConfirmDestroy(o);
+          if (!o) {
+            // Cancel: re-show the active view (panel is still open).
+            const tab = activeTabIdRef.current
+              ? tabsRef.current.find((t) => t.id === activeTabIdRef.current)
+              : null;
+            if (tab) {
+              void api.browser.show({ browserId: tab.browserId });
+              requestAnimationFrame(syncBounds);
+            }
+          }
+        }}
+        onConfirm={handleConfirmDestroy}
+      />
     </div>
   );
 }

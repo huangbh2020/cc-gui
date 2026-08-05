@@ -243,6 +243,29 @@ export const UI_COMMIT_GEN_PROMPT_SETTING_KEY = "ui.commitGenPrompt";
 export const UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY = "ui.conflictResolveModel";
 
 /**
+ * Setting key under which the auto thread-title generation toggle is
+ * persisted. Value is `"on"` (enabled) or `"off"` (disabled, default).
+ * When enabled, the main process fires a one-shot LLM call on the first
+ * user message of a new session to generate a short Chinese title, then
+ * overwrites the placeholder title. Shared between main (the title-gen
+ * routine reads it) and renderer (the settings panel reads/writes).
+ */
+export const UI_TITLE_GEN_ENABLED_SETTING_KEY = "ui.titleGenEnabled";
+
+/** zod schema + TS union for the title-gen enabled preference. */
+export const TitleGenEnabledSchema = z.enum(["on", "off"]);
+export type TitleGenEnabled = z.infer<typeof TitleGenEnabledSchema>;
+
+/**
+ * Setting key under which the custom-model id used for auto thread-title
+ * generation is persisted. Same shape as UI_COMMIT_GEN_MODEL_SETTING_KEY
+ * (`"configId:roleKey"`); null/empty = use the built-in model. Shared
+ * between main (the title-gen routine resolves the config) and renderer
+ * (the settings panel reads/writes).
+ */
+export const UI_TITLE_GEN_MODEL_SETTING_KEY = "ui.titleGenModel";
+
+/**
  * Setting key for per-repo collapsed state in the Git panel. Value is a
  * JSON-encoded `Record<string, boolean>` mapping repo paths to collapsed
  * state. Persisted so the collapsed/expanded state survives restarts.
@@ -1212,8 +1235,10 @@ export type SkillsDeleteInput = z.infer<typeof SkillsDeleteSchema>;
  *  user-level skills available even under custom endpoints, where the SDK
  *  normally can't load them from ~/.claude/skills. */
 
-/** Which external tool a scanned skill originated from. */
-export type SkillTool = "claude-code" | "codex" | "zcode";
+/** Which external tool a scanned skill originated from. `"local"` covers skills
+ *  discovered in an arbitrary user-picked local directory (the import dialog's
+ *  "select folder" flow), as opposed to a known tool's install location. */
+export type SkillTool = "claude-code" | "codex" | "zcode" | "local";
 
 /** A skill discovered in an external tool's skill directory, available for
  *  import into Mcode's own ~/.mcode/skills. Carries the source directory's
@@ -1230,9 +1255,16 @@ export interface ExternalSkillInfo {
 }
 
 /** Scan external tools' skill directories and return all discoverable skills.
- *  No input parameters - the handler knows the fixed source paths. Always
- *  resolves (degrades to an empty list on any IO error). */
-export const SkillsScanSourcesSchema = z.object({});
+ *  When `localDir` is provided, also scans that user-picked directory:
+ *  if it directly contains a SKILL.md it is treated as a single skill,
+ *  otherwise each SKILL.md-bearing subdirectory is treated as a skill (same
+ *  rule as scanning a tool's skills root). Always resolves (degrades to an
+ *  empty list on any IO error). */
+export const SkillsScanSourcesSchema = z.object({
+  /** Optional: a user-picked local directory to scan in addition to the fixed
+   *  external tool dirs. Used by the import dialog's "select folder" flow. */
+  localDir: z.string().optional(),
+});
 export type SkillsScanSourcesInput = z.infer<typeof SkillsScanSourcesSchema>;
 
 /** A single skill to import: the source directory (from a scan result) and
@@ -1419,6 +1451,18 @@ export interface ClaudeEventMessage {
   event: RuntimeEvent;
 }
 
+/**
+ * Pushed from main to renderer when an auto-generated session title has been
+ * written to the DB by the background title-gen routine. The renderer patches
+ * its in-memory session lists so the sidebar / tabs reflect the new title
+ * without a full reload. Mirrors the rename flow but is main-initiated.
+ */
+export interface SessionTitleUpdatedMessage {
+  channel: "session:titleUpdated";
+  sessionId: string;
+  title: string;
+}
+
 export interface TerminalDataMessage {
   channel: "terminal:data";
   terminalId: string;
@@ -1479,6 +1523,7 @@ export interface BrowserEventMessage {
 
 export type MainToRendererMessage =
   | ClaudeEventMessage
+  | SessionTitleUpdatedMessage
   | TerminalDataMessage
   | TerminalExitMessage
   | LspEventMessage
@@ -2002,6 +2047,7 @@ export const IPC = {
   LSP_REQUEST: "lsp:request",
   // send/on (push events)
   CLAUDE_EVENT: "claude:event",
+  SESSION_TITLE_UPDATED: "session:titleUpdated",
   TERMINAL_DATA: "terminal:data",
   TERMINAL_EXIT: "terminal:exit",
   LSP_EVENT: "lsp:event",

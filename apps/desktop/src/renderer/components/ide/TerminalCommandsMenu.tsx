@@ -19,10 +19,11 @@ const EMPTY: CustomCommand[] = [];
  * Terminal quick-commands menu.
  *
  * A bookmark-shaped toolbar button that opens an upward dropdown listing the
- * **active project's** saved commands. Clicking a command runs it immediately
- * (the parent TerminalPanel writes `command + "\n"` to the active PTY). The
- * menu also carries an inline **quick-add** flow (name + command) - editing
- * and deleting existing commands is done in Settings -> 终端.
+ * **active project's** saved commands. Clicking a command's name runs it in a
+ * NEW terminal tab (auto-created + switched to); the hover-revealed play
+ * button runs it in the current active terminal instead. The menu also carries
+ * an inline **quick-add** flow (name + command) - editing and deleting existing
+ * commands is done in Settings -> 终端.
  *
  * Commands are scoped per-project (see `customCommandsByProject` in the store).
  * When no project is active the menu is disabled.
@@ -31,7 +32,13 @@ const EMPTY: CustomCommand[] = [];
  * so it reads as part of the same control family. Positioned side="top" so it
  * opens upward above the bottom terminal bar.
  */
-export function TerminalCommandsMenu({ onRun }: { onRun: (command: string) => void }) {
+export function TerminalCommandsMenu({
+  onRun,
+  onRunInNewTerminal,
+}: {
+  onRun: (command: string) => void;
+  onRunInNewTerminal: (command: string) => void;
+}) {
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const commands = useSessionStore((s) =>
     activeProjectId ? s.customCommandsByProject[activeProjectId] ?? EMPTY : EMPTY,
@@ -96,14 +103,15 @@ export function TerminalCommandsMenu({ onRun }: { onRun: (command: string) => vo
                     key={cmd.id}
                     className="group flex items-center gap-1 px-1 py-0.5 data-[highlighted]:bg-surface-muted"
                   >
-                    {/* Clickable body: name (primary) + command (secondary, mono) */}
+                    {/* Clickable body: name (primary) + command (secondary, mono).
+                        Primary click opens a NEW terminal tab and runs there. */}
                     <button
                       type="button"
                       className="flex min-w-0 flex-1 items-baseline gap-2 px-2 py-1 text-left"
                       onClick={() => {
-                        onRun(cmd.command);
+                        onRunInNewTerminal(cmd.command);
                       }}
-                      title={`运行:${cmd.command}`}
+                      title={`在新终端中运行:${cmd.command}`}
                     >
                       <span className="shrink-0 text-[11px] font-medium text-content">
                         {cmd.name}
@@ -112,12 +120,13 @@ export function TerminalCommandsMenu({ onRun }: { onRun: (command: string) => vo
                         {cmd.command}
                       </span>
                     </button>
-                    {/* Hover-revealed run button (edit/delete in Settings) */}
+                    {/* Hover-revealed: run in the CURRENT terminal (the long-form
+                        play icon hints "re-use existing"). Edit/delete in Settings. */}
                     <div className="flex shrink-0 items-center opacity-0 group-hover:opacity-100 data-[highlighted]:opacity-100">
                       <button
                         type="button"
                         className="rounded p-0.5 text-content-subtle hover:bg-surface-hover hover:text-accent"
-                        title="执行"
+                        title="在当前终端运行"
                         onClick={() => onRun(cmd.command)}
                       >
                         <IconPlayerPlay size={11} />

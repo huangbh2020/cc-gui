@@ -124,7 +124,7 @@ function findContainingProject(repoPath: string): string | null {
  *  Returns `{ config, releaseBridge }` where `config` is the (possibly
  *  rewritten) `ApiConfig` to feed into `buildCustomEnv`, and `releaseBridge`
  *  drops the registry reference once the query has finished. */
-async function resolveModelForGitOp(
+export async function resolveModelForGitOp(
   customModelId: string,
   role: string | undefined,
 ): Promise<

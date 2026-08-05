@@ -32,6 +32,8 @@ import {
   UI_COMMIT_GEN_MODEL_SETTING_KEY,
   UI_COMMIT_GEN_PROMPT_SETTING_KEY,
   UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY,
+  UI_TITLE_GEN_ENABLED_SETTING_KEY,
+  UI_TITLE_GEN_MODEL_SETTING_KEY,
   UI_GIT_COLLAPSED_REPOS_SETTING_KEY,
   UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY,
   UI_PANE_WIDTHS_SETTING_KEY,
@@ -583,6 +585,14 @@ export interface SessionState {
    *  built-in model. Stored as `"configId:roleKey"`. Persisted in the settings
    *  table; independent of commitGenModel so the two can use different models. */
   conflictResolveModel: string | null;
+  /** Whether auto thread-title generation is enabled. When true, the main
+   *  process fires a one-shot LLM call on a session's first user message to
+   *  generate a short Chinese title. Persisted in the settings table. */
+  titleGenEnabled: boolean;
+  /** Custom-model id used for auto thread-title generation, or null for the
+   *  built-in model. Stored as `"configId:roleKey"`. Persisted in the settings
+   *  table; independent of the other gen models. */
+  titleGenModel: string | null;
   /** Per-repo collapsed state in the Git panel. Persisted in the settings
    *  table as a JSON-encoded Record<string, boolean>. */
   collapsedGitRepos: Record<string, boolean>;
@@ -661,6 +671,10 @@ export interface SessionState {
    *  + tab strip reflect the new title immediately. The store does NOT trim
    *  the title - the caller should pass a non-empty trimmed string. */
   renameSession: (id: string, title: string) => Promise<void>;
+  /** Apply a title update pushed from main (auto title-gen). Patches the
+   *  in-memory session lists directly - the DB row is already updated by the
+   *  main process, so no IPC round-trip. Mirrors renameSession's patching. */
+  applySessionTitleUpdate: (sessionId: string, title: string) => void;
   sendPrompt: (
     prompt: string,
     attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file"; filePath?: string }[],
@@ -948,6 +962,10 @@ export interface SessionState {
   setCommitGenPrompt: (prompt: string) => void;
   /** Set the custom-model id used for AI git-conflict resolution. Persists. */
   setConflictResolveModel: (modelId: string | null) => void;
+  /** Toggle auto thread-title generation on/off. Persists. */
+  setTitleGenEnabled: (enabled: boolean) => void;
+  /** Set the custom-model id used for auto thread-title generation. Persists. */
+  setTitleGenModel: (modelId: string | null) => void;
   /** Toggle a git repo card's collapsed state. Persists. */
   toggleCollapsedGitRepo: (repoPath: string) => void;
 }
@@ -2091,6 +2109,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   commitGenModel: null,
   commitGenPrompt: "",
   conflictResolveModel: null,
+  titleGenEnabled: false,
+  titleGenModel: null,
   collapsedGitRepos: {} as Record<string, boolean>,
   ideFocusNonce: 0,
   idePendingReveal: null,
@@ -2331,7 +2351,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // dirs, editor mode, diff mode, commit-gen model/prompt, custom commands,
     // conflict-resolve model). All optional JSON-in-settings.
     try {
-      const [tabRes, openRes, activeRes, dirsRes, modeRes, diffModeRes, commitModelRes, commitPromptRes, commandsByProjectRes, conflictModelRes] = await Promise.all([
+      const [tabRes, openRes, activeRes, dirsRes, modeRes, diffModeRes, commitModelRes, commitPromptRes, commandsByProjectRes, conflictModelRes, titleGenEnabledRes, titleGenModelRes] = await Promise.all([
         api.setting.get({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_OPEN_FILES_SETTING_KEY }),
         api.setting.get({ key: UI_IDE_ACTIVE_FILE_SETTING_KEY }),
@@ -2342,6 +2362,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         api.setting.get({ key: UI_COMMIT_GEN_PROMPT_SETTING_KEY }),
         api.setting.get({ key: UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY }),
         api.setting.get({ key: UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY }),
+        api.setting.get({ key: UI_TITLE_GEN_ENABLED_SETTING_KEY }),
+        api.setting.get({ key: UI_TITLE_GEN_MODEL_SETTING_KEY }),
       ]);
       if (tabRes.value === "files" || tabRes.value === "git") {
         set({ rightPanelTab: tabRes.value });
@@ -2357,6 +2379,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         set({ commitGenPrompt: commitPromptRes.value });
       }
       set({ conflictResolveModel: conflictModelRes.value || null });
+      set({ titleGenEnabled: titleGenEnabledRes.value === "on" });
+      set({ titleGenModel: titleGenModelRes.value || null });
       const parseBucket = <T>(raw: string | null): Record<string, T> => {
         if (!raw) return {};
         try {
@@ -3083,6 +3107,50 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       // The `sessions` alias mirrors the active project's list; refresh it in
       // case the renamed session lives in the active project (title chip etc.).
+      const sessions = s.activeProjectId === projectId
+        ? (sessionsByProject[projectId] ?? s.sessions)
+        : s.sessions;
+      return { sessionsByProject, archivedSessionsByProject, sessions };
+    });
+  },
+
+  applySessionTitleUpdate: (sessionId, title) => {
+    // Find the session's projectId from whichever cache holds it. The main
+    // process already persisted the title, so we only patch in-memory lists.
+    set((s) => {
+      let projectId: string | undefined;
+      for (const pid of Object.keys(s.sessionsByProject)) {
+        if (s.sessionsByProject[pid]?.some((x) => x.id === sessionId)) {
+          projectId = pid;
+          break;
+        }
+      }
+      if (!projectId) {
+        for (const pid of Object.keys(s.archivedSessionsByProject)) {
+          if (s.archivedSessionsByProject[pid]?.some((x) => x.id === sessionId)) {
+            projectId = pid;
+            break;
+          }
+        }
+      }
+      if (!projectId) return {}; // session not loaded anywhere yet
+
+      // Patch the title in whichever cache(s) hold the row.
+      const patchRow = (list: Session[] | undefined) =>
+        list && list.some((x) => x.id === sessionId)
+          ? list.map((x) => (x.id === sessionId ? { ...x, title } : x))
+          : list;
+
+      const sessionsByProject = { ...s.sessionsByProject };
+      if (sessionsByProject[projectId]) {
+        const next = patchRow(sessionsByProject[projectId]);
+        if (next) sessionsByProject[projectId] = next;
+      }
+      const archivedSessionsByProject = { ...s.archivedSessionsByProject };
+      if (archivedSessionsByProject[projectId]) {
+        const next = patchRow(archivedSessionsByProject[projectId]);
+        if (next) archivedSessionsByProject[projectId] = next;
+      }
       const sessions = s.activeProjectId === projectId
         ? (sessionsByProject[projectId] ?? s.sessions)
         : s.sessions;
@@ -4935,6 +5003,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void api.setting
       .set({ key: UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, value: modelId ?? "" })
       .catch((err) => console.error("setting.set(conflictResolveModel) failed:", err));
+  },
+
+  setTitleGenEnabled: (enabled) => {
+    set({ titleGenEnabled: enabled });
+    void api.setting
+      .set({ key: UI_TITLE_GEN_ENABLED_SETTING_KEY, value: enabled ? "on" : "off" })
+      .catch((err) => console.error("setting.set(titleGenEnabled) failed:", err));
+  },
+
+  setTitleGenModel: (modelId) => {
+    set({ titleGenModel: modelId });
+    void api.setting
+      .set({ key: UI_TITLE_GEN_MODEL_SETTING_KEY, value: modelId ?? "" })
+      .catch((err) => console.error("setting.set(titleGenModel) failed:", err));
   },
 
   toggleCollapsedGitRepo: (repoPath) => {

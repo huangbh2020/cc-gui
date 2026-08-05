@@ -305,6 +305,19 @@ const api = {
         ipcRenderer.off(IPC.CLAUDE_EVENT, listener);
       };
     },
+    /** Subscribe to session:titleUpdated push channel. Fired when the main
+     *  process's background title-gen routine overwrites a session's title.
+     *  The renderer patches its in-memory session lists from this; no IPC
+     *  round-trip needed (the DB is already updated). */
+    sessionTitleUpdated(handler: (msg: Extract<MainToRendererMessage, { channel: "session:titleUpdated" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.SESSION_TITLE_UPDATED) handler(msg);
+      };
+      ipcRenderer.on(IPC.SESSION_TITLE_UPDATED, listener);
+      return () => {
+        ipcRenderer.off(IPC.SESSION_TITLE_UPDATED, listener);
+      };
+    },
     terminalData(handler: (msg: Extract<MainToRendererMessage, { channel: "terminal:data" }>) => void): () => void {
       const listener = (_e: unknown, msg: MainToRendererMessage) => {
         if (msg.channel === IPC.TERMINAL_DATA) handler(msg);

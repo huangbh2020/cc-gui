@@ -291,7 +291,7 @@ function groupMessagesForRender(
         textMsgs.push({ ...msg, blocks });
       }
     } else {
-      // No tool calls at all (pure-text turn) — nothing to hide. The whole
+      // No tool calls at all (pure-text turn) - nothing to hide. The whole
       // turn is the reply; no panel is shown.
       const replyByMsg = new Map<ChatMessage, Block[]>();
       for (const { block, msg } of turnBlocks) {
@@ -301,6 +301,54 @@ function groupMessagesForRender(
       }
       for (const [msg, blocks] of replyByMsg) {
         textMsgs.push({ ...msg, blocks });
+      }
+    }
+
+    // The "本轮修改了 N 个文件" (turn-files) card must ALWAYS render as the
+    // very last item of the visible reply - after all the model's text. The
+    // store attaches the block to a specific assistant message (the array-last
+    // one at turn.files time), but a turn's reply can span multiple assistant
+    // messages, and the textMsgs order follows each message's FIRST reply-block
+    // position in the timeline. So if the card's carrying message also holds
+    // earlier reply text, that message is emitted before later messages' text,
+    // and the card ends up above subsequent reply text ("card in the middle").
+    //
+    // Enforce the invariant here at the render boundary: pull every turn-files
+    // block out of its host message and re-emit it as a standalone trailing
+    // textMsg. This keeps the card last regardless of where the store attached
+    // it. (Errors/plan/compact-summary blocks are NOT moved - only turn-files,
+    // which is strictly a per-turn summary footer.)
+    if (textMsgs.length > 0) {
+      const extracted: Block[] = [];
+      const cleaned = textMsgs
+        .map((msg) => {
+          const tf = msg.blocks.filter((b) => b.kind === "turn-files");
+          if (tf.length === 0) return msg;
+          extracted.push(...tf);
+          return { ...msg, blocks: msg.blocks.filter((b) => b.kind !== "turn-files") };
+        })
+        .filter((msg) => msg.blocks.length > 0); // drop messages left empty by the extraction
+      if (extracted.length > 0) {
+        textMsgs.length = 0;
+        textMsgs.push(...cleaned);
+        // Attach the extracted card(s) to the LAST reply message's identity (so
+        // copy/identity semantics stay sane), or synthesize a trailing message
+        // if every reply was turn-files-only. STRIP turnMeta from the trailing
+        // message: it's a synthetic split-off carrying only the card, and
+        // keeping turnMeta would render a duplicate "开始 · 用时" stat row in
+        // pure-text turns (where hideTurnStat is false because there's no panel).
+        const tail = cleaned.length > 0 ? cleaned[cleaned.length - 1] : null;
+        textMsgs.push(
+          tail
+            ? { ...tail, turnMeta: undefined, blocks: extracted }
+            : {
+                id: `files_tail_${turnMeta?.startedAt ?? Date.now()}`,
+                sessionId: "",
+                role: "assistant",
+                blocks: extracted,
+                createdAt: Date.now(),
+              },
+        );
       }
     }
 
@@ -1197,7 +1245,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
                 key={msg.id}
                 msg={msg}
                 isStreamingTail={item.isStreamingTail && idx === item.textMsgs.length - 1}
-                isTurnTail={item.isTurnTail}
+                isTurnTail={item.isTurnTail && idx === item.textMsgs.length - 1}
                 beforeMap={beforeMap}
                 hideTurnStat={hasProcess}
                 onOpenPlan={onOpenPlan}
@@ -1350,7 +1398,7 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
             }}
           />
         )}
-        <div className={cn("relative w-full", empty ? "max-w-4xl" : "mx-auto max-w-5xl pt-2")}>
+        <div className={cn("relative w-full", empty ? "max-w-4xl" : "mx-auto max-w-5xl pt-5")}>
           {empty && (
             <EmptyThreadWelcome projectName={projectName} />
           )}

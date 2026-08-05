@@ -76,6 +76,12 @@ export function TerminalPanel({ active }: { active: boolean }) {
   const termsRef = useRef<Map<string, ProjectTermState>>(new Map()); // projectPath -> state
   const handlesRef = useRef<Map<string, TerminalViewHandle>>(new Map()); // sessionKey -> handle (sessionKey is globally unique)
   const keyToPathRef = useRef<Map<string, string>>(new Map()); // sessionKey -> projectPath (routes status callbacks back to the right bucket)
+  // Per-session commands waiting to be typed into the PTY once it reaches
+  // "running" (the new PTY is spawned async by TerminalView, so we can't write
+  // immediately). Keyed by sessionKey so concurrent "run in new terminal"
+  // invocations across multiple tabs never overwrite each other (matches the
+  // per-session bucketing convention documented in AGENTS.md).
+  const pendingCommandBySession = useRef<Map<string, string>>(new Map());
   const [, forceRender] = useReducer((n: number) => n + 1, 0);
 
   // Read-only view of the CURRENT project's state (empty when no project).
@@ -213,6 +219,30 @@ export function TerminalPanel({ active }: { active: boolean }) {
     [activeHandle],
   );
 
+  // Open a NEW terminal tab, switch to it, and run the command there once its
+  // PTY is ready. The actual write is deferred until the new TerminalView
+  // reports status "running" (PTY spawn is async) — see the onStatusChange
+  // handler in the render list below. This keeps the user's current terminal
+  // untouched (e.g. a long-running dev server) while still showing the command
+  // output immediately in a fresh tab.
+  const runCommandInNewTerminal = useCallback(
+    (command: string) => {
+      if (!projectPath) return;
+      const s = makeSession();
+      const st = termsRef.current.get(projectPath);
+      if (st) {
+        st.sessions = [...st.sessions, s];
+        st.activeKey = s.key;
+      } else {
+        termsRef.current.set(projectPath, { sessions: [s], activeKey: s.key });
+      }
+      keyToPathRef.current.set(s.key, projectPath);
+      pendingCommandBySession.current.set(s.key, command);
+      forceRender();
+    },
+    [projectPath],
+  );
+
   if (!projectPath) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -304,7 +334,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-0.5 border-l border-edge pl-1">
-          <TerminalCommandsMenu onRun={runCommand} />
+          <TerminalCommandsMenu onRun={runCommand} onRunInNewTerminal={runCommandInNewTerminal} />
           <IconBtn
             title="清屏"
             onClick={() => activeHandle?.clear()}
@@ -373,7 +403,25 @@ export function TerminalPanel({ active }: { active: boolean }) {
                 sessionKey={s.key}
                 projectPath={p}
                 active={active && isActive}
-                onStatusChange={(status, detail) => updateStatus(s.key, status, detail)}
+                onStatusChange={(status, detail) => {
+                  updateStatus(s.key, status, detail);
+                  // Drain any command queued by runCommandInNewTerminal once the
+                  // freshly spawned PTY is ready. Same newline normalization as
+                  // runCommand (shell commits on "\r", not "\n").
+                  if (status === "running") {
+                    const cmd = pendingCommandBySession.current.get(s.key);
+                    if (cmd) {
+                      pendingCommandBySession.current.delete(s.key);
+                      const id = handlesRef.current.get(s.key)?.getTerminalId();
+                      if (id) {
+                        void api.terminal.write({
+                          terminalId: id,
+                          data: `${cmd.replace(/\r\n|\n|\r/g, "\r")}\r`,
+                        });
+                      }
+                    }
+                  }
+                }}
                 onReady={(handle) => {
                   handlesRef.current.set(s.key, handle);
                 }}
