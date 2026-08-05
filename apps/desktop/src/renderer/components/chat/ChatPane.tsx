@@ -1235,23 +1235,47 @@ function ChatPaneForSession({ sessionId }: { sessionId: string }) {
             {/* Text replies (and plan / turn-files / error blocks) stay
                 visible below the panel. hideTurnStat suppresses the
                 per-message stat row ONLY when a TurnPanel is rendered
-                (hasProcess) — its header already shows the turn's 开始/用时,
+                (hasProcess) - its header already shows the turn's 开始/用时,
                 so a second timing line above the reply would be redundant.
                 For pure-text turns (no tools) there's no panel, so we let the
-                first reply message show its own TurnStatRow — otherwise the
+                first reply message show its own TurnStatRow - otherwise the
                 "开始 · 用时" stat would vanish once the turn ends. */}
-            {item.textMsgs.map((msg, idx) => (
-              <MessageRow
-                key={msg.id}
-                msg={msg}
-                isStreamingTail={item.isStreamingTail && idx === item.textMsgs.length - 1}
-                isTurnTail={item.isTurnTail && idx === item.textMsgs.length - 1}
-                beforeMap={beforeMap}
-                hideTurnStat={hasProcess}
-                onOpenPlan={onOpenPlan}
-                projectPath={projectPath}
-              />
-            ))}
+            {/*
+                isTurnTail is given to the LAST textMsg that has non-empty text,
+                not the array-last item: the turn-files extraction above re-
+                emits the "本轮修改了 N 个文件" card as a standalone trailing
+                textMsg (no text block), so the array-last index would hand
+                tail status to the card and strip it from the real text reply -
+                hiding that reply's copy button (showCopy gates on isTurnTail).
+                Falling back to the last text-bearing message restores the copy
+                affordance; the card itself never had one (hasTextContent=false).
+            */}
+            {(() => {
+              let lastTextIdx = -1;
+              for (let i = item.textMsgs.length - 1; i >= 0; i--) {
+                if (
+                  item.textMsgs[i].blocks.some(
+                    (b) => b.kind === "text" && b.text.trim().length > 0,
+                  )
+                ) {
+                  lastTextIdx = i;
+                  break;
+                }
+              }
+              if (lastTextIdx < 0) lastTextIdx = item.textMsgs.length - 1;
+              return item.textMsgs.map((msg, idx) => (
+                <MessageRow
+                  key={msg.id}
+                  msg={msg}
+                  isStreamingTail={item.isStreamingTail && idx === item.textMsgs.length - 1}
+                  isTurnTail={item.isTurnTail && idx === lastTextIdx}
+                  beforeMap={beforeMap}
+                  hideTurnStat={hasProcess}
+                  onOpenPlan={onOpenPlan}
+                  projectPath={projectPath}
+                />
+              ));
+            })()}
             {turnActive && (
               <div className="mt-1.5 flex items-center gap-1.5">
                 <IconLoader2 size={12} className="animate-spin text-accent" />
