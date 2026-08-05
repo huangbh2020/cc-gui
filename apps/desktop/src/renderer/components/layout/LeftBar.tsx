@@ -36,9 +36,11 @@ import {
   IconStack2,
   IconArrowRight,
   IconPalette,
+  IconSearch,
 } from "@renderer/lib/icons.js";
 import { Button, ConfirmDialog, Dialog, Input } from "@renderer/components/ui/index.js";
 import { BrandLogo } from "./BrandLogo.js";
+import { SidebarQuickActions } from "./SidebarQuickActions.js";
 import { api } from "@renderer/lib/api.js";
 import { hexToTriplet, tripletToHex } from "@renderer/lib/colorUtils.js";
 import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
@@ -423,6 +425,11 @@ export function LeftBar() {
           </span>
         </span>
       </button>
+
+      {/* Quick actions — 新建会话 / 搜索. Two full-width primary buttons
+          docked directly under the brand logo so the two most-used workspace
+          entry points are always visible without scrolling. */}
+      <SidebarQuickActions />
 
       {/* Header */}
       <div className="group mb-1 flex items-center justify-between px-1">

@@ -296,6 +296,24 @@ export const SessionRepo = {
     return n;
   },
 
+  /** Cross-project title-substring search (Ctrl+K unified search). Scans all
+   *  non-archived sessions across every project, newest first. Desktop-scale
+   *  session counts make a full-table LIKE scan cheap; no FTS index needed. */
+  searchByTitle(query: string, opts?: { limit?: number }): Session[] {
+    const db = getDb();
+    const q = `%${query.trim()}%`;
+    const params: BindValue[] = [v(q)];
+    const limit = opts?.limit ?? 30;
+    params.push(v(limit));
+    const sql = `SELECT * FROM sessions WHERE archived = 0 AND title LIKE ? ORDER BY updated_at DESC, created_at DESC LIMIT ?`;
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const out: Session[] = [];
+    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
+    stmt.free();
+    return out;
+  },
+
   get(id: string): Session | undefined {
     const db = getDb();
     const stmt = db.prepare("SELECT * FROM sessions WHERE id = ?");

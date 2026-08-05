@@ -10,6 +10,7 @@ import {
   ArchiveSessionSchema,
   ProjectSessionsSchema,
   RenameSessionSchema,
+  SessionSearchSchema,
 } from "@contracts/ipc";
 import type { Project } from "@contracts/session";
 import { uid } from "@main/utils.js";
@@ -53,6 +54,13 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const total = SessionRepo.countByProject(input.projectId, archived);
     const hasMore = limit !== undefined ? offset + sessions.length < total : false;
     return { sessions, hasMore, total };
+  });
+
+  // Cross-project session title search (Ctrl+K unified search palette).
+  ipcMain.handle(IPC.SESSION_SEARCH, (_evt, raw) => {
+    const input = SessionSearchSchema.parse(raw);
+    const sessions = SessionRepo.searchByTitle(input.query, { limit: input.limit });
+    return { sessions };
   });
 
   // Hard-delete a project (cascades to its sessions + messages via DB FKs).

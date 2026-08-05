@@ -490,6 +490,15 @@ export const ProjectSessionsSchema = z.object({
 });
 export type ProjectSessionsInput = z.infer<typeof ProjectSessionsSchema>;
 
+/** Cross-project session search by title substring. The unified Ctrl+K search
+ *  palette uses this to list threads across the whole workspace (not just the
+ *  active project's loaded page). Matches non-archived sessions only. */
+export const SessionSearchSchema = z.object({
+  query: z.string(),
+  limit: z.number().int().positive().optional(),
+});
+export type SessionSearchInput = z.infer<typeof SessionSearchSchema>;
+
 /* A persisted message: content is opaque JSON (text/thinking/tool_use blocks).
  * P2's renderer serializes its ChatMessage.blocks array here.
  * We use z.custom<unknown>() for content: zod treats z.unknown()/z.any() as
@@ -1683,6 +1692,8 @@ export interface RpcMap {
   /** Persist a drag-to-reorder: writes sort_order = index for each id. */
   "project.reorder": (input: ReorderProjectsInput) => Promise<void>;
   // Sessions (P2 persistence)
+  /** Cross-project session search by title substring (Ctrl+K unified search). */
+  "session.search": (input: SessionSearchInput) => Promise<{ sessions: Session[] }>;
   "session.messages": (input: SessionMessagesInput) => Promise<{ messages: MessageRecord[] }>;
   "session.saveMessages": (input: SaveMessagesInput) => Promise<void>;
   /** Hard-delete a session; its messages cascade-delete (DB FK). */
@@ -1893,6 +1904,7 @@ export const IPC = {
   SESSION_DELETE: "session:delete",
   SESSION_ARCHIVE: "session:archive",
   SESSION_RENAME: "session:rename",
+  SESSION_SEARCH: "session:search",
   SESSION_MESSAGES: "session:messages",
   SESSION_SAVE_MESSAGES: "session:saveMessages",
   SESSION_UPDATE_SETTINGS: "session:updateSettings",

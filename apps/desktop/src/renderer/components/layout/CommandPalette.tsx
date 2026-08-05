@@ -1,91 +1,342 @@
 /**
- * Command palette — a Cmd/Ctrl+K modal for fast keyboard navigation.
+ * Command palette (Ctrl/Cmd+K) — a unified, type-scoped search modal.
  *
- * Architecture follows the Base UI documented pattern for composing a
- * Combobox inside a Dialog:
- *   - `Dialog.Root` (controlled by `commandPaletteOpen` in the store) supplies
- *     the modal layer, backdrop, and top-centered positioning.
- *   - `Combobox.Root inline open` is embedded inside the dialog. `inline`
- *     means the list renders inline (no separate popup) and `open` is bound
- *     to the dialog so the combobox resets its query/highlight when the dialog
- *     closes. See base-ui combobox `inline` prop docs.
- *   - A custom `filter` (commandMatches) matches label + keywords.
- *   - Commands are grouped by `CommandGroup`; each group renders a label
- *     header followed by its items.
+ * A row of tabs at the top scopes the search so the user can target one kind
+ * of result instead of always mixing all four:
  *
- * Selection: clicking an item or pressing Enter on a highlighted item fires
- * the item's `onClick`, which runs the command's `perform` against the live
- * store and closes the palette. The list closes after every run (command
- * palettes are one-shot).
+ *   全部     — every kind at once (the default; preserves the original feel).
+ *   命令     — local label/keyword match (`commandMatches`, no IPC).
+ *   线程     — `api.session.search` (cross-project title LIKE, non-archived).
+ *   文件     — `api.file.search` (file-name/path match in the active project).
+ *   文件内容 — `api.file.grep` (line-level content match in the active project).
  *
- * The palette is mounted once at the App root (see App.tsx) so it overlays
- * both the workspace and settings views.
+ * Typing switches the list in real time; selecting any item runs its `perform`
+ * and closes the palette (one-shot, like every command palette). Tabs are also
+ * drivable from the keyboard: ← / → while focused in the input cycle the active
+ * tab, so the user never has to reach for the mouse.
+ *
+ * Architecture follows the Base UI documented pattern for a Combobox inside a
+ * Dialog:
+ *   - `Dialog.Root` (controlled by `commandPaletteOpen`) supplies the modal
+ *     layer, backdrop, and top-centered positioning.
+ *   - `Combobox.Root inline open` is embedded inside. `inline` renders the list
+ *     inline (no separate popup); `open` follows the dialog so query/highlight
+ *     reset on close.
+ *   - The async searches use a debounce (120ms) + a monotonic request id
+ *     (`reqIdRef`) to drop stale responses — the same proven pattern as
+ *     SearchDialog. Each search has its own loading flag rendered next to its
+ *     group label.
+ *
+ * The palette is mounted once at the App root (see App.tsx) so it overlays both
+ * the workspace and settings views.
  */
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 import { Combobox } from "@base-ui/react/combobox";
 import { cn } from "@renderer/lib/cn.js";
+import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
   collectCommands,
   commandMatches,
-  COMMAND_GROUPS,
   type CommandDef,
-  type CommandGroup,
 } from "@renderer/lib/commands.js";
 import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/shortcuts.js";
+import type { Session } from "@contracts/session";
+import type { FileSearchEntry, FileGrepEntry } from "@contracts/ipc";
+import {
+  IconLoader2,
+  IconMessage,
+  IconFile,
+  IconFileSearch,
+} from "@renderer/lib/icons.js";
+
+/** Debounce for the async searches. Matches SearchDialog's value. */
+const SEARCH_DEBOUNCE_MS = 120;
+/** Result caps keep the palette snappy and the list scrollable. */
+const SESSION_SEARCH_LIMIT = 30;
+const FILE_SEARCH_LIMIT = 50;
+const GREP_LIMIT = 50;
+const GREP_MAX_PER_FILE = 3;
+
+/* ───────────────────────── search scope (tabs) ───────────────────────── */
+
+/** Which kind(s) of results the palette should search + render. `all` mixes
+ *  every kind (the original behaviour); the others scope to a single type so
+ *  the user can target threads / files / content without noise. */
+type SearchScope = "all" | "command" | "session" | "file" | "grep";
+
+/** Tab descriptor: id + label + whether it needs an active project to be
+ *  useful (file/content searches are project-scoped). Ordered for display. */
+const SCOPE_TABS: { id: SearchScope; label: string; needsProject: boolean }[] = [
+  { id: "all", label: "全部", needsProject: false },
+  { id: "command", label: "命令", needsProject: false },
+  { id: "session", label: "线程", needsProject: false },
+  { id: "file", label: "文件", needsProject: true },
+  { id: "grep", label: "文件内容", needsProject: true },
+];
+
+/** Does `scope` include the given group? (`all` includes everything.) */
+function scopeIncludes(scope: SearchScope, group: PaletteGroup): boolean {
+  return scope === "all" || scope === group;
+}
+
+/* ───────────────────────── unified palette item ───────────────────────── */
+
+/** Discriminated union of everything that can appear as a palette row. Each
+ *  kind carries the data its renderer + `perform` need. `kind` doubles as the
+ *  grouping key (the four groups render in a fixed order). */
+type PaletteItem =
+  | (CommandDef & { kind: "command" })
+  | { kind: "session"; session: Session }
+  | { kind: "file"; file: FileSearchEntry }
+  | { kind: "grep"; match: FileGrepEntry };
+
+/** Fixed group order for rendering. Commands always come first; the three
+ *  search groups follow so the user reads top-down "action → thing → file". */
+const GROUP_ORDER = ["command", "session", "file", "grep"] as const;
+type PaletteGroup = (typeof GROUP_ORDER)[number];
+
+const GROUP_LABELS: Record<PaletteGroup, string> = {
+  command: "命令",
+  session: "线程",
+  file: "文件",
+  grep: "文件内容",
+};
+
+/** Tri-state async result: undefined = idle, {loading:true} = pending,
+ *  {loading:false,value} = settled. Stored directly in useState so the value
+ *  reference is stable across renders. */
+type AsyncResult<T> = undefined | { loading: true } | { loading: false; value: T };
+
+/* ───────────────────────── component ───────────────────────── */
 
 export function CommandPalette() {
   const open = useSessionStore((s) => s.commandPaletteOpen);
   const setOpen = useSessionStore((s) => s.setCommandPaletteOpen);
-  // Subscribe to overrides so the <kbd> hints update live when the user
-  // rebinds in settings (the palette is usually closed by then, but this
-  // keeps the two views consistent if they ever overlap).
+  // Subscribe to overrides so <kbd> hints update live when the user rebinds.
   const overrides = useSessionStore((s) => s.shortcutOverrides);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const activeProjectId = useSessionStore((s) => s.activeProjectId);
+  const projects = useSessionStore((s) => s.projects);
 
-  // Collect commands from the live store state. `getState()` gives us a
-  // snapshot that includes dynamic session-switch commands. We re-collect on
-  // every open so freshly-created sessions appear without a remount. Each
-  // command's effective shortcut (override ?? default) is rendered into
-  // `shortcutHint` for the trailing <kbd> badge.
-  const commands = useMemo<CommandDef[]>(() => {
+  const projectPath = useMemo(() => {
+    if (!activeProjectId) return null;
+    return projects.find((p) => p.id === activeProjectId)?.path ?? null;
+  }, [activeProjectId, projects]);
+
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<SearchScope>("all");
+
+  // Async search state. `reqIdRef` guards against stale responses overwriting a
+  // newer query's results (incremented per issued search; a response whose id
+  // no longer matches is dropped).
+  const reqIdRef = useRef(0);
+  const [sessions, setSessions] = useState<AsyncResult<Session[]>>(undefined);
+  const [files, setFiles] = useState<AsyncResult<FileSearchEntry[]>>(undefined);
+  const [greps, setGreps] = useState<AsyncResult<FileGrepEntry[]>>(undefined);
+
+  const trimmed = query.trim();
+  const isSearching = trimmed.length > 0;
+
+  // Build the command list on every open (freshly-created sessions appear
+  // without a remount) and inject each command's effective shortcut hint.
+  const commandItems = useMemo<(CommandDef & { kind: "command" })[]>(() => {
     if (!open) return [];
     return collectCommands(useSessionStore.getState()).map((cmd) => {
       const effective = resolveShortcut(cmd.id, overrides);
-      return effective
-        ? { ...cmd, shortcutHint: acceleratorToDisplayString(effective) }
-        : cmd;
+      return {
+        ...cmd,
+        shortcutHint: effective ? acceleratorToDisplayString(effective) : cmd.shortcutHint,
+        kind: "command" as const,
+      };
     });
   }, [open, overrides]);
 
+  // Drive the async searches off the live query + active scope. Only the
+  // searches the current scope includes are fired, so picking e.g. "线程" never
+  // wastes a file/content scan. File/content searches additionally require an
+  // active project; session search is cross-project.
+  useEffect(() => {
+    const wantSession = scopeIncludes(scope, "session");
+    const wantFile = scopeIncludes(scope, "file") && !!projectPath;
+    const wantGrep = scopeIncludes(scope, "grep") && !!projectPath;
+    if (!open || !isSearching) {
+      setSessions(undefined);
+      setFiles(undefined);
+      setGreps(undefined);
+      return;
+    }
+    if (wantSession) setSessions({ loading: true });
+    else setSessions(undefined);
+    if (wantFile) setFiles({ loading: true });
+    else setFiles(undefined);
+    if (wantGrep) setGreps({ loading: true });
+    else setGreps(undefined);
+    const myId = ++reqIdRef.current;
+    const t = window.setTimeout(() => {
+      if (wantSession) {
+        void api.session
+          .search({ query: trimmed, limit: SESSION_SEARCH_LIMIT })
+          .then((res) => {
+            if (reqIdRef.current !== myId) return;
+            setSessions({ loading: false, value: res.sessions ?? [] });
+          })
+          .catch(() => {
+            if (reqIdRef.current !== myId) return;
+            setSessions({ loading: false, value: [] });
+          });
+      }
+      if (wantFile) {
+        void api.file
+          .search({ projectPath: projectPath!, query: trimmed, limit: FILE_SEARCH_LIMIT })
+          .then((res) => {
+            if (reqIdRef.current !== myId) return;
+            setFiles({ loading: false, value: res.files ?? [] });
+          })
+          .catch(() => {
+            if (reqIdRef.current !== myId) return;
+            setFiles({ loading: false, value: [] });
+          });
+      }
+      if (wantGrep) {
+        void api.file
+          .grep({
+            projectPath: projectPath!,
+            query: trimmed,
+            limit: GREP_LIMIT,
+            maxResultsPerFile: GREP_MAX_PER_FILE,
+          })
+          .then((res) => {
+            if (reqIdRef.current !== myId) return;
+            setGreps({ loading: false, value: res.matches ?? [] });
+          })
+          .catch(() => {
+            if (reqIdRef.current !== myId) return;
+            setGreps({ loading: false, value: [] });
+          });
+      }
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [open, isSearching, trimmed, scope, projectPath]);
+
+  // Reset everything when the dialog closes so the next open is a clean slate
+  // (query, scope, and all async results).
+  useEffect(() => {
+    if (open) return;
+    setQuery("");
+    setScope("all");
+    setSessions(undefined);
+    setFiles(undefined);
+    setGreps(undefined);
+    reqIdRef.current++;
+  }, [open]);
+
   const close = () => setOpen(false);
 
-  const runCommand = (cmd: CommandDef | undefined) => {
-    if (!cmd) return;
+  const runItem = (item: PaletteItem | undefined) => {
+    if (!item) return;
     const store = useSessionStore.getState();
-    void cmd.perform(store);
+    switch (item.kind) {
+      case "command":
+        void item.perform(store);
+        break;
+      case "session": {
+        const sess = item.session;
+        // openTab assumes the session's project is active; switch first when
+        // jumping across projects so the left-bar + config sync up.
+        const run = async () => {
+          if (sess.projectId !== store.activeProjectId) {
+            await store.selectProject(sess.projectId);
+          }
+          await store.openTab(sess.id);
+        };
+        void run();
+        break;
+      }
+      case "file":
+        store.openFileInIde(item.file.path);
+        break;
+      case "grep":
+        store.openFileInIde(item.match.path, {
+          line: item.match.lineNumber,
+          column: (item.match.matches[0]?.start ?? 0) + 1,
+        });
+        break;
+    }
     close();
   };
 
-  // Group filtered commands for rendering, preserving COMMAND_GROUPS order.
-  const grouped = useMemo(() => {
-    const map = new Map<CommandGroup, CommandDef[]>();
-    for (const g of COMMAND_GROUPS) map.set(g, []);
-    for (const cmd of commands) {
-      const bucket = map.get(cmd.group);
-      if (bucket) bucket.push(cmd);
+  // Merge commands + async results into one ordered item list for the
+  // Combobox, honouring the active scope. Commands are filtered by the query
+  // locally; async results are already filtered server-side.
+  const items = useMemo<PaletteItem[]>(() => {
+    const out: PaletteItem[] = [];
+    const q = trimmed.toLowerCase();
+    if (scopeIncludes(scope, "command")) {
+      for (const cmd of commandItems) {
+        if (!q || commandMatches(cmd, q)) out.push(cmd);
+      }
     }
-    return COMMAND_GROUPS.map((g) => ({ group: g, items: map.get(g)! })).filter(
-      (x) => x.items.length > 0,
-    );
-  }, [commands]);
+    if (isSearching) {
+      if (scopeIncludes(scope, "session") && sessions && !sessions.loading) {
+        for (const s of sessions.value) out.push({ kind: "session", session: s });
+      }
+      if (scopeIncludes(scope, "file") && files && !files.loading) {
+        for (const f of files.value) out.push({ kind: "file", file: f });
+      }
+      if (scopeIncludes(scope, "grep") && greps && !greps.loading) {
+        for (const m of greps.value) out.push({ kind: "grep", match: m });
+      }
+    }
+    return out;
+  }, [commandItems, trimmed, isSearching, scope, sessions, files, greps]);
+
+  // Bucket items by group (preserving GROUP_ORDER) for sectioned rendering.
+  const grouped = useMemo(() => {
+    const buckets: Record<PaletteGroup, PaletteItem[]> = {
+      command: [],
+      session: [],
+      file: [],
+      grep: [],
+    };
+    for (const it of items) buckets[it.kind].push(it);
+    const loadingFor: Record<PaletteGroup, boolean> = {
+      command: false,
+      session: scopeIncludes(scope, "session") && (sessions?.loading ?? false),
+      file: scopeIncludes(scope, "file") && (files?.loading ?? false),
+      grep: scopeIncludes(scope, "grep") && (greps?.loading ?? false),
+    };
+    return GROUP_ORDER.map((g) => ({
+      group: g,
+      items: buckets[g],
+      loading: loadingFor[g],
+    })).filter((x) => x.items.length > 0 || x.loading);
+  }, [items, scope, sessions, files, greps]);
+
+  const totalCount = items.length;
+
+  // ← / → cycle the active scope tab. Wired on the input's keydown so it works
+  // without leaving the search field (Tab key itself is reserved by the
+  // Combobox for list navigation, hence the arrow shortcut).
+  const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      // Only cycle when there's no active text caret movement to hijack; with
+      // an empty query arrows do nothing useful anyway, so always cycle.
+      const idx = SCOPE_TABS.findIndex((t) => t.id === scope);
+      if (idx === -1) return;
+      const dir = e.key === "ArrowRight" ? 1 : -1;
+      const next = SCOPE_TABS[(idx + dir + SCOPE_TABS.length) % SCOPE_TABS.length];
+      e.preventDefault();
+      setScope(next.id);
+    }
+  };
 
   return (
     <BaseDialog.Root
       open={open}
       onOpenChange={(o) => setOpen(o)}
-      // Focus the input when the dialog opens so typing works immediately.
       onOpenChangeComplete={(o) => {
         if (o) inputRef.current?.focus();
       }}
@@ -93,44 +344,44 @@ export function CommandPalette() {
       <BaseDialog.Portal>
         <BaseDialog.Backdrop
           className={cn(
-            // Start below the 40px (h-10) custom titlebar so the titlebar stays
-            // uncovered and fully interactive (see ui/dialog.tsx Backdrop).
             "fixed inset-x-0 top-10 bottom-0 z-50 bg-black/50 backdrop-blur-[1px]",
             "data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 transition-opacity",
           )}
         />
         <BaseDialog.Popup
           className={cn(
-            "fixed left-1/2 top-[12vh] z-50 w-[min(92vw,560px)] -translate-x-1/2",
+            "fixed left-1/2 top-[12vh] z-50 w-[min(92vw,640px)] -translate-x-1/2",
             "overflow-hidden rounded-xl border border-edge bg-surface shadow-2xl",
             "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
             "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
             "transition-[transform,opacity] duration-150",
           )}
         >
-          {/* Combobox drives keyboard nav + filtering. `inline` + `open` is
-              the documented way to embed it in a Dialog (see combobox inline
-              prop). open follows the dialog so query/highlight reset on close. */}
-          <Combobox.Root<CommandDef>
+          <Combobox.Root<PaletteItem>
             open
             inline
             virtualized={false}
-            filter={(item, query) => commandMatches(item, query)}
-            items={commands}
-            // Auto-highlight the first match so Enter runs immediately.
+            // Commands are pre-filtered above; async results are server-filtered,
+            // so the combobox filter is a no-op pass-through.
+            filter={() => true}
+            items={items}
             autoHighlight
-            /* The input value mirrors the live query for our filter; we don't
-               use selection, so onValueChange is unused. */
             onValueChange={() => {
-              /* no-op: commands are one-shot actions, not selectable values */
+              /* no-op: items are one-shot actions, not selectable values */
             }}
           >
-            {/* Search input row */}
+            {/* Scope tabs — pick which kind(s) to search. */}
+            <ScopeTabs scope={scope} onScope={setScope} projectPath={!!projectPath} />
+
+            {/* Search input row. Controlled so we can reset it on close. */}
             <div className="flex items-center gap-2 border-b border-edge px-3">
               <Combobox.Input
                 ref={inputRef}
                 autoFocus
-                placeholder="输入命令或搜索…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={onInputKeyDown}
+                placeholder={placeholderFor(scope)}
                 className={cn(
                   "h-11 flex-1 bg-transparent text-sm text-content",
                   "placeholder:text-content-subtle focus:outline-none",
@@ -141,53 +392,30 @@ export function CommandPalette() {
             {/* Results list */}
             <div className="max-h-[52vh] overflow-y-auto p-1.5">
               <Combobox.List className="flex flex-col gap-1">
-                {grouped.map(({ group, items }) => (
+                {grouped.map(({ group, items: groupItems, loading }) => (
                   <Combobox.Group key={group} className="flex flex-col gap-0.5">
                     <Combobox.GroupLabel
                       className={cn(
-                        "px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                        "flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
                         "text-content-subtle",
                       )}
                     >
-                      {group}
+                      <span>{GROUP_LABELS[group]}</span>
+                      {loading && <IconLoader2 size={11} className="animate-spin" />}
                     </Combobox.GroupLabel>
-                    {items.map((cmd) => {
-                      const Icon = cmd.icon;
-                      return (
-                        <Combobox.Item
-                          key={cmd.id}
-                          value={cmd}
-                          onClick={() => runCommand(cmd)}
-                          className={cn(
-                            "group flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5",
-                            "text-[13px] text-content",
-                            "data-[highlighted]:bg-accent/12 data-[highlighted]:text-content",
-                            "outline-none",
-                          )}
-                        >
-                          {Icon && (
-                            <Icon
-                              size={15}
-                              className="shrink-0 text-content-muted data-[highlighted]:text-accent group-data-[highlighted]:text-accent"
-                            />
-                          )}
-                          <span className="min-w-0 flex-1 truncate">{cmd.label}</span>
-                          {cmd.shortcutHint && (
-                            <kbd className="shrink-0 rounded border border-edge bg-surface-muted px-1 py-0.5 text-[10px] text-content-subtle">
-                              {cmd.shortcutHint}
-                            </kbd>
-                          )}
-                        </Combobox.Item>
-                      );
-                    })}
+                    {groupItems.map((item, idx) => (
+                      <PaletteRow
+                        key={rowKey(item, idx)}
+                        item={item}
+                        onClick={() => runItem(item)}
+                      />
+                    ))}
                   </Combobox.Group>
                 ))}
                 <Combobox.Empty
-                  className={cn(
-                    "px-3 py-8 text-center text-[13px] text-content-subtle",
-                  )}
+                  className={cn("px-3 py-8 text-center text-[13px] text-content-subtle")}
                 >
-                  无匹配命令
+                  {emptyMessageFor(scope, isSearching)}
                 </Combobox.Empty>
               </Combobox.List>
             </div>
@@ -202,26 +430,253 @@ export function CommandPalette() {
               <span className="flex items-center gap-2">
                 <span>
                   <kbd className="rounded border border-edge px-1">↑</kbd>
-                  <kbd className="ml-0.5 rounded border border-edge px-1">↓</kbd>
-                  {" "}
+                  <kbd className="ml-0.5 rounded border border-edge px-1">↓</kbd>{" "}
                   导航
                 </span>
                 <span>
-                  <kbd className="rounded border border-edge px-1">↵</kbd>
-                  {" "}
-                  执行
+                  <kbd className="rounded border border-edge px-1">↵</kbd> 执行
                 </span>
                 <span>
-                  <kbd className="rounded border border-edge px-1">esc</kbd>
-                  {" "}
-                  关闭
+                  <kbd className="rounded border border-edge px-1">esc</kbd> 关闭
                 </span>
               </span>
-              <span>{commands.length} 条命令</span>
+              <span>{totalCount} 条结果</span>
             </div>
           </Combobox.Root>
         </BaseDialog.Popup>
       </BaseDialog.Portal>
     </BaseDialog.Root>
   );
+}
+
+/* ───────────────────────── scope tabs ───────────────────────── */
+
+/** The scope tab row. Each tab is a plain button styled to read as a segmented
+ *  control; the active tab gets an accent tint. Project-scoped tabs (文件 /
+ *  文件内容) are disabled when there is no active project. */
+function ScopeTabs({
+  scope,
+  onScope,
+  projectPath,
+}: {
+  scope: SearchScope;
+  onScope: (s: SearchScope) => void;
+  projectPath: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-0.5 border-b border-edge px-2 py-1.5">
+      {SCOPE_TABS.map((tab) => {
+        const active = scope === tab.id;
+        const disabled = tab.needsProject && !projectPath;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => onScope(tab.id)}
+            disabled={disabled}
+            title={
+              disabled
+                ? "请先打开一个项目"
+                : `${tab.label}${tab.id === "all" ? "（搜索全部类型）" : ""}`
+            }
+            className={cn(
+              "rounded-md px-2.5 py-1 text-xs transition-colors select-none",
+              active
+                ? "bg-accent/12 text-accent"
+                : disabled
+                  ? "cursor-not-allowed text-content-subtle opacity-40"
+                  : "text-content-muted hover:bg-surface-muted hover:text-content",
+            )}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+      <span className="ml-auto flex items-center gap-1 text-[10px] text-content-subtle">
+        <kbd className="rounded border border-edge px-1">←</kbd>
+        <kbd className="rounded border border-edge px-1">→</kbd>
+        切换类型
+      </span>
+    </div>
+  );
+}
+
+/** Input placeholder reflects the active scope so the user knows what they're
+ *  targeting without looking up at the tabs. */
+function placeholderFor(scope: SearchScope): string {
+  switch (scope) {
+    case "all":
+      return "搜索命令、线程、文件…";
+    case "command":
+      return "搜索命令…";
+    case "session":
+      return "搜索线程标题…";
+    case "file":
+      return "按文件名或路径搜索…";
+    case "grep":
+      return "搜索文件内容…";
+  }
+}
+
+/** Empty-list copy tailored to the scope: with no query it prompts to type;
+ *  mid-search it says there are no matches for that kind. */
+function emptyMessageFor(scope: SearchScope, isSearching: boolean): string {
+  if (!isSearching) {
+    if (scope === "all" || scope === "command") return "输入以搜索命令";
+    if (scope === "session") return "输入关键词搜索线程";
+    if (scope === "file") return "输入文件名以搜索";
+    return "输入关键词搜索文件内容";
+  }
+  return "无匹配结果";
+}
+
+/* ───────────────────────── helpers ───────────────────────── */
+
+/** Stable React key for a palette row. Falls back to a kind-scoped index when
+ *  the item has no natural id (keeps list reconciliation cheap and correct). */
+function rowKey(item: PaletteItem, idx: number): string {
+  switch (item.kind) {
+    case "command":
+      return `cmd:${item.id}`;
+    case "session":
+      return `ses:${item.session.id}`;
+    case "file":
+      return `file:${item.file.path}`;
+    case "grep":
+      return `grep:${item.match.path}:${item.match.lineNumber}:${idx}`;
+  }
+}
+
+/* ───────────────────────── row renderer ───────────────────────── */
+
+/** A single palette row. Delegates to the right inner renderer by kind so each
+ *  result type shows the most useful summary (title, path, matched line…). */
+function PaletteRow({ item, onClick }: { item: PaletteItem; onClick: () => void }) {
+  return (
+    <Combobox.Item
+      value={item}
+      onClick={onClick}
+      className={cn(
+        "group flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5",
+        "text-[13px] text-content",
+        "data-[highlighted]:bg-accent/12 data-[highlighted]:text-content",
+        "outline-none",
+      )}
+    >
+      {item.kind === "command" ? (
+        <CommandRowContent cmd={item} />
+      ) : item.kind === "session" ? (
+        <SessionRowContent session={item.session} />
+      ) : item.kind === "file" ? (
+        <FileRowContent file={item.file} />
+      ) : (
+        <GrepRowContent match={item.match} />
+      )}
+    </Combobox.Item>
+  );
+}
+
+function CommandRowContent({ cmd }: { cmd: CommandDef }) {
+  const Icon = cmd.icon;
+  return (
+    <>
+      {Icon && (
+        <Icon
+          size={15}
+          className="shrink-0 text-content-muted group-data-[highlighted]:text-accent"
+        />
+      )}
+      <span className="min-w-0 flex-1 truncate">{cmd.label}</span>
+      {cmd.shortcutHint && (
+        <kbd className="shrink-0 rounded border border-edge bg-surface-muted px-1 py-0.5 text-[10px] text-content-subtle">
+          {cmd.shortcutHint}
+        </kbd>
+      )}
+    </>
+  );
+}
+
+function SessionRowContent({ session }: { session: Session }) {
+  const title = session.title?.trim() || "无标题会话";
+  return (
+    <>
+      <IconMessage
+        size={15}
+        className="shrink-0 text-content-muted group-data-[highlighted]:text-accent"
+      />
+      <span className="min-w-0 flex-1 truncate">{title}</span>
+    </>
+  );
+}
+
+function FileRowContent({ file }: { file: FileSearchEntry }) {
+  return (
+    <>
+      <IconFile
+        size={15}
+        className="shrink-0 text-content-muted group-data-[highlighted]:text-accent"
+      />
+      <span className="min-w-0 flex-1 leading-tight">
+        <span className="block truncate font-medium">{file.name}</span>
+        <span className="block truncate text-[11px] text-content-subtle">
+          {file.relativePath}
+        </span>
+      </span>
+    </>
+  );
+}
+
+function GrepRowContent({ match }: { match: FileGrepEntry }) {
+  const fileName = match.relativePath.split("/").pop() ?? match.relativePath;
+  return (
+    <>
+      <IconFileSearch
+        size={15}
+        className="shrink-0 text-content-muted group-data-[highlighted]:text-accent"
+      />
+      <span className="min-w-0 flex-1 leading-tight">
+        <span className="flex items-center gap-1">
+          <span className="truncate font-medium">{fileName}</span>
+          <span className="shrink-0 rounded bg-surface-muted px-1 text-[10px] text-content-subtle">
+            L{match.lineNumber}
+          </span>
+        </span>
+        <span className="block truncate font-mono text-[11px] text-content-subtle">
+          <HighlightedLine line={match.lineText} matches={match.matches} />
+        </span>
+      </span>
+    </>
+  );
+}
+
+/** Renders a matched line with each query occurrence highlighted. Lifted
+ *  verbatim from SearchDialog so file-content hits look identical in both
+ *  surfaces. */
+function HighlightedLine({
+  line,
+  matches,
+}: {
+  line: string;
+  matches: Array<{ start: number; end: number }>;
+}) {
+  if (matches.length === 0) {
+    return <>{line}</>;
+  }
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  matches.forEach((m, i) => {
+    if (m.start > cursor) {
+      parts.push(<span key={`t${i}`}>{line.slice(cursor, m.start)}</span>);
+    }
+    parts.push(
+      <mark key={`m${i}`} className="rounded-sm bg-accent/30 px-0.5 text-content">
+        {line.slice(m.start, m.end)}
+      </mark>,
+    );
+    cursor = m.end;
+  });
+  if (cursor < line.length) {
+    parts.push(<span key="tail">{line.slice(cursor)}</span>);
+  }
+  return <>{parts}</>;
 }

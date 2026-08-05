@@ -3357,6 +3357,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       forceDeltaFlush();
     }
 
+    // Stale `turn.done` guard — fixes the stop→edit→resend race.
+    //
+    // When the user clicks stop, interrupt() flips runningBySession to false
+    // and sets the interruptedBySession sentinel. The SDK's async iterator
+    // then unwinds (ac.abort() throws), and flushFinal() emits a *late*
+    // turn.done{reason:"interrupted"} once the generator actually tears down.
+    //
+    // If the user edits & resends BEFORE that late event lands,
+    // editAndResendMessage clears the sentinel and flips running back to true
+    // for the NEW turn. The late turn.done then arrives carrying
+    // reason:"interrupted" while the sentinel is already cleared — proof it
+    // belongs to the OLD (aborted) turn. Applying it would (a) stamp endedAt
+    // on the NEW turn's opener (splitting the stream into two "开始·用时"
+    // panels) and (b) reset runningBySession to false (composer looks idle,
+    // no spinner).
+    //
+    // Detection: a turn.done with reason "interrupted" is the closing event
+    // of an aborted turn. If interruptedBySession is NOT set, either no abort
+    // happened (impossible for this reason) or a newer turn already started
+    // and cleared the sentinel → stale. Drop it. The legitimate path (user
+    // stopped, didn't resend) still has the sentinel set when the late
+    // turn.done arrives, so it runs and freezes the interrupted turn's opener.
+    if (e.type === "turn.done" && e.reason === "interrupted" && !get().interruptedBySession[sid]) {
+      return;
+    }
+
     // todo.update is an independent state slice — handle and skip the
     // message-accumulation logic below.
     if (e.type === "todo.update") {
@@ -3617,15 +3643,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           break;
         }
         case "tool.use": {
-          let lastAssistant = [...next].reverse().find((m) => m.role === "assistant");
+          // Target the CURRENT turn's trailing assistant message — i.e. the
+          // last assistant message whose turnMeta has no endedAt (turn.done
+          // hasn't landed). We must NOT use "last assistant message" naively:
+          // after an edit-resend (or any history truncation), the truncated
+          // history's last assistant message is a CLOSED turn (turnMeta.endedAt
+          // is set), and appending the new turn's tool_use to it would merge
+          // two turns into one giant panel. Same "open turn" heuristic used by
+          // the text.delta / plan.update / compact paths.
+          const openIdx = findOpenTurnTrailingAssistant(next);
+          let lastAssistant = openIdx >= 0 ? next[openIdx] : undefined;
           if (!lastAssistant) {
-            // Is this the first assistant block of a NEW turn? A turn is
-            // "open" while any assistant message has a turnMeta with no
-            // endedAt (i.e. turn.done hasn't landed yet). If no open turn
-            // exists, this delta starts a fresh one — stamp turnMeta so
-            // the renderer shows the per-turn stat row above this message.
-            // Past turns' messages still carry their (now-ended) turnMeta,
-            // so we must check endedAt, not just presence.
+            // No open-turn assistant message exists — this tool_use starts a
+            // fresh turn. Stamp turnMeta so the renderer shows the per-turn
+            // stat row above this message. Past turns' messages still carry
+            // their (now-ended) turnMeta, so we checked endedAt above, not
+            // just presence.
             const isNewTurn = !next.some(
               (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
             );
@@ -3643,7 +3676,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               ...(isNewTurn ? { turnMeta: { startedAt } } : {}),
             };
             next = [...next, lastAssistant];
-            // A new turn opened (no prior assistant message at all) — demote
+            // A new turn opened (no prior open-turn assistant message) — demote
             // any previous latest turn-files card to read-only.
             if (isNewTurn) next = demotePreviousLatestTurnFiles(next);
           }

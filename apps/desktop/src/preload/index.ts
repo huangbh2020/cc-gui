@@ -41,6 +41,9 @@ const api = {
       ipcRenderer.invoke(IPC.PROJECT_REORDER, input)) as RpcMap["project.reorder"],
   },
   session: {
+    /** Cross-project session title search (Ctrl+K unified search). */
+    search: ((input) =>
+      ipcRenderer.invoke(IPC.SESSION_SEARCH, input)) as RpcMap["session.search"],
     messages: ((input) =>
       ipcRenderer.invoke(IPC.SESSION_MESSAGES, input)) as RpcMap["session.messages"],
     saveMessages: ((input) =>
