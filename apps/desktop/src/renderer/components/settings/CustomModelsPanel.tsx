@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
@@ -16,6 +16,7 @@ import type {
   RoleBinding,
   CustomModelRoleKey,
 } from "@contracts/customModel";
+import type { EndpointPresetPublic } from "@contracts/endpointPreset";
 
 /**
  * Two-column panel for managing custom-model provider configs (Anthropic-
@@ -123,6 +124,56 @@ export function CustomModelsPanel() {
   const [error, setError] = useState<string | null>(null);
   /** Pending deletion (drives the confirm Dialog). */
   const [pendingDelete, setPendingDelete] = useState<CustomModelPublic | null>(null);
+  /** Endpoint presets for the "从预设导入" dropdown. */
+  const [presets, setPresets] = useState<EndpointPresetPublic[]>([]);
+  /** Whether the inline "add preset" form is open (left column footer). */
+  const [showPresetForm, setShowPresetForm] = useState(false);
+  /** Draft values for the inline add-preset form. */
+  const [presetDraft, setPresetDraft] = useState({ name: "", baseUrl: "", authMode: "auth_token" as AuthMode });
+
+  // Load endpoint presets once on mount.
+  useEffect(() => {
+    void api.endpointPreset
+      .list()
+      .then(({ presets }) => setPresets(presets))
+      .catch((err) => console.error("endpointPreset.list failed:", err));
+  }, []);
+
+  /** Save a new endpoint preset (credential-free; token stays per-provider). */
+  const savePreset = async () => {
+    if (!presetDraft.name.trim() || !presetDraft.baseUrl.trim()) return;
+    try {
+      const { presets: next } = await api.endpointPreset.save({
+        name: presetDraft.name,
+        baseUrl: presetDraft.baseUrl,
+        authMode: presetDraft.authMode,
+      });
+      setPresets(next);
+      setPresetDraft({ name: "", baseUrl: "", authMode: "auth_token" });
+      setShowPresetForm(false);
+    } catch (err) {
+      console.error("endpointPreset.save failed:", err);
+    }
+  };
+
+  /** Delete an endpoint preset. */
+  const deletePreset = async (id: string) => {
+    try {
+      const { presets: next } = await api.endpointPreset.delete({ id });
+      setPresets(next);
+    } catch (err) {
+      console.error("endpointPreset.delete failed:", err);
+    }
+  };
+
+  /** Fill the current form's baseUrl/authMode from a preset. Token is left
+   *  for the user to enter — presets are credential-free by design. */
+  const applyPreset = (presetId: string) => {
+    const preset = presets.find((p) => p.id === presetId);
+    if (!preset) return;
+    setForm((prev) => (prev ? { ...prev, baseUrl: preset.baseUrl, authMode: preset.authMode } : prev));
+    setTest({ status: "idle" });
+  };
 
   const startAdd = () => {
     setSelectedId("new");
@@ -394,6 +445,83 @@ export function CustomModelsPanel() {
               新增供应商
             </Button>
           </div>
+
+          {/* ───── Endpoint presets (credential-free endpoint templates) ───── */}
+          <div className="border-t border-edge/60 p-2">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
+                端点预设
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowPresetForm((v) => !v)}
+                className="text-[0.7143em] text-accent hover:text-accent/80"
+              >
+                {showPresetForm ? "收起" : "+ 添加"}
+              </button>
+            </div>
+            {showPresetForm && (
+              <div className="mb-1.5 space-y-1">
+                <input
+                  type="text"
+                  value={presetDraft.name}
+                  onChange={(e) => setPresetDraft((d) => ({ ...d, name: e.target.value }))}
+                  placeholder="名称,如 DeepSeek 官方"
+                  className={inputCls}
+                />
+                <input
+                  type="text"
+                  value={presetDraft.baseUrl}
+                  onChange={(e) => setPresetDraft((d) => ({ ...d, baseUrl: e.target.value }))}
+                  placeholder="https://api.deepseek.com"
+                  className={inputCls}
+                />
+                <div className="flex gap-1">
+                  <select
+                    value={presetDraft.authMode}
+                    onChange={(e) =>
+                      setPresetDraft((d) => ({ ...d, authMode: e.target.value as AuthMode }))
+                    }
+                    className={cn(inputCls, "flex-1")}
+                  >
+                    <option value="auth_token">Bearer</option>
+                    <option value="api_key">x-api-key</option>
+                  </select>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={savePreset}
+                    disabled={!presetDraft.name.trim() || !presetDraft.baseUrl.trim()}
+                  >
+                    保存
+                  </Button>
+                </div>
+              </div>
+            )}
+            <ul className="space-y-0.5">
+              {presets.map((p) => (
+                <li key={p.id} className="group flex items-center gap-1 rounded px-1 py-0.5 text-[0.7143em] text-content-muted">
+                  <span className="min-w-0 flex-1 truncate" title={`${p.baseUrl} (${p.authMode})`}>
+                    {p.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void deletePreset(p.id)}
+                    className="shrink-0 text-content-subtle opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
+                    title="删除预设"
+                  >
+                    <IconTrash size={11} />
+                  </button>
+                </li>
+              ))}
+              {presets.length === 0 && !showPresetForm && (
+                <li className="text-[0.7143em] text-content-subtle">暂无预设</li>
+              )}
+            </ul>
+            <p className="mt-1 text-[0.6428em] leading-relaxed text-content-subtle">
+              预设仅保存端点地址与认证方式(不含密钥),可在各供应商表单中一键导入。
+            </p>
+          </div>
         </aside>
 
         {/* ───────── Right: config form / empty state ───────── */}
@@ -413,6 +541,8 @@ export function CustomModelsPanel() {
               runTest={runTest}
               save={save}
               cancel={cancel}
+              presets={presets}
+              applyPreset={applyPreset}
               onDelete={
                 form.id
                   ? () => {
@@ -497,6 +627,8 @@ function ProviderForm({
   runTest,
   save,
   cancel,
+  presets,
+  applyPreset,
   onDelete,
 }: {
   form: FormState;
@@ -510,6 +642,10 @@ function ProviderForm({
   runTest: () => void;
   save: () => void;
   cancel: () => void;
+  /** Endpoint presets for the import dropdown. */
+  presets: EndpointPresetPublic[];
+  /** Fill baseUrl/authMode from a preset. */
+  applyPreset: (presetId: string) => void;
   onDelete?: () => void;
 }) {
   const isEdit = !!form.id;
@@ -541,6 +677,26 @@ function ProviderForm({
           spellCheck={false}
         />
       </Field>
+      {presets.length > 0 && (
+        <Field label="从预设导入">
+          <select
+            value=""
+            onChange={(e) => {
+              if (e.target.value) applyPreset(e.target.value);
+            }}
+            className={inputCls}
+          >
+            <option value="" disabled>
+              选择端点预设(base URL / 认证方式自动填充)
+            </option>
+            {presets.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} · {p.baseUrl} ({p.authMode === "api_key" ? "x-api-key" : "Bearer"})
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       <Field label="Base URL">
         <input
           type="text"

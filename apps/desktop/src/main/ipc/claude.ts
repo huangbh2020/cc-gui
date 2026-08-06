@@ -100,9 +100,16 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 	    if (input.permissionMode !== undefined) {
 	      updated = { ...updated, permissionMode: input.permissionMode };
 	    }
-	    if (input.customModelId !== undefined) {
-	      updated = { ...updated, customModelId: input.customModelId };
-	    }
+    if (input.customModelId !== undefined) {
+      updated = { ...updated, customModelId: input.customModelId };
+    }
+    if (input.providerId !== undefined) {
+      // Per-turn provider override. Does NOT persist to the DB — the
+      // session's authoritative providerId stays as-is so the per-session
+      // "lock after first message" rule still holds. We only patch the
+      // in-memory snapshot RuntimeManager uses to resolve the backend.
+      updated = { ...updated, providerId: input.providerId };
+    }
 
     SessionRepo.updateStatus(session.id, "running");
     // Lazily bind a runtime for this session (no-op if already bound).

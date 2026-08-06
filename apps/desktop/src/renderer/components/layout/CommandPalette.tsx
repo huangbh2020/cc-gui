@@ -47,10 +47,10 @@ import type { Session } from "@contracts/session";
 import type { FileSearchEntry, FileGrepEntry } from "@contracts/ipc";
 import {
   IconLoader2,
-  IconMessage,
   IconFile,
   IconFileSearch,
 } from "@renderer/lib/icons.js";
+import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 
 /** Debounce for the async searches. Matches SearchDialog's value. */
 const SEARCH_DEBOUNCE_MS = 120;
@@ -598,9 +598,10 @@ function CommandRowContent({ cmd }: { cmd: CommandDef }) {
 
 function SessionRowContent({ session }: { session: Session }) {
   const title = session.title?.trim() || "无标题会话";
+  const { Icon } = getProviderIcon(session.providerId);
   return (
     <>
-      <IconMessage
+      <Icon
         size={15}
         className="shrink-0 text-content-muted group-data-[highlighted]:text-accent"
       />

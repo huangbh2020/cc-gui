@@ -9,117 +9,60 @@ import {
   IconChevronDown,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import type { PermissionMode } from "@contracts/runtime";
+import type { PermissionModeOption } from "@contracts/provider";
 
 /**
- * Permission-mode picker for the composer toolbar — a dropdown showing the
- * 4 user-facing modes that Claude Code's own UI exposes:
- *   default · acceptEdits · plan · bypassPermissions
+ * Permission-mode picker for the composer toolbar.
  *
- * The underlying `PermissionMode` union is wider (also includes `dontAsk`
- * and `auto`) so values arriving via --resume or settings sync round-trip
- * safely through the contract. Those two are not selectable from the UI —
- * the chip falls back to the raw value so it's never blank — but the union
- * stays open for future expansion.
+ * The mode list is NOT hardcoded here — it comes from the active provider's
+ * `capabilities.permissionModes` declaration. Claude declares 4 user-facing
+ * modes (default / acceptEdits / plan / bypassPermissions); Pi declares none
+ * (it uses a tools allowlist instead) so the chip hides for pi sessions.
+ *
+ * Icon names in the declaration ("shield", "shieldCheck", ...) are resolved
+ * here so the renderer's icon map stays the single source of truth — the
+ * contract only carries a string name, never a component.
  *
  * Uses @base-ui/react Menu for state management, keyboard navigation,
  * and positioning, with a compact chip-style trigger.
  */
 
-/** The 4 modes shown in the menu, in Claude Code's canonical order.
- *
- *  Each mode carries a shield-style icon and a semantic color token that
- *  reflects its privilege/risk level: riskier modes get warmer colors so
- *  the chip telegraphs risk at a glance.
- *    default            → (muted)  baseline, rules-based approval
- *    plan               → info     read-only / constrained exploration
- *    acceptEdits        → warning  auto-accepts file edits (medium risk)
- *    bypassPermissions  → danger   skips ALL checks (highest risk)
- */
-type ModeMeta = {
-  value: PermissionMode;
-  label: string;
-  icon: React.ReactNode;
-  color: string; // Tailwind text-color class applied to BOTH icon and label
-  hint: string;
+const ICON_BY_NAME: Record<string, React.ReactNode> = {
+  shield: <IconShield size={11} />,
+  shieldCheck: <IconShieldCheck size={11} />,
+  shieldHalf: <IconShieldHalfFilled size={11} />,
+  shieldLock: <IconShieldLock size={11} />,
 };
 
-const UI_MODES: ReadonlyArray<ModeMeta> = [
-  {
-    value: "default",
-    label: "Default",
-    icon: <IconShield size={11} />,
-    color: "",
-    hint: "标准行为,工具按规则触发审批",
-  },
-  {
-    value: "acceptEdits",
-    label: "Edit Auto",
-    icon: <IconShieldCheck size={11} />,
-    color: "text-warning",
-    hint: "工作目录内的文件编辑自动放行",
-  },
-  {
-    value: "plan",
-    label: "Plan",
-    icon: <IconShieldHalfFilled size={11} />,
-    color: "text-info",
-    hint: "只读探索,所有写操作都需审批",
-  },
-  {
-    value: "bypassPermissions",
-    label: "Bypass",
-    icon: <IconShieldLock size={11} />,
-    color: "text-danger",
-    hint: "跳过所有权限检查(慎用)",
-  },
-];
-
-/** Lookup used by both the chip and the StatusBar. */
-export const PERMISSION_MODE_LABEL: Record<PermissionMode, string> = {
+/** Fallback label used when the current value isn't in the provider's list
+ *  (e.g. dontAsk/auto persisted for claude sessions, or unknown values). */
+const FALLBACK_LABEL: Record<string, string> = {
   default: "Default",
   acceptEdits: "Edit Auto",
   plan: "Plan",
   bypassPermissions: "Bypass",
-  // Not selectable from the UI but shown verbatim if they ever appear so the
-  // chip / status bar never goes blank.
   dontAsk: "DontAsk",
   auto: "Auto",
 };
 
-/** Shared per-mode metadata (icon + risk color) used by both the composer
- *  chip and the StatusBar, so the two displays always agree. The "color" is
- *  an empty string for the baseline `default` mode so it inherits neutral
- *  muted text; riskier modes carry an explicit semantic token. */
-export const PERMISSION_MODE_META: Record<PermissionMode, ModeMeta> = (() => {
-  const byValue = new Map(UI_MODES.map((m) => [m.value, m]));
-  const fallback: ModeMeta = {
-    value: "default",
-    label: "",
-    icon: <IconShield size={11} />,
-    color: "",
-    hint: "",
-  };
-  const out = {} as Record<PermissionMode, ModeMeta>;
-  (["default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto"] as PermissionMode[]).forEach(
-    (v) => {
-      out[v] = byValue.get(v) ?? { ...fallback, value: v };
-    },
-  );
-  return out;
-})();
-
 export function PermissionModeDropdown() {
   const permissionMode = useSessionStore((s) => s.permissionMode);
   const setPermissionMode = useSessionStore((s) => s.setPermissionMode);
+  const providerId = useSessionStore((s) => s.providerId);
+  const providers = useSessionStore((s) => s.providers);
 
-  // Chip text falls back to the raw value for non-UI modes (dontAsk/auto).
-  const chipLabel = PERMISSION_MODE_LABEL[permissionMode] ?? permissionMode;
-  const chipMeta = PERMISSION_MODE_META[permissionMode];
-  const chipIcon = chipMeta.icon;
+  const provider = providers.find((p) => p.id === providerId);
+  const modes = provider?.capabilities.permissionModes;
+
+  // Provider declares no permission modes → hide the chip.
+  if (!modes || modes.length === 0) return null;
+
+  const activeMeta = modes.find((m) => m.value === permissionMode);
+  const chipLabel = activeMeta?.label ?? FALLBACK_LABEL[permissionMode] ?? permissionMode;
+  const chipIcon = activeMeta ? resolveIcon(activeMeta) : <IconShield size={11} />;
   // Mode-specific color (info / warning / danger); empty for the baseline
   // "default" mode so it inherits the chip's neutral muted text.
-  const modeColor = chipMeta.color;
+  const modeColor = activeMeta?.color ?? "";
 
   return (
     <Menu.Root>
@@ -152,7 +95,7 @@ export function PermissionModeDropdown() {
             <div className="px-3 py-1 text-xs uppercase tracking-wide text-content-subtle">
               Permission mode
             </div>
-            {UI_MODES.map((m) => {
+            {modes.map((m) => {
               const active = m.value === permissionMode;
               return (
                 <Menu.Item
@@ -167,7 +110,7 @@ export function PermissionModeDropdown() {
                   }}
                 >
                   <span className="flex min-w-0 items-center gap-2">
-                    <span className={cn("shrink-0 opacity-90", active ? "" : m.color)}>{m.icon}</span>
+                    <span className={cn("shrink-0 opacity-90", active ? "" : m.color)}>{resolveIcon(m)}</span>
                     <span className={cn("font-medium", active ? "" : m.color)}>{m.label}</span>
                     <span className="truncate text-xs text-content-subtle">{m.hint}</span>
                   </span>
@@ -180,4 +123,10 @@ export function PermissionModeDropdown() {
       </Menu.Portal>
     </Menu.Root>
   );
+}
+
+/** Resolve a permission mode's icon name to a rendered icon node. Falls back
+ *  to the neutral shield for unknown icon names. */
+function resolveIcon(m: PermissionModeOption): React.ReactNode {
+  return (m.icon && ICON_BY_NAME[m.icon]) || <IconShield size={11} />;
 }

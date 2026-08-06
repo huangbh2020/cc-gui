@@ -11,31 +11,23 @@ import { CUSTOM_MODEL_ROLES, CUSTOM_MODEL_ROLE_LABELS } from "@contracts/customM
 import type { CustomModelRoleKey } from "@contracts/customModel";
 
 /**
- * Model picker for the composer toolbar — a dropdown that groups built-in
- * aliases and the user's custom-model configs.
+ * Model picker for the composer toolbar.
  *
- * Each custom config can expose MULTIPLE models (one token, many models on
- * the gateway). The dropdown renders each config as a group with its models
- * as selectable entries underneath, so the user can switch between e.g.
- * deepseek-v4-pro and deepseek-v4-flash under the same config.
+ * The model surface is provider-driven, not hardcoded:
+ *   - Built-in aliases come from the active provider's
+ *     `capabilities.builtinModels` (claude: Auto/Sonnet/Opus/Fable).
+ *   - The custom-endpoint configs (user-defined gateways with per-tier role
+ *     bindings) are shown only when the provider declares
+ *     `supportsCustomEndpoint` (claude: true, pi: false).
  *
  * Selection state is the pair (customModelId, model):
- *   - built-in alias → customModelId=null, model="sonnet"|"opus"|…
- *   - custom model   → customModelId=<cfg id>, model=<one of cfg.models>
+ *   - built-in alias → customModelId=null, model=<alias id>
+ *   - custom model   → customModelId=<cfg id>, model=<one of cfg.roles>
  *
  * Built on @base-ui/react/menu like EffortDropdown: the popup renders through
  * Menu.Portal (document.body), so it isn't clipped by the composer card's
- * overflow-hidden. Config rows with bound models open a nested submenu
- * (Menu.SubmenuRoot) — base-ui owns hover delay, keyboard navigation and
- * viewport-collision flipping instead of the old hand-rolled hover timers.
+ * overflow-hidden. Config rows with bound models open a nested submenu.
  */
-
-const BUILTIN_MODELS = [
-  { id: "default", label: "Auto", hint: "让 Claude 自选" },
-  { id: "sonnet", label: "Sonnet", hint: "claude-sonnet" },
-  { id: "opus", label: "Opus", hint: "claude-opus" },
-  { id: "fable", label: "Fable", hint: "claude-fable" },
-];
 
 /** Derive the host segment of a base URL for the secondary line. */
 function hostOf(url: string): string {
@@ -52,15 +44,28 @@ export function ModelDropdown() {
   const customModels = useSessionStore((s) => s.customModels);
   const setCustomModel = useSessionStore((s) => s.setCustomModel);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
+  const providerId = useSessionStore((s) => s.providerId);
+  const providers = useSessionStore((s) => s.providers);
+  const piAvailableModels = useSessionStore((s) => s.piAvailableModels);
 
-  // Chip label: show the active role's display name (or role label),
-  // qualified by its config name when custom.
+  const provider = providers.find((p) => p.id === providerId);
+  // For most providers, builtin models come from capabilities (claude: static
+  // aliases). For pi-sdk, models are dynamic (user-configured in PiModelsPanel)
+  // and pulled from a separate IPC into `piAvailableModels` at startup /
+  // after each config save.
+  const builtinModels =
+    provider?.id === "pi-sdk" ? piAvailableModels : provider?.capabilities.builtinModels ?? [];
+  const supportsCustomEndpoint = provider?.capabilities.supportsCustomEndpoint ?? false;
+  const showCustomSection = supportsCustomEndpoint && customModels.length > 0;
+
+  // Chip label: a bound custom config wins; otherwise a built-in alias or the
+  // raw model string.
   const activeCustom = customModels.find((m) => m.id === customModelId);
   const activeRoleBinding =
     activeCustom && (CUSTOM_MODEL_ROLES as string[]).includes(model)
       ? activeCustom.roles[model as CustomModelRoleKey]
       : undefined;
-  const builtin = BUILTIN_MODELS.find((b) => b.id === model);
+  const builtin = builtinModels.find((b) => b.id === model);
   const chipLabel = activeCustom
     ? (activeRoleBinding?.displayName?.trim() ||
       (activeRoleBinding ? CUSTOM_MODEL_ROLE_LABELS[model as CustomModelRoleKey] : model))
@@ -101,117 +106,152 @@ export function ModelDropdown() {
               "transition-[transform,opacity] duration-100",
             )}
           >
-            {/* Built-in models are hidden per the simplified model picker. Only
-                custom-model configs are surfaced, with their concrete models on
-                a hover-revealed submenu to the right. */}
-            <div className="flex items-center justify-between px-3 py-1">
-              <span className="text-xs uppercase tracking-wide text-content-subtle">模型列表</span>
-              <span className="text-xs text-content-subtle">{customModels.length}</span>
-            </div>
-            {customModels.length === 0 ? (
-              <div className="px-3 py-2 text-[13px] text-content-subtle">尚未添加自定义模型</div>
-            ) : (
-              customModels.map((m) => {
-                // A config is "active" when the session is bound to it.
-                const cfgActive = customModelId === m.id;
-                const hasRoles = boundRolesOf(m.id).length > 0;
-                const rowTitle = `${m.baseUrl}\ntoken: ${m.authTokenMasked} (${m.authMode === "api_key" ? "x-api-key" : "Bearer"})`;
-                const rowContent = (
-                  <>
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className="truncate font-medium">{m.name}</span>
-                      {m.protocol === "openai" && (
-                        <span className="shrink-0 rounded bg-surface-muted px-1 text-[10px] text-content-subtle">OpenAI</span>
+            {/* Built-in aliases (provider-declared). */}
+            {builtinModels.length > 0 && (
+              <div className="border-b border-edge/60 pb-1">
+                <div className="px-3 py-1 text-xs uppercase tracking-wide text-content-subtle">
+                  内置模型
+                </div>
+                {builtinModels.map((b) => {
+                  const active = !activeCustom && model === b.id;
+                  return (
+                    <Menu.Item
+                      key={b.id}
+                      className={cn(
+                        "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                        "data-[highlighted]:bg-surface-muted",
+                        active ? "text-accent" : "text-content-muted",
                       )}
-                      {cfgActive && <IconCheck size={14} className="shrink-0" />}
-                    </span>
-                    <span className="ml-2 flex shrink-0 items-center gap-1">
-                      <span className="truncate text-xs text-content-subtle">{hostOf(m.baseUrl)}</span>
-                      {hasRoles && <IconChevronRight size={12} className="opacity-60" />}
-                    </span>
-                  </>
-                );
-                const rowClasses = cn(
-                  "flex w-full items-center justify-between px-3 py-2 text-left text-[13px] outline-none select-none",
-                  "data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
-                  cfgActive ? "text-accent" : "text-content-muted",
-                );
-                return hasRoles ? (
-                  // Rows with bound models open a nested submenu on hover
-                  // (openOnHover default on; closeDelay preserves the grace
-                  // period when crossing the gap into the submenu).
-                  <Menu.SubmenuRoot key={m.id}>
-                    <Menu.SubmenuTrigger
-                      openOnHover
-                      closeDelay={120}
-                      className={rowClasses}
-                      title={rowTitle}
+                      onClick={() => setCustomModel(null, b.id)}
                     >
-                      {rowContent}
-                    </Menu.SubmenuTrigger>
-                    <Menu.Portal>
-                      <Menu.Positioner side="right" align="start" sideOffset={4}>
-                        <Menu.Popup
-                          className={cn(
-                            "z-50 min-w-[220px] origin-left rounded-lg border border-edge bg-surface py-1.5 shadow-2xl",
-                            "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
-                            "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
-                            "transition-[transform,opacity] duration-100",
-                          )}
-                        >
-                          {boundRolesOf(m.id).map((roleKey) => {
-                            const binding = m.roles[roleKey]!;
-                            const active = cfgActive && model === roleKey;
-                            const label =
-                              binding.displayName?.trim() || CUSTOM_MODEL_ROLE_LABELS[roleKey];
-                            return (
-                              <Menu.Item
-                                key={roleKey}
-                                onClick={() => pickCustomRole(m.id, roleKey)}
-                                className={cn(
-                                  "flex w-full items-center justify-between px-3 py-2 text-left text-[13px] outline-none select-none",
-                                  "data-[highlighted]:bg-surface-muted",
-                                  active ? "text-accent" : "text-content-muted",
-                                )}
-                              >
-                                <span className="flex min-w-0 items-baseline gap-2">
-                                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-content-subtle">
-                                    {CUSTOM_MODEL_ROLE_LABELS[roleKey]}
-                                  </span>
-                                  <span className="truncate">{label}</span>
-                                  {binding.supports1m && (
-                                    <span className="shrink-0 rounded bg-accent/15 px-1 text-[10px] text-accent">1M</span>
-                                  )}
-                                </span>
-                                {active && <IconCheck size={14} className="shrink-0" />}
-                              </Menu.Item>
-                            );
-                          })}
-                        </Menu.Popup>
-                      </Menu.Positioner>
-                    </Menu.Portal>
-                  </Menu.SubmenuRoot>
-                ) : (
-                  // No bound models: keep the row non-committal so the hover
-                  // submenu stays the primary selection path.
-                  <div key={m.id} className={rowClasses} title={rowTitle}>
-                    {rowContent}
-                  </div>
-                );
-              })
+                      <span className="flex min-w-0 items-baseline gap-2">
+                        <span className="font-medium">{b.label}</span>
+                        {b.hint && <span className="truncate text-xs text-content-subtle">{b.hint}</span>}
+                      </span>
+                      {active && <IconCheck size={14} className="shrink-0" />}
+                    </Menu.Item>
+                  );
+                })}
+              </div>
             )}
 
-            <div className="my-1 border-t border-edge" />
-            <Menu.Item
-              onClick={() => setSettingsOpen(true)}
-              className={cn(
-                "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
-                "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
-              )}
-            >
-              <IconPlus size={14} />
-              <span>添加 / 管理模型…</span>
-            </Menu.Item>
+            {/* Custom-endpoint configs (only when the provider supports them).
+                Each config exposes MULTIPLE models (one token, many models on
+                the gateway) as a group with a hover-revealed submenu. */}
+            {showCustomSection && (
+              <div className="pt-1">
+                <div className="flex items-center justify-between px-3 py-1">
+                  <span className="text-xs uppercase tracking-wide text-content-subtle">自定义模型</span>
+                  <span className="text-xs text-content-subtle">{customModels.length}</span>
+                </div>
+                {customModels.map((m) => {
+                  const cfgActive = customModelId === m.id;
+                  const hasRoles = boundRolesOf(m.id).length > 0;
+                  const rowTitle = `${m.baseUrl}\ntoken: ${m.authTokenMasked} (${m.authMode === "api_key" ? "x-api-key" : "Bearer"})`;
+                  const rowContent = (
+                    <>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="truncate font-medium">{m.name}</span>
+                        {m.protocol === "openai" && (
+                          <span className="shrink-0 rounded bg-surface-muted px-1 text-[10px] text-content-subtle">OpenAI</span>
+                        )}
+                        {cfgActive && <IconCheck size={14} className="shrink-0" />}
+                      </span>
+                      <span className="ml-2 flex shrink-0 items-center gap-1">
+                        <span className="truncate text-xs text-content-subtle">{hostOf(m.baseUrl)}</span>
+                        {hasRoles && <IconChevronRight size={12} className="opacity-60" />}
+                      </span>
+                    </>
+                  );
+                  const rowClasses = cn(
+                    "flex w-full items-center justify-between px-3 py-2 text-left text-[13px] outline-none select-none",
+                    "data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
+                    cfgActive ? "text-accent" : "text-content-muted",
+                  );
+                  return hasRoles ? (
+                    <Menu.SubmenuRoot key={m.id}>
+                      <Menu.SubmenuTrigger
+                        openOnHover
+                        closeDelay={120}
+                        className={rowClasses}
+                        title={rowTitle}
+                      >
+                        {rowContent}
+                      </Menu.SubmenuTrigger>
+                      <Menu.Portal>
+                        <Menu.Positioner side="right" align="start" sideOffset={4}>
+                          <Menu.Popup
+                            className={cn(
+                              "z-50 min-w-[220px] origin-left rounded-lg border border-edge bg-surface py-1.5 shadow-2xl",
+                              "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
+                              "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+                              "transition-[transform,opacity] duration-100",
+                            )}
+                          >
+                            {boundRolesOf(m.id).map((roleKey) => {
+                              const binding = m.roles[roleKey]!;
+                              const active = cfgActive && model === roleKey;
+                              const label =
+                                binding.displayName?.trim() || CUSTOM_MODEL_ROLE_LABELS[roleKey];
+                              return (
+                                <Menu.Item
+                                  key={roleKey}
+                                  onClick={() => pickCustomRole(m.id, roleKey)}
+                                  className={cn(
+                                    "flex w-full items-center justify-between px-3 py-2 text-left text-[13px] outline-none select-none",
+                                    "data-[highlighted]:bg-surface-muted",
+                                    active ? "text-accent" : "text-content-muted",
+                                  )}
+                                >
+                                  <span className="flex min-w-0 items-baseline gap-2">
+                                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-content-subtle">
+                                      {CUSTOM_MODEL_ROLE_LABELS[roleKey]}
+                                    </span>
+                                    <span className="truncate">{label}</span>
+                                    {binding.supports1m && (
+                                      <span className="shrink-0 rounded bg-accent/15 px-1 text-[10px] text-accent">1M</span>
+                                    )}
+                                  </span>
+                                  {active && <IconCheck size={14} className="shrink-0" />}
+                                </Menu.Item>
+                              );
+                            })}
+                          </Menu.Popup>
+                        </Menu.Positioner>
+                      </Menu.Portal>
+                    </Menu.SubmenuRoot>
+                  ) : (
+                    <div key={m.id} className={rowClasses} title={rowTitle}>
+                      {rowContent}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {builtinModels.length === 0 && !showCustomSection && (
+              <div className="px-3 py-2 text-[13px] text-content-subtle">
+                此 SDK 不提供内置模型列表
+              </div>
+            )}
+
+            {/* Manage-models entry — only for providers that support custom
+                endpoints (pi manages its own models.json, so the entry hides). */}
+            {supportsCustomEndpoint && (
+              <>
+                <div className="my-1 border-t border-edge" />
+                <Menu.Item
+                  onClick={() => setSettingsOpen(true)}
+                  className={cn(
+                    "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                    "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
+                  )}
+                >
+                  <IconPlus size={14} />
+                  <span>添加 / 管理模型…</span>
+                </Menu.Item>
+              </>
+            )}
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

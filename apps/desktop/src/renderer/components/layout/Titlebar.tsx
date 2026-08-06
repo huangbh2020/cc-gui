@@ -8,8 +8,8 @@ import {
   IconTerminal2,
   IconCode,
   IconWorld,
-  SiClaude,
 } from "@renderer/lib/icons.js";
+import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchIndicator.js";
 import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/shortcuts.js";
@@ -278,17 +278,25 @@ export function Titlebar({
  *  name shows in a native title tooltip on hover. Hidden when no session is
  *  open (leaves an empty drag region). */
 function ActiveThreadTitle() {
-  // Resolve the active session's title from the flat session list. Returns
-  // null when there's no active session - caller hides the chip entirely.
+  // Two atomic selectors — returning a fresh object literal here would
+  // trip zustand's "snapshot should be cached" check (Object.is sees a
+  // new ref every render → infinite loop). title and providerId are read
+  // independently so each returns a primitive (or undefined) that's stable.
   const title = useSessionStore((s) => {
     if (!s.activeSessionId) return null;
     const sess = s.sessions.find((x) => x.id === s.activeSessionId);
     return sess?.title ?? null;
   });
+  const providerId = useSessionStore((s) => {
+    if (!s.activeSessionId) return null;
+    const sess = s.sessions.find((x) => x.id === s.activeSessionId);
+    return sess?.providerId ?? null;
+  });
   if (!title) return null;
+  const { Icon, color } = getProviderIcon(providerId);
   return (
     <div className="flex min-w-0 max-w-[280px] shrink-0 items-center gap-1 px-1.5 text-xs font-medium text-content-muted">
-      <SiClaude size={13} className="shrink-0 text-[#D97757]" title="Claude" />
+      <Icon size={13} className={cn("shrink-0", color)} />
       <span className="truncate" title={title}>
         {title}
       </span>

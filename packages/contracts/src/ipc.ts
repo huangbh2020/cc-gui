@@ -6,8 +6,10 @@
 import { z } from "zod";
 import type { RuntimeEvent } from "./runtime.js";
 import type { Project, Session, MessageRecord, TurnInput, ApprovalDecision } from "./session.js";
-import type { ProviderCapabilities, UserInputAnswers } from "./provider.js";
+import type { ProviderCapabilities, UserInputAnswers, BuiltinModelOption } from "./provider.js";
 import type { CustomModelPublic, CustomModelInput, TestCustomModelResult } from "./customModel.js";
+import type { EndpointPresetPublic } from "./endpointPreset.js";
+import type { PiProviderConfig, PiProviderPublic } from "./piModel.js";
 import type { ThemeName, EffectiveTheme, ThemeChangedMessage } from "./theme.js";
 
 /**
@@ -376,11 +378,10 @@ export type GitDiffOpenMode = z.infer<typeof GitDiffOpenModeSchema>;
 export type FileViewMode = "edit" | "diff" | "preview";
 
 /**
- * Permission mode literals accepted by the Claude Agent SDK's
- * `permissionMode` option (and the CLI's --permission-mode flag). Kept in
- * lock-step with the `PermissionMode` union in `./runtime.ts`; the renderer's
- * composer only shows 4 of these, but the contract round-trips all 6 so
- * values that arrive via --resume or settings sync aren't dropped.
+ * Permission modes are now open strings (see `PermissionMode` in runtime.ts).
+ * This constant is kept for backward compatibility and for the claude-sdk
+ * provider's own validation. The IPC schemas below use `z.string()` so any
+ * provider can declare its own mode set via `ProviderCapabilities`.
  */
 export const PERMISSION_MODES = [
   "default",
@@ -390,6 +391,8 @@ export const PERMISSION_MODES = [
   "dontAsk",
   "auto",
 ] as const;
+/** Legacy schema - still validates claude's 6 modes. Used only where we need
+ *  to constrain to claude's set (e.g. the claude-sdk provider internals). */
 export const PermissionModeSchema = z.enum(PERMISSION_MODES);
 
 /* ──────────────────────────  Renderer → Main (RPC)  ────────────────────────── */
@@ -400,8 +403,8 @@ export const StartSessionSchema = z.object({
   /** Provider id — which AI backend to use. Defaults to "claude-sdk". */
   providerId: z.string().optional(),
   model: z.string().optional(),
-  effort: z.enum(["default", "low", "medium", "high", "xhigh", "max"]).default("default"),
-  permissionMode: PermissionModeSchema.default("default"),
+  effort: z.string().default("default"),
+  permissionMode: z.string().default("default"),
   /** Id of a custom-model config to bind to this session (omit/null = built-in). */
   customModelId: z.string().nullable().optional(),
 });
@@ -413,11 +416,17 @@ export const SendTurnSchema = z.object({
   attachments: z.array(z.string()).optional(),
   /** Override session-scoped settings for this turn (reflects current UI state). */
   model: z.string().optional(),
-  effort: z.enum(["default", "low", "medium", "high", "xhigh", "max"]).optional(),
-  permissionMode: PermissionModeSchema.optional(),
+  effort: z.string().optional(),
+  permissionMode: z.string().optional(),
   /** Override the session's bound custom model for this turn. null = clear
    *  (use built-in credential discovery); a string = bind to that config. */
   customModelId: z.string().nullable().optional(),
+  /** Per-turn provider override. Normally the session's providerId is
+   *  fixed at creation, but the UI can pass the active providerId here so
+   *  the in-memory session is patched before RuntimeManager resolves the
+   *  backend. Used as a per-turn override (NOT persisted — the session
+   *  row's providerId stays as it was). */
+  providerId: z.string().optional(),
   /** Skill names picked via composer skill pills this turn (no leading "/").
    *  Forwarded to the provider as the SDK `skills` allowlist so the model's
    *  Skill tool can reach them (stream-json input doesn't parse /name). */
@@ -478,8 +487,8 @@ export type RewindTurnInput = z.infer<typeof RewindTurnSchema>;
 export const UpdateSessionSettingsSchema = z.object({
   sessionId: z.string(),
   model: z.string().optional(),
-  effort: z.enum(["default", "low", "medium", "high", "xhigh", "max"]).optional(),
-  permissionMode: PermissionModeSchema.optional(),
+  effort: z.string().optional(),
+  permissionMode: z.string().optional(),
   customModelId: z.string().nullable().optional(),
 });
 export type UpdateSessionSettingsInput = z.infer<typeof UpdateSessionSettingsSchema>;
@@ -681,6 +690,42 @@ export const TestCustomModelSchema = z.object({
   timeoutMs: z.number().optional(),
 });
 export type TestCustomModelInput = z.infer<typeof TestCustomModelSchema>;
+
+/* ── Endpoint presets (credential-free endpoint templates) ── */
+
+export const SaveEndpointPresetSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  baseUrl: z.string().min(1),
+  authMode: AuthModeSchema.optional(),
+});
+export type SaveEndpointPresetInput = z.infer<typeof SaveEndpointPresetSchema>;
+
+export const DeleteEndpointPresetSchema = z.object({ id: z.string() });
+export type DeleteEndpointPresetInput = z.infer<typeof DeleteEndpointPresetSchema>;
+
+/* ── Pi models (visual editor for ~/.pi/agent/models.json) ── */
+
+/** Save a provider to models.json. `config` is the full provider object from
+ *  the form; unknown fields are preserved by the store. `apiKey` is encrypted
+ *  separately (safeStorage) and never written to models.json — empty string
+ *  means "preserve the existing key" when updating; required when creating
+ *  a new provider. */
+export const SavePiProviderSchema = z.object({
+  name: z.string().min(1),
+  config: z.record(z.string(), z.unknown()),
+  apiKey: z.string().optional(),
+});
+export type SavePiProviderInput = z.infer<typeof SavePiProviderSchema>;
+
+export const DeletePiProviderSchema = z.object({ name: z.string().min(1) });
+export type DeletePiProviderInput = z.infer<typeof DeletePiProviderSchema>;
+
+/** Get a provider's API key in cleartext. Main-process only — never
+ *  exposed to the renderer. Used by PiAgentSdkProvider to inject the key
+ *  into the pi authStorage at turn time. */
+export const GetPiApiKeySchema = z.object({ name: z.string().min(1) });
+export type GetPiApiKeyInput = z.infer<typeof GetPiApiKeySchema>;
 
 /* ── Theme / color scheme ── */
 
@@ -1237,6 +1282,17 @@ export type GitCheckoutInput = z.infer<typeof GitCheckoutSchema>;
  *  `skills: "all"`, so the agent recognizes and runs the skill). */
 
 export type SkillSource = "global" | "project";
+
+/** One registered AI backend surfaced to the renderer via `provider.list`.
+ *  The capabilities descriptor drives which composer chips / dropdown entries
+ *  the UI renders for a given provider (declarative capability negotiation). */
+export interface ProviderInfo {
+  /** Provider id, e.g. "claude-sdk" / "pi-sdk". Persisted in Session.providerId. */
+  id: string;
+  /** Human-readable name for the provider picker. */
+  displayName: string;
+  capabilities: ProviderCapabilities;
+}
 
 /** One discoverable skill surfaced in the composer `/` menu. Mirrors the
  *  fields the SDK's own `SlashCommand` exposes (name / description /
@@ -1851,9 +1907,7 @@ export interface RpcMap {
   /** Rename a session (persist a user-edited title). Returns the updated row. */
   "session.rename": (input: RenameSessionInput) => Promise<{ session: Session }>;
   // Providers
-  "provider.list": () => Promise<{
-    providers: Array<{ id: string; displayName: string; capabilities: ProviderCapabilities }>;
-  }>;
+  "provider.list": () => Promise<{ providers: ProviderInfo[] }>;
   // Settings
   "setting.get": (input: GetSettingInput) => Promise<{ value: string | null }>;
   "setting.set": (input: SetSettingInput) => Promise<void>;
@@ -1870,6 +1924,22 @@ export interface RpcMap {
   "customModel.save": (input: SaveCustomModelInput) => Promise<{ models: CustomModelPublic[] }>;
   "customModel.delete": (input: { id: string }) => Promise<{ models: CustomModelPublic[] }>;
   "customModel.test": (input: TestCustomModelInput) => Promise<TestCustomModelResult>;
+  // Endpoint presets (credential-free endpoint templates)
+  "endpointPreset.list": () => Promise<{ presets: EndpointPresetPublic[] }>;
+  "endpointPreset.save": (input: SaveEndpointPresetInput) => Promise<{ presets: EndpointPresetPublic[] }>;
+  "endpointPreset.delete": (input: { id: string }) => Promise<{ presets: EndpointPresetPublic[] }>;
+  // Pi models (visual editor for ~/.pi/agent/models.json)
+  "piModels.list": () => Promise<{ providers: Record<string, PiProviderPublic> }>;
+  "piModels.save": (input: SavePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
+  "piModels.delete": (input: DeletePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
+  /** Main-process only — returns cleartext apiKey for injection into the
+   *  pi authStorage at turn time. Never exposed to the renderer. */
+  "piModels.getApiKey": (input: GetPiApiKeyInput) => Promise<{ apiKey: string | null }>;
+  /** List models the SDK can authenticate with the current configured keys.
+   *  Builds a fresh ModelRuntime with all encrypted apiKeys injected, then
+   *  returns getAvailable() projected into BuiltinModelOption[] shape for
+   *  the composer's model picker. */
+  "piModels.listAvailable": () => Promise<{ models: BuiltinModelOption[] }>;
   // Theme / color scheme
   "theme.get": () => Promise<GetThemeResult>;
   "theme.set": (input: SetThemeInput) => Promise<GetThemeResult>;
@@ -2077,6 +2147,16 @@ export const IPC = {
   CUSTOM_MODEL_SAVE: "customModel:save",
   CUSTOM_MODEL_DELETE: "customModel:delete",
   CUSTOM_MODEL_TEST: "customModel:test",
+  // Endpoint presets (credential-free endpoint templates shared across providers)
+  ENDPOINT_PRESET_LIST: "endpointPreset:list",
+  ENDPOINT_PRESET_SAVE: "endpointPreset:save",
+  ENDPOINT_PRESET_DELETE: "endpointPreset:delete",
+  // Pi models (visual editor for ~/.pi/agent/models.json)
+  PI_MODELS_LIST: "piModels:list",
+  PI_MODELS_SAVE: "piModels:save",
+  PI_MODELS_DELETE: "piModels:delete",
+  PI_MODELS_GET_API_KEY: "piModels:getApiKey",
+  PI_MODELS_LIST_AVAILABLE: "piModels:listAvailable",
   // Theme / color scheme
   THEME_GET: "theme:get",
   THEME_SET: "theme:set",

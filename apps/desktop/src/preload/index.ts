@@ -91,6 +91,28 @@ const api = {
       ipcRenderer.invoke(IPC.CUSTOM_MODEL_TEST, input)) as RpcMap["customModel.test"],
   },
 
+  /** Endpoint presets — credential-free endpoint templates shared across
+   *  providers (claude customModel / pi models.json). No secrets involved. */
+  endpointPreset: {
+    list: (() => ipcRenderer.invoke(IPC.ENDPOINT_PRESET_LIST)) as RpcMap["endpointPreset.list"],
+    save: ((input) =>
+      ipcRenderer.invoke(IPC.ENDPOINT_PRESET_SAVE, input)) as RpcMap["endpointPreset.save"],
+    delete: ((input) =>
+      ipcRenderer.invoke(IPC.ENDPOINT_PRESET_DELETE, input)) as RpcMap["endpointPreset.delete"],
+  },
+
+  /** Pi models visual editor — reads/writes ~/.pi/agent/models.json.
+   *  apiKey fields are $ENV_VAR references (never plaintext), so returning
+   *  them to the renderer is safe. */
+  piModels: {
+    list: (() => ipcRenderer.invoke(IPC.PI_MODELS_LIST)) as RpcMap["piModels.list"],
+    save: ((input) =>
+      ipcRenderer.invoke(IPC.PI_MODELS_SAVE, input)) as RpcMap["piModels.save"],
+    delete: ((input) =>
+      ipcRenderer.invoke(IPC.PI_MODELS_DELETE, input)) as RpcMap["piModels.delete"],
+    listAvailable: (() => ipcRenderer.invoke(IPC.PI_MODELS_LIST_AVAILABLE)) as RpcMap["piModels.listAvailable"],
+  },
+
   /** Color scheme: get/set the preference; theme.changed fires when the
    *  effective theme changes (incl. OS-side changes in 'system' mode). */
   theme: {

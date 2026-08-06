@@ -1,4 +1,5 @@
 import { useSessionStore, EMPTY_USAGE } from "@renderer/stores/sessionStore.js";
+import { ProviderDropdown } from "./ProviderDropdown.js";
 import { ModelDropdown } from "./ModelDropdown.js";
 import { EffortDropdown } from "./EffortDropdown.js";
 import { PermissionModeDropdown } from "./PermissionModeDropdown.js";
@@ -34,6 +35,7 @@ export function ComposerToolbar() {
 
   return (
     <div className="composer-chips composer-chips-root flex min-w-0 items-center gap-1">
+      <ProviderDropdown />
       <ModelDropdown />
       <EffortDropdown />
       <PermissionModeDropdown />

@@ -72,6 +72,28 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     supportsStreaming: true,
     supportsMcp: true,
     supportsAskUserQuestion: true, // optimistic; may be negated at runtime
+    // Declarative descriptors for the renderer's dynamic dropdowns.
+    thinkingLevels: [
+      { value: "default", label: "Auto", hint: "让 Claude 自选" },
+      { value: "low", label: "Low", hint: "最快,少思考" },
+      { value: "medium", label: "Med", hint: "平衡" },
+      { value: "high", label: "High", hint: "更多思考" },
+      { value: "xhigh", label: "XHigh", hint: "深度思考" },
+      { value: "max", label: "Max", hint: "最充分,最慢" },
+    ],
+    permissionModes: [
+      { value: "default", label: "Default", icon: "shield", hint: "标准行为,工具按规则触发审批" },
+      { value: "acceptEdits", label: "Edit Auto", icon: "shieldCheck", color: "text-warning", hint: "工作目录内的文件编辑自动放行" },
+      { value: "plan", label: "Plan", icon: "shieldHalf", color: "text-info", hint: "只读探索,所有写操作都需审批" },
+      { value: "bypassPermissions", label: "Bypass", icon: "shieldLock", color: "text-danger", hint: "跳过所有权限检查(慎用)" },
+    ],
+    builtinModels: [
+      { id: "default", label: "Auto", hint: "让 Claude 自选" },
+      { id: "sonnet", label: "Sonnet", hint: "claude-sonnet" },
+      { id: "opus", label: "Opus", hint: "claude-opus" },
+      { id: "fable", label: "Fable", hint: "claude-fable" },
+    ],
+    supportsCustomEndpoint: true,
   };
 
   async startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle> {
@@ -87,13 +109,18 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       abortController: ac,
       cwd: req.cwd,
       model: req.model && req.model !== "default" ? req.model : undefined,
-      // Per-turn reasoning effort. The contract's `EffortLevel` union includes
-      // `"default"` (meaning "let the SDK pick / don't pass the option"); the
-      // SDK's own `EffortLevel` does NOT have that sentinel, so we collapse
-      // it to `undefined` here. Only the five named levels reach the wire.
+      // Per-turn reasoning effort. The contract's `EffortLevel` is now an open
+      // string (so providers can declare their own levels); the SDK's own
+      // `EffortLevel` is a narrow union (low/medium/high/xhigh/max). We collapse
+      // "default" to `undefined` (don't pass the option) and cast the rest --
+      // only the five named levels reach the wire, validated by the UI's
+      // capabilities.thinkingLevels list.
       // See https://platform.claude.com/docs/en/build-with-claude/effort
-      effort: req.effort && req.effort !== "default" ? req.effort : undefined,
-      permissionMode: req.permissionMode,
+      effort: req.effort && req.effort !== "default" ? (req.effort as Options["effort"]) : undefined,
+      // Permission mode: the contract is an open string; the SDK's type is a
+      // narrow union. The UI only offers claude's 4 modes for this provider
+      // (declared in capabilities.permissionModes), so the cast is safe.
+      permissionMode: req.permissionMode as Options["permissionMode"],
       resume: req.resumeProviderSessionId ?? undefined,
       includePartialMessages: true,
       // Skills: when the user picked specific skills in the composer, pass them

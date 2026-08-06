@@ -2,44 +2,42 @@ import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import { IconCheck, IconBolt, IconChevronDown } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import type { EffortLevel } from "@contracts/runtime";
 
 /**
- * Reasoning-effort picker for the composer toolbar — a dropdown showing the
- * 6 effort levels (Auto / Low / Med / High / XHigh / Max). Mirrors
- * PermissionModeDropdown's base-ui Menu styling so the two chips read as a
- * matched pair. Previously this was a click-to-cycle Chip; the dropdown
- * makes every level reachable in one click and shows hints inline.
+ * Reasoning-effort / thinking-level picker for the composer toolbar.
+ *
+ * The level list is NOT hardcoded here — it comes from the active provider's
+ * `capabilities.thinkingLevels` declaration, so a third provider needs zero
+ * UI changes to expose its own levels (claude: 6, pi: 8 incl. off/minimal).
+ *
+ * When the active provider declares no thinking levels (empty/undefined), the
+ * chip is hidden entirely (`null`).
+ *
+ * Uses @base-ui/react Menu like PermissionModeDropdown; the popup renders
+ * through Menu.Portal so it isn't clipped by the composer card's overflow.
  */
 
-/** The 6 levels in increasing-effort order. `default` (= "Auto") means
- *  "let claude pick" — don't pass --effort. Higher = more thinking. */
-const EFFORTS: ReadonlyArray<{
-  value: EffortLevel;
-  label: string;
-  hint: string;
-}> = [
-  { value: "default", label: "Auto", hint: "让 Claude 自选" },
-  { value: "low", label: "Low", hint: "最快,少思考" },
-  { value: "medium", label: "Med", hint: "平衡" },
-  { value: "high", label: "High", hint: "更多思考" },
-  { value: "xhigh", label: "XHigh", hint: "深度思考" },
-  { value: "max", label: "Max", hint: "最充分,最慢" },
-];
-
-/** Lookup used by the chip trigger label. */
-const EFFORT_LABEL: Record<EffortLevel, string> = {
-  default: "Auto",
-  low: "Low",
-  medium: "Med",
-  high: "High",
-  xhigh: "XHigh",
-  max: "Max",
-};
+/** Fallback label when the current value isn't in the provider's level list
+ *  (e.g. a persisted value for a provider that no longer declares it). */
+function labelFor(levels: { value: string; label: string }[] | undefined, value: string): string {
+  return levels?.find((l) => l.value === value)?.label ?? value;
+}
 
 export function EffortDropdown() {
   const effort = useSessionStore((s) => s.effort);
   const setEffort = useSessionStore((s) => s.setEffort);
+  const providerId = useSessionStore((s) => s.providerId);
+  const providers = useSessionStore((s) => s.providers);
+
+  // The active provider's declared thinking levels. Unknown provider id
+  // (providers still loading) falls back to the current claude-sdk provider
+  // being the default — but we only hide when the resolved provider explicitly
+  // declares none.
+  const provider = providers.find((p) => p.id === providerId);
+  const levels = provider?.capabilities.thinkingLevels;
+
+  // Provider declares no thinking levels → hide the chip.
+  if (!levels || levels.length === 0) return null;
 
   return (
     <Menu.Root>
@@ -51,7 +49,7 @@ export function EffortDropdown() {
         title="Reasoning effort for the next session"
       >
         <IconBolt size={13} className="shrink-0 opacity-80" />
-        <span className="min-w-0 truncate">{EFFORT_LABEL[effort] ?? effort}</span>
+        <span className="min-w-0 truncate">{labelFor(levels, effort)}</span>
         <IconChevronDown size={11} className="shrink-0 opacity-60" />
       </Menu.Trigger>
       <Menu.Portal>
@@ -67,7 +65,7 @@ export function EffortDropdown() {
             <div className="px-3 py-1 text-xs uppercase tracking-wide text-content-subtle">
               Reasoning effort
             </div>
-            {EFFORTS.map((m) => {
+            {levels.map((m) => {
               const active = m.value === effort;
               return (
                 <Menu.Item

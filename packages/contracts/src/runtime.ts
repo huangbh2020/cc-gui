@@ -5,31 +5,61 @@
  */
 
 /**
- * Permission modes mirror claude's --permission-mode flag (verified against
- * the Claude Agent SDK Options.permissionMode, which accepts the same set).
+ * Permission modes are open strings so each provider can declare its own set
+ * via `ProviderCapabilities.permissionModes`. Claude's values are kept as
+ * semantic constants below for backward compatibility and for the claude-sdk
+ * provider's own use. The renderer's composer reads the supported modes from
+ * the active provider's capabilities, not from this union.
  *
- * The full union has 6 values, but the renderer's composer only exposes the 4
- * user-facing ones Claude Code's own UI shows (default / acceptEdits / plan /
- * bypassPermissions). `dontAsk` and `auto` can still arrive here via
- * `--resume` of a session that was started in those modes, or via future
- * settings sync — the contract stores them verbatim, the UI just doesn't
- * render a chip for them. Keeping the union wider than the UI list lets us
- * round-trip these values without lossy coercion.
+ * Claude's 6 modes (default / acceptEdits / plan / bypassPermissions / dontAsk
+ * / auto) are preserved verbatim; `dontAsk` and `auto` are not exposed in the
+ * UI but round-trip safely through the contract. Other providers may declare
+ * entirely different mode strings (or none at all).
  */
-export type PermissionMode =
-  | "default"
-  | "acceptEdits"
-  | "plan"
-  | "bypassPermissions"
-  | "dontAsk"
-  | "auto";
+export type PermissionMode = string;
+
+/** Claude's canonical permission modes, in the order the UI presents them. */
+export const CLAUDE_PERMISSION_MODES = [
+  "default",
+  "acceptEdits",
+  "plan",
+  "bypassPermissions",
+  "dontAsk",
+  "auto",
+] as const;
 
 /**
- * Effort levels mirror claude's --effort flag (verified on 2.1.186:
- * low / medium / high / xhigh / max). "default" means don't pass the flag and
- * let claude pick. Higher effort ≈ more thinking/reasoning.
+ * Effort / thinking levels are open strings so each provider can declare its
+ * own set via `ProviderCapabilities.thinkingLevels`. Claude's values are kept
+ * as semantic constants below for backward compatibility. Pi SDK uses a
+ * superset that adds "off" and "minimal".
+ *
+ * "default" is a universal sentinel meaning "let the provider pick / don't
+ * pass the option". Higher effort ≈ more thinking/reasoning.
  */
-export type EffortLevel = "default" | "low" | "medium" | "high" | "xhigh" | "max";
+export type EffortLevel = string;
+
+/** Claude's canonical effort levels (verified on 2.1.186). */
+export const CLAUDE_EFFORT_LEVELS = [
+  "default",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+/** Pi SDK's thinking levels (superset of Claude's, adds off/minimal). */
+export const PI_THINKING_LEVELS = [
+  "default",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
 
 /** Lifecycle of a single session. */
 export type SessionStatus =

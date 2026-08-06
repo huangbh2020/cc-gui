@@ -3,6 +3,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ThreePaneLayout } from "@renderer/components/layout/ThreePaneLayout.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
+import { PiModelsPanel } from "./PiModelsPanel.js";
 import { SkillsPanel } from "./SkillsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
 import { ShortcutsPanel } from "./ShortcutsPanel.js";
@@ -38,7 +39,7 @@ import { AboutPanel } from "./AboutPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "custom-models" | "skills" | "appearance" | "shortcuts" | "notifications" | "git" | "terminal" | "lsp-languages" | "title-gen" | "about";
+type SectionId = "general" | "custom-models" | "pi-models" | "skills" | "appearance" | "shortcuts" | "notifications" | "git" | "terminal" | "lsp-languages" | "title-gen" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -51,6 +52,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "appearance", label: "外观" },
   { id: "shortcuts", label: "快捷键" },
   { id: "custom-models", label: "模型配置" },
+  { id: "pi-models", label: "Pi 模型" },
   { id: "skills", label: "Skills" },
   { id: "title-gen", label: "线程名称" },
   { id: "notifications", label: "消息通知" },
@@ -126,6 +128,7 @@ export function SettingsPage() {
           {active === "appearance" && <AppearancePanel />}
           {active === "shortcuts" && <ShortcutsPanel />}
           {active === "custom-models" && <CustomModelsPanel />}
+          {active === "pi-models" && <PiModelsPanel />}
           {active === "skills" && <SkillsPanel />}
           {active === "title-gen" && <TitleGenPanel />}
           {active === "notifications" && <NotificationsPanel />}

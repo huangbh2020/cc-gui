@@ -6,6 +6,7 @@
  */
 import type { AgentProvider } from "@contracts/provider";
 import { ClaudeAgentSdkProvider } from "./claude-sdk/ClaudeAgentSdkProvider.js";
+import { PiAgentSdkProvider } from "./pi-sdk/PiAgentSdkProvider.js";
 
 class ProviderRegistry {
   private providers = new Map<string, AgentProvider>();
@@ -45,3 +46,4 @@ export const providerRegistry = new ProviderRegistry();
 
 // Register built-in providers.
 providerRegistry.register(new ClaudeAgentSdkProvider());
+providerRegistry.register(new PiAgentSdkProvider());

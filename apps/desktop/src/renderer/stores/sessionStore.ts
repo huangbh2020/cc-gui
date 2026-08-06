@@ -19,6 +19,7 @@ import { CUSTOM_MODEL_ROLES } from "@contracts/customModel";
 import { api } from "@renderer/lib/api.js";
 import {
   DISPLAY_MODE_SETTING_KEY,
+  DEFAULT_PROVIDER_ID,
   UI_CHAT_FONT_SIZE_SETTING_KEY,
   UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY,
   UI_USER_MSG_COLOR_SETTING_KEY,
@@ -51,12 +52,13 @@ import {
   type FileViewMode,
   type CustomCommand,
   type SkillInfo,
+  type ProviderInfo,
   type ShortcutBindings,
   type Accelerator,
   type LspLanguageState,
   type PickedElement,
 } from "@contracts/ipc";
-import type { UserInputAnswers } from "@contracts/provider";
+import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /** True for `.md` / `.markdown` files - used to default the editor into preview
@@ -419,12 +421,24 @@ export interface SessionState {
    *  only surfaces the 4 user-facing ones. See PermissionMode in
    *  @contracts/runtime for the full list. */
   permissionMode: PermissionMode;
+  /** Provider powering the next session ("claude-sdk" / "pi-sdk"). Chosen in
+   *  the composer's provider chip; persisted on the session row at creation.
+   *  Once a session has messages, this is read-only (a session's provider is
+   *  fixed at creation). */
+  providerId: string;
   /** Model for the next session ("default" = let claude pick). → --model. */
   model: string;
   /** Custom-model config bound to the active session (null = built-in). */
   customModelId: string | null;
   /** User-defined custom-model configs (desensitized — tokens masked). */
   customModels: CustomModelPublic[];
+  /** Registered AI backends from `provider.list`. Empty until initDeferred. */
+  providers: ProviderInfo[];
+  /** Pi SDK models the user can pick (from ~/.pi/agent/models.json +
+   *  injected apiKeys). Populated by `reloadPiAvailableModels` — used by
+   *  ModelDropdown when the active provider is pi-sdk, since pi's
+   *  `capabilities.builtinModels` is empty (models are dynamic). */
+  piAvailableModels: BuiltinModelOption[];
   /** Discovered skills for the composer `/` menu. Cached per active project
    *  (global ~/.claude/skills + the project's .claude/skills); refreshed on
    *  init and project switch. Empty list = no skills installed. */
@@ -796,6 +810,16 @@ export interface SessionState {
   shortcutRecording: boolean;
   setShortcutRecording: (recording: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  /** Switch the provider for the NEXT session (no effect once a session has
+   *  messages — a session's provider is fixed at creation). */
+  setProvider: (id: string) => void;
+  /** Re-fetch the registered provider list from main. Called on init. */
+  reloadProviders: () => Promise<void>;
+  /** Re-fetch the list of models the pi SDK can authenticate with the
+   *  currently-configured keys. Populates `piAvailableModels` (read by
+   *  ModelDropdown when the active provider is pi-sdk). Called on init and
+   *  after any PiModelsPanel save/delete. */
+  reloadPiAvailableModels: () => Promise<void>;
   setModel: (model: string) => void;
   setEffort: (effort: EffortLevel) => void;
   setCustomModel: (id: string | null, model?: string) => void;
@@ -1044,6 +1068,8 @@ export const EMPTY_ELEMENT_QUEUE: PickedElement[] = [];
 /** Stable empty prompt-queue reference (selector must return a stable array). */
 export const EMPTY_PROMPT_QUEUE: QueuedPrompt[] = [];
 const EMPTY_CUSTOM_MODELS: CustomModelPublic[] = [];
+const EMPTY_PROVIDERS: ProviderInfo[] = [];
+const EMPTY_PI_MODELS: BuiltinModelOption[] = [];
 const EMPTY_SKILLS: SkillInfo[] = [];
 const EMPTY_SESSIONS: Session[] = [];
 export const EMPTY_SUBAGENTS: SubagentSnapshot[] = [];
@@ -1230,6 +1256,7 @@ function syncConfigFromSession(
   // this helper, so this single sync covers all of them.
   const prevPid = get().activeProjectId;
   const patch: Partial<SessionState> = {
+    providerId: sess.providerId,
     model: sess.model,
     effort: sess.effort,
     permissionMode: sess.permissionMode,
@@ -2090,9 +2117,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   bottomTerminalHeight: 280,
   editorWidthPct: 50,
   permissionMode: "default",
+  providerId: DEFAULT_PROVIDER_ID,
   model: "default",
   customModelId: null,
   customModels: EMPTY_CUSTOM_MODELS,
+  providers: EMPTY_PROVIDERS,
+  piAvailableModels: EMPTY_PI_MODELS,
   skills: EMPTY_SKILLS,
   effort: "high",
   todosBySession: {},
@@ -2307,6 +2337,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Custom-model configs for the model dropdown.
     void get().reloadCustomModels();
+
+    // Registered AI backends for the provider picker.
+    void get().reloadProviders();
+
+    // Pi SDK models the user can pick from in the model dropdown. Lazy/async
+    // — may take a moment on first run while the SDK loads; the dropdown
+    // shows an empty state until it resolves.
+    void get().reloadPiAvailableModels();
 
     // Skill list for the composer `/` menu (scans ~/.claude/skills + the
     // active project's .claude/skills).
@@ -2617,6 +2655,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!projectId) return;
     const { session } = await api.claude.startSession({
       projectId,
+      providerId: get().providerId,
       model: get().model !== "default" ? get().model : undefined,
       effort: get().effort,
       permissionMode: get().permissionMode,
@@ -3270,7 +3309,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	    //    `updateSettings`, which races `sendTurn`. The main handler
 	    //    applies these overrides to the in-memory session so
 	    //    RuntimeManager always sees the latest UI state.
-	    const { model, customModelId, effort, permissionMode } = get();
+	    const { model, customModelId, effort, permissionMode, providerId } = get();
 	    let updated;
 	    try {
 	      ({ session: updated } = await api.claude.sendTurn({
@@ -3280,6 +3319,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	        effort,
 	        permissionMode,
 	        customModelId,
+	        // Per-turn provider override — lets the active provider drive
+	        // which backend handles this turn without persisting the change
+	        // to the session row. Combined with the per-turn overrides above
+	        // this keeps "switch SDK at any time" working.
+	        providerId,
 	        skills: skillsUsed && skillsUsed.length > 0 ? skillsUsed : undefined,
 	      }));
 	    } catch (err) {
@@ -3383,7 +3427,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // 5. Fire the turn; events stream back via ingestEvent. Same per-turn
     //    override pattern as sendPrompt.
-    const { model, customModelId, effort, permissionMode } = get();
+    const { model, customModelId, effort, permissionMode, providerId } = get();
     let updated;
     try {
       ({ session: updated } = await api.claude.sendTurn({
@@ -3393,6 +3437,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         effort,
         permissionMode,
         customModelId,
+        providerId,
         skills: skillsUsed && skillsUsed.length > 0 ? skillsUsed : undefined,
       }));
     } catch (err) {
@@ -4399,6 +4444,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set({ customModels: models });
     } catch (err) {
       console.error("reloadCustomModels failed:", err);
+    }
+  },
+
+  setProvider: (id) => {
+    // Only meaningful before a session has messages. Once a session exists
+    // with content, its provider is fixed (see ProviderDropdown read-only
+    // state). This action only updates the "next session" slot.
+    set({ providerId: id });
+  },
+
+  reloadProviders: async () => {
+    try {
+      const { providers } = await api.provider.list();
+      set({ providers });
+    } catch (err) {
+      console.error("reloadProviders failed:", err);
+    }
+  },
+
+  reloadPiAvailableModels: async () => {
+    try {
+      const { models } = await api.piModels.listAvailable();
+      set({ piAvailableModels: models });
+    } catch (err) {
+      console.error("reloadPiAvailableModels failed:", err);
     }
   },
 

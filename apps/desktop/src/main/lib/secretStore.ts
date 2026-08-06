@@ -64,14 +64,14 @@ function isAvailable(): boolean {
   return ok;
 }
 
-function encrypt(plain: string): string {
+export function encrypt(plain: string): string {
   if (!isAvailable()) {
     return Buffer.from(plain, "utf8").toString("base64");
   }
   return safeStorage.encryptString(plain).toString("base64");
 }
 
-function decrypt(b64: string): string {
+export function decrypt(b64: string): string {
   const buf = Buffer.from(b64, "base64");
   if (!isAvailable()) {
     return buf.toString("utf8");

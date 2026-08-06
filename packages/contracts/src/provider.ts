@@ -32,6 +32,47 @@ export interface ProviderCapabilities {
   supportsMcp: boolean;
   /** Does it have native AskUserQuestion tool support? */
   supportsAskUserQuestion: boolean;
+
+  // ── Declarative capability descriptors (UI renders from these) ──
+  /** Thinking / effort levels this provider supports. Empty/undefined = hide
+   *  the effort chip entirely. Each provider declares its own set so the UI
+   *  never hardcodes provider-specific values. */
+  thinkingLevels?: ThinkingLevelOption[];
+  /** Permission modes this provider supports. Empty/undefined = hide the
+   *  permission chip. Claude declares 4 user-facing modes; Pi declares none. */
+  permissionModes?: PermissionModeOption[];
+  /** Built-in model aliases (non-custom-endpoint). Empty/undefined = the
+   *  provider only works via custom endpoint configs or dynamic model list. */
+  builtinModels?: BuiltinModelOption[];
+  /** Whether the provider supports custom-endpoint configuration (the
+   *  "添加/管理模型" entry in ModelDropdown). When false, the custom-model
+   *  panel and its dropdown entry are hidden for this provider. */
+  supportsCustomEndpoint?: boolean;
+}
+
+/** A selectable option for a provider's thinking-level / effort picker. */
+export interface ThinkingLevelOption {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
+/** A selectable option for a provider's permission-mode picker. */
+export interface PermissionModeOption {
+  value: string;
+  label: string;
+  /** Icon name resolved by the renderer's icon map. */
+  icon?: string;
+  /** Semantic color token (e.g. "text-warning", "text-danger"). */
+  color?: string;
+  hint?: string;
+}
+
+/** A built-in model entry a provider exposes without custom-endpoint config. */
+export interface BuiltinModelOption {
+  id: string;
+  label: string;
+  hint?: string;
 }
 
 /** Request to start one turn/conversation. Provider-neutral equivalent of the

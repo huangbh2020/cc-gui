@@ -5,6 +5,8 @@ import { registerProjectHandlers } from "./projects.js";
 import { registerClaudeHandlers } from "./claude.js";
 import { registerDialogHandlers } from "./dialog.js";
 import { registerCustomModelHandlers } from "./customModel.js";
+import { registerEndpointPresetHandlers } from "./endpointPreset.js";
+import { registerPiModelsHandlers } from "./piModels.js";
 import { registerThemeHandlers } from "./theme.js";
 import { registerFileHandlers } from "./files.js";
 import { registerGitHandlers } from "./git.js";
@@ -47,6 +49,8 @@ export function registerIpcHandlers(): void {
   registerClaudeHandlers(ipc);
   registerDialogHandlers(ipc);
   registerCustomModelHandlers(ipc);
+  registerEndpointPresetHandlers(ipc);
+  registerPiModelsHandlers(ipc);
   registerThemeHandlers(ipc);
   registerFileHandlers(ipc);
   registerGitHandlers(ipc);

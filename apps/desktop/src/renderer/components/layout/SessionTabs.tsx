@@ -16,7 +16,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@renderer/lib/cn.js";
-import { IconX, SiClaude } from "@renderer/lib/icons.js";
+import { IconX } from "@renderer/lib/icons.js";
+import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Session } from "@contracts/session";
 import { TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
@@ -317,8 +318,11 @@ function SortableTab({
         isDragging && "shadow-lg",
       )}
     >
-      {/* Claude brand mark, fixed at the leading edge of the tab. */}
-      <SiClaude size={13} className="shrink-0 text-[#D97757]" />
+      {/* Provider brand mark, fixed at the leading edge of the tab. */}
+      {(() => {
+        const { Icon, color } = getProviderIcon(session?.providerId);
+        return <Icon size={13} className={cn("shrink-0", color)} />;
+      })()}
       {/* Running indicator: solid dot when active+idle, pulsing when turn
           in flight. Uses Tailwind's animate-pulse so the user can see at a
           glance which background tabs are still working. */}

@@ -36,8 +36,8 @@ import {
   IconArrowRight,
   IconPalette,
   IconSearch,
-  SiClaude,
 } from "@renderer/lib/icons.js";
+import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { Button, ConfirmDialog, Dialog, Input } from "@renderer/components/ui/index.js";
 import { BrandLogo } from "./BrandLogo.js";
 import { SidebarQuickActions } from "./SidebarQuickActions.js";
@@ -599,7 +599,10 @@ export function LeftBar() {
                     {sessions.map((s) => (
                       <ArchivedRow
                         key={s.id}
-                        icon={<SiClaude size={14} className="opacity-60" />}
+                        icon={(() => {
+                          const { Icon } = getProviderIcon(s.providerId);
+                          return <Icon size={14} className="opacity-60" />;
+                        })()}
                         title={s.title}
                         onRestore={() => void archiveSession(s.id, false)}
                         onDelete={() => {
@@ -884,6 +887,13 @@ function ProjectNode(props: ProjectNodeProps) {
 
 /* ── Session row (leaf) ── */
 
+/** Provider-branded leading icon for a session row. Kept in a tiny component
+ *  so the two usages (active row + archived row) stay in sync. */
+function SessionRowIcon({ providerId, className }: { providerId: string; className?: string }) {
+  const { Icon, color } = getProviderIcon(providerId);
+  return <Icon size={14} className={cn(className, color)} />;
+}
+
 function SessionRow({
   session, active, isRunning, unreadCount, onSelect, onArchive, onDelete, registerNode, onContext,
 }: {
@@ -941,7 +951,7 @@ function SessionRow({
       )}
       title={`${session.title}\n${formatFullTime(session.updatedAt)}`}
     >
-      <SiClaude size={14} className="shrink-0 text-[#D97757]" />
+      <SessionRowIcon providerId={session.providerId} className="shrink-0" />
       <span className="min-w-0 flex-1 truncate">{session.title}</span>
 
       {/* Relative time of the last activity (updatedAt), docked to the right

@@ -1,9 +1,11 @@
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
-  PERMISSION_MODE_LABEL,
-  PERMISSION_MODE_META,
-} from "@renderer/components/chat/PermissionModeDropdown.js";
+  IconShield,
+  IconShieldCheck,
+  IconShieldHalfFilled,
+  IconShieldLock,
+} from "@renderer/lib/icons.js";
 
 /** Bottom status bar: claude status, active model/effort/mode, run state.
  * Mirrors the per-session settings chosen in the composer so they're always
@@ -13,6 +15,16 @@ const MODEL_LABEL: Record<string, string> = {
   fable: "Fable",
   opus: "Opus",
   sonnet: "Sonnet",
+};
+
+/** Icon name → component for the permission chip (shared with the composer
+ *  dropdown's icon map; kept in sync with the claude capabilities declaration
+ *  in ClaudeAgentSdkProvider). */
+const MODE_ICONS: Record<string, React.ReactNode> = {
+  shield: <IconShield size={11} />,
+  shieldCheck: <IconShieldCheck size={11} />,
+  shieldHalf: <IconShieldHalfFilled size={11} />,
+  shieldLock: <IconShieldLock size={11} />,
 };
 
 export function StatusBar() {
@@ -28,6 +40,8 @@ export function StatusBar() {
   const customModels = useSessionStore((s) => s.customModels);
   const effort = useSessionStore((s) => s.effort);
   const permissionMode = useSessionStore((s) => s.permissionMode);
+  const providerId = useSessionStore((s) => s.providerId);
+  const providers = useSessionStore((s) => s.providers);
 
   const statusColor = installed === false ? "text-danger" : installed === true ? "text-accent" : "text-content-subtle";
   const statusText = installed === false ? "claude not found" : installed === true ? "claude ready" : "checking claude…";
@@ -39,6 +53,14 @@ export function StatusBar() {
   const modelLabel = activeCustom
     ? `${activeCustom.name} · ${MODEL_LABEL[model] ?? model}`
     : MODEL_LABEL[model] ?? model;
+
+  // Resolve the current mode's label/color/icon from the active provider's
+  // declared permissionModes. Unknown values (e.g. pi has no permission modes,
+  // or a persisted dontAsk) fall back to the raw string + neutral shield.
+  const provider = providers.find((p) => p.id === providerId);
+  const modeMeta = provider?.capabilities.permissionModes?.find((m) => m.value === permissionMode);
+  const modeColor = modeMeta?.color ?? "";
+  const modeIcon = (modeMeta?.icon && MODE_ICONS[modeMeta.icon]) || <IconShield size={11} />;
 
   return (
     <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-surface px-3 text-[11px] text-content-subtle">
@@ -52,11 +74,11 @@ export function StatusBar() {
       <span
         className={cn(
           "inline-flex items-center gap-1",
-          PERMISSION_MODE_META[permissionMode].color || "text-content-muted",
+          modeColor || "text-content-muted",
         )}
       >
-        <span className="shrink-0 opacity-90">{PERMISSION_MODE_META[permissionMode].icon}</span>
-        {PERMISSION_MODE_LABEL[permissionMode] ?? permissionMode}
+        <span className="shrink-0 opacity-90">{modeIcon}</span>
+        {modeMeta?.label ?? permissionMode}
       </span>
 
       <div className="flex-1" />
