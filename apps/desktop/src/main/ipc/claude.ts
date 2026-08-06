@@ -129,7 +129,15 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         log.warn(`title generation failed for ${session.id}: ${(err as Error).message}`),
       );
     }
-    return { session: SessionRepo.get(session.id) ?? updated };
+    // Return the in-memory `updated` snapshot (it already carries every
+    // per-turn override above — including providerId). Re-reading from the DB
+    // here would hand back a stale providerId (the per-turn provider override
+    // is intentionally NOT persisted), which the renderer then uses to
+    // replace its cached session row and flip the thread icon to the wrong
+    // SDK. updated has title/model/effort/permissionMode/customModelId/
+    // providerId patched in; the DB-only `status` flip is surfaced via the
+    // event stream, so it doesn't need to ride this return value.
+    return { session: updated };
   });
 
   ipcMain.handle(IPC.CLAUDE_INTERRUPT, async (_evt, raw) => {
@@ -256,6 +264,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       effort: input.effort,
       permissionMode: input.permissionMode,
       customModelId: input.customModelId,
+      providerId: input.providerId,
     });
     if (input.permissionMode) {
       runtimeManager.setPermissionMode(input.sessionId, input.permissionMode);

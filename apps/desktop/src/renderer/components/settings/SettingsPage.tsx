@@ -70,7 +70,14 @@ export function SettingsPage() {
   // value). Without this the settings sidebar was a hardcoded 280px while the
   // titlebar strip tracked the user's dragged width - they'd drift apart.
   const leftWidth = useSessionStore((s) => s.leftWidth);
-  const [active, setActive] = useState<SectionId>("custom-models");
+  // SettingsPage mounts fresh each time the modal opens (App.tsx conditionally
+  // renders it on `settingsOpen`), so this useState reads the requested
+  // section once per open. Callers pass a section via setSettingsOpen(true, id)
+  // — e.g. the composer's "管理模型…" entry targets "custom-models" / "pi-models".
+  const settingsSection = useSessionStore((s) => s.settingsSection);
+  const [active, setActive] = useState<SectionId>(
+    () => (settingsSection && (NAV_ITEMS.some((n) => n.id === settingsSection)) ? settingsSection : "custom-models") as SectionId,
+  );
 
   // Esc returns to the workspace (preserves the modal's keyboard shortcut).
   useEffect(() => {

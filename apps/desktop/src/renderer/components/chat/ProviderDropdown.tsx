@@ -1,15 +1,16 @@
 import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
-import { IconCheck, IconChevronDown, IconLock } from "@renderer/lib/icons.js";
+import { IconCheck, IconChevronDown } from "@renderer/lib/icons.js";
+import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 /**
  * Provider (AI backend) picker for the composer toolbar.
  *
- * Shows only when more than one provider is registered. Once a session has
- * messages, its provider is fixed at creation — the chip becomes read-only
- * (a lock icon replaces the chevron, and the menu doesn't open) so the user
- * can't silently swap backends mid-conversation.
+ * Shows only when more than one provider is registered AND the active thread
+ * has no messages yet — once a session has messages its provider is fixed at
+ * creation, so the chip hides entirely (no read-only lock affordance) and the
+ * model/effort/permission chips carry the conversation context alone.
  *
  * Placement: first in the chip row (provider is a higher-level choice than
  * model/effort/permission). The model dropdown adapts to the chosen provider's
@@ -30,34 +31,31 @@ export function ProviderDropdown() {
   // Single-provider installs need no picker.
   if (providers.length <= 1) return null;
 
+  // Locked (session has messages): the provider is fixed at creation, so
+  // hide the chip entirely rather than show a read-only lock affordance.
+  if (hasMessages) return null;
+
   const active = providers.find((p) => p.id === providerId);
+  const activeIcon = getProviderIcon(providerId);
 
   const chip = (
     <button
       type="button"
       className={cn(
         "composer-chip flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ease-out",
-        hasMessages
-          ? "cursor-default text-content-subtle opacity-80"
-          : "text-content-muted hover:scale-105 hover:bg-accent/10 hover:text-accent active:scale-95",
+        "text-content-muted hover:scale-105 hover:bg-accent/10 hover:text-accent active:scale-95",
       )}
-      title={
-        hasMessages
-          ? "此会话的 SDK 已在创建时固定,不可更改"
-          : "选择会话使用的 SDK"
-      }
+      title="选择会话使用的 SDK"
     >
+      <activeIcon.Icon size={13} className={cn("shrink-0", activeIcon.color)} />
       <span className="min-w-0 max-w-[140px] truncate">{active?.displayName ?? providerId}</span>
-      {hasMessages ? (
-        <IconLock size={11} className="shrink-0 opacity-70" />
-      ) : (
-        <IconChevronDown size={11} className="shrink-0 opacity-60" />
-      )}
+      <IconChevronDown size={11} className="shrink-0 opacity-60" />
     </button>
   );
 
-  // Locked: render a plain button, no menu.
-  if (hasMessages) return chip;
+  // Locked (session has messages): the provider is fixed at creation, so
+  // hide the chip entirely rather than show a read-only lock affordance.
+  if (hasMessages) return null;
 
   return (
     <Menu.Root>
@@ -77,6 +75,8 @@ export function ProviderDropdown() {
             </div>
             {providers.map((p) => {
               const activeItem = p.id === providerId;
+              const meta = getProviderIcon(p.id);
+              const ItemIcon = meta.Icon;
               return (
                 <Menu.Item
                   key={p.id}
@@ -88,6 +88,7 @@ export function ProviderDropdown() {
                   onClick={() => setProvider(p.id)}
                 >
                   <span className="flex min-w-0 items-center gap-2">
+                    <ItemIcon size={14} className={cn("shrink-0", meta.color)} />
                     <span className="truncate font-medium">{p.displayName}</span>
                   </span>
                   {activeItem && <IconCheck size={14} className="shrink-0" />}

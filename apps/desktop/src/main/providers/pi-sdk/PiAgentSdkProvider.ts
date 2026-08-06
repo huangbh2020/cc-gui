@@ -50,13 +50,16 @@ function toolsForPermissionMode(mode: string | undefined): string[] | undefined 
 
 export class PiAgentSdkProvider implements AgentProvider {
   readonly id = "pi-sdk";
-  readonly displayName = "Pi (Agent SDK)";
+  readonly displayName = "Pi";
   readonly capabilities: ProviderCapabilities = {
     supportsApproval: false, // Pi tools execute directly; no canUseTool interception
     supportsResume: true, // SessionManager.continueRecent / open
     supportsStreaming: true, // subscribe() event stream
     supportsMcp: false, // Pi uses extensions, not MCP servers
-    supportsAskUserQuestion: false, // no native AskUserQuestion tool
+    // TODO(AskUserQuestion): no native AskUserQuestion tool. A sentinel-text
+    // fallback is feasible (see PiMessageAdapter text_delta branch) but not
+    // yet implemented — until then the question panel won't appear for pi.
+    supportsAskUserQuestion: false,
     // Declarative descriptors — the renderer's dynamic dropdowns read these.
     thinkingLevels: [
       { value: "default", label: "Auto", hint: "让 Pi 自选" },
@@ -117,12 +120,37 @@ export class PiAgentSdkProvider implements AgentProvider {
       ctx.log.warn(`pi: failed to load API keys (continuing without): ${(err as Error).message}`);
     }
 
+    // Resolve the model the user picked in the composer. Pi model ids are
+    // "providerId/modelId" (see projectModel in ipc/piModels.ts); pi SDK's
+    // createAgentSession takes a Model object, not a string, so we look it up
+    // via the same runtime that already has the user's keys injected. When the
+    // id is absent ("default" / unset / malformed / unknown to the runtime),
+    // we fall back to pi's default — letting the SDK pick from settings/env,
+    // exactly the pre-selection behavior.
+    let resolvedModel: ReturnType<typeof modelRuntime.getModel> | undefined;
+    if (req.model && req.model !== "default") {
+      const slashIdx = req.model.indexOf("/");
+      if (slashIdx > 0 && slashIdx < req.model.length - 1) {
+        const providerName = req.model.slice(0, slashIdx);
+        const modelId = req.model.slice(slashIdx + 1);
+        try {
+          resolvedModel = modelRuntime.getModel(providerName, modelId);
+          if (!resolvedModel) {
+            ctx.log.warn(`pi: model "${req.model}" not found in runtime, falling back to default`);
+          }
+        } catch (err) {
+          ctx.log.warn(`pi: failed to resolve model "${req.model}": ${(err as Error).message}`);
+        }
+      }
+    }
+
     const { session } = await sdk.createAgentSession({
       cwd: req.cwd,
       thinkingLevel: req.effort && req.effort !== "default" ? (req.effort as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") : undefined,
       tools,
       sessionManager,
       modelRuntime,
+      ...(resolvedModel ? { model: resolvedModel } : {}),
     });
 
     // Register the pi session id with the host so it can be persisted and

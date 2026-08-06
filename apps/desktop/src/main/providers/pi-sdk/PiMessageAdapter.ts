@@ -25,11 +25,19 @@ import type { ProviderContext } from "@contracts/provider";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 export class PiMessageAdapter {
-  /** Per-session message id counter — message boundaries come from
-   *  `message_start` / `message_end` events. */
-  private currentMessageId: string | null = null;
-  /** True once a `message_start` has been seen and not yet closed. */
-  private inMessage = false;
+  /** Per-contentIndex message id — mirrors how Claude's SdkMessageAdapter maps
+   *  content_block index → messageId. Pi's AssistantMessageEvent carries a
+   *  `contentIndex` identifying which block a delta belongs to (thinking=0,
+   *  text=1, tool=2, …). Assigning one messageId per block lets the renderer
+   *  bucket each independently; turn-level grouping (turnMeta) then assembles
+   *  them into a single turn in the view. This is what keeps each thinking /
+   *  text segment as its own block instead of coalescing alternated
+   *  thinking/text deltas into a single message (which produced the
+   *  "thinking → text → thinking → text" multi-panel artifact). */
+  private readonly blockMessageIds = new Map<number, string>();
+  /** Tracks the most recently seen contentIndex so message_end can emit a
+   *  message.complete with a valid id. */
+  private lastMessageId: string | null = null;
 
   constructor(
     private readonly ctx: ProviderContext,
@@ -43,13 +51,14 @@ export class PiMessageAdapter {
         this.handleMessageUpdate(event);
         break;
       case "message_start":
-        this.currentMessageId = randomUUID();
-        this.inMessage = true;
+        // Per-block ids are allocated lazily on each delta's contentIndex;
+        // nothing to do at message boundaries.
         break;
       case "message_end":
-        this.inMessage = false;
-        this.currentMessageId = null;
-        this.emit({ type: "message.complete", sessionId: this.sessionId, messageId: this.currentMessageId ?? randomUUID() });
+        if (this.lastMessageId) {
+          this.emit({ type: "message.complete", sessionId: this.sessionId, messageId: this.lastMessageId });
+        }
+        this.blockMessageIds.clear();
         break;
       case "tool_execution_start":
         this.emit({
@@ -104,31 +113,48 @@ export class PiMessageAdapter {
     const sub = event.assistantMessageEvent;
     if (!sub) return;
     if (sub.type === "text_delta") {
-      this.ensureMessageId();
+      const messageId = this.ensureMessageId(sub.contentIndex);
+      // TODO(AskUserQuestion): pi has no native AskUserQuestion tool and no
+      // canUseTool interception, so the question panel never appears for pi
+      // sessions today. Claude solves this with a sentinel-text-scan fallback
+      // (SdkMessageAdapter scans text_delta for <<<ASK_USER_QUESTION>>> JSON
+      // and emits `question.ask` with a `sentinel_`-prefixed requestId). The
+      // same approach is viable here — pi's text_delta stream is just plain
+      // text — but it's not yet wired up: (1) PiAgentSdkProvider would need
+      // to inject the sentinel system prompt, (2) this branch would scan the
+      // delta and emit question.ask, (3) capabilities.supportsAskUserQuestion
+      // would flip to true. The answer-return IPC already handles the
+      // `sentinel_` prefix (composeSentinelAnswerPrompt → new turn), and
+      // runtimeManager.sendTurn is provider-neutral, so that path reuses as-is.
       this.emit({
         type: "text.delta",
         sessionId: this.sessionId,
-        messageId: this.currentMessageId!,
+        messageId,
         text: sub.delta,
       });
     } else if (sub.type === "thinking_delta") {
-      this.ensureMessageId();
+      const messageId = this.ensureMessageId(sub.contentIndex);
       this.emit({
         type: "thinking",
         sessionId: this.sessionId,
-        messageId: this.currentMessageId!,
+        messageId,
         text: sub.delta,
       });
     }
   }
 
-  private ensureMessageId(): void {
-    // Pi may emit text_delta before a message_start (or without one in some
-    // tool-loop paths). Lazily allocate a message id so deltas always have a
-    // target bucket.
-    if (!this.currentMessageId) {
-      this.currentMessageId = randomUUID();
+  /** Look up (or lazily allocate) the messageId for a given contentIndex. Each
+   *  content block gets its own stable id — thinking(0) ≠ text(1) — matching
+   *  Claude's per-block model. The map is cleared at message_end so the next
+   *  pi-message reuses contentIndex 0/1 with fresh ids. */
+  private ensureMessageId(contentIndex: number): string {
+    let id = this.blockMessageIds.get(contentIndex);
+    if (!id) {
+      id = randomUUID();
+      this.blockMessageIds.set(contentIndex, id);
     }
+    this.lastMessageId = id;
+    return id;
   }
 
   /** Pi doesn't report max_tokens / tool_use stop reasons distinctly in the

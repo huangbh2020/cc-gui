@@ -65,7 +65,7 @@ const ASK_SYSTEM_PROMPT = [
 
 export class ClaudeAgentSdkProvider implements AgentProvider {
   readonly id = "claude-sdk";
-  readonly displayName = "Claude (Agent SDK)";
+  readonly displayName = "Claude";
   readonly capabilities: ProviderCapabilities = {
     supportsApproval: true,
     supportsResume: true,

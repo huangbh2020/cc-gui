@@ -374,6 +374,11 @@ export interface SessionState {
   claudeInstalled: boolean | null;
   /** Settings modal visibility (opened from the LeftBar ⚙ footer and the CLI-missing CTA). */
   settingsOpen: boolean;
+  /** Initial settings section to land on when the modal opens. Callers that
+   *  know which section the user wants (e.g. the composer's "管理模型…"
+   *  entry → "custom-models" / "pi-models") pass it to setSettingsOpen; null
+   *  means "use the default section". Cleared on close. */
+  settingsSection: string | null;
   /** Command palette (Cmd/Ctrl+K) visibility. Toggled by the global hotkey
    *  wired in App.tsx and by any in-app "command palette" affordance. The
    *  palette itself (CommandPalette.tsx) reads this to mount/unmount. */
@@ -740,7 +745,7 @@ export interface SessionState {
    *  regains focus, the active session's unread counter is cleared (the user
    *  is looking at it now). */
   setWindowFocused: (focused: boolean) => void;
-  setSettingsOpen: (open: boolean) => void;
+  setSettingsOpen: (open: boolean, section?: string) => void;
   /** Toggle the Cmd/Ctrl+K command palette open/closed. */
   setCommandPaletteOpen: (open: boolean) => void;
   /** Toggle the file search dialog open/closed. Opened from the Files panel
@@ -2096,6 +2101,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   isWindowFocused: true,
   claudeInstalled: null,
   settingsOpen: false,
+  settingsSection: null,
   commandPaletteOpen: false,
   // File search dialog (opened from the Files panel search button / Cmd+Shift+F
   // / command palette). Pure in-memory, mirrors commandPaletteOpen.
@@ -4080,7 +4086,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setSettingsOpen: (open, section) =>
+    set(open ? { settingsOpen: true, settingsSection: section ?? null } : { settingsOpen: false, settingsSection: null }),
 
   setWindowFocused: (focused) => {
     set({ isWindowFocused: focused });
@@ -4448,10 +4455,49 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setProvider: (id) => {
-    // Only meaningful before a session has messages. Once a session exists
-    // with content, its provider is fixed (see ProviderDropdown read-only
-    // state). This action only updates the "next session" slot.
+    // Always update the "next session" slot — new threads inherit this.
     set({ providerId: id });
+
+    // If a blank (message-less) session is currently active, also sync the
+    // change onto its session row so the provider is fixed correctly before
+    // the first turn. This keeps the left-bar rows, session tabs, and the
+    // titlebar thread icon (all of which read session.providerId) in sync
+    // as the user picks a different SDK. A session with messages is already
+    // locked — ProviderDropdown hides the chip, so we never reach here for it,
+    // and we guard defensively in case the action is called directly.
+    const sid = get().activeSessionId;
+    if (!sid) return;
+    const bucket = get().messagesBySession[sid];
+    if (bucket && bucket.length > 0) return;
+
+    const sess = findSession(get().sessionsByProject, get().archivedSessionsByProject, sid);
+    if (!sess || sess.providerId === id) return;
+    const projectId = sess.projectId;
+
+    set((s) => {
+      const patchRow = (list: Session[]): Session[] =>
+        list.map((x) => (x.id === sid ? { ...x, providerId: id } : x));
+      const nextByProject = { ...s.sessionsByProject };
+      if (nextByProject[projectId]) {
+        nextByProject[projectId] = patchRow(nextByProject[projectId]);
+      }
+      const nextArchived = { ...s.archivedSessionsByProject };
+      if (nextArchived[projectId]) {
+        nextArchived[projectId] = patchRow(nextArchived[projectId]);
+      }
+      // `sessions` is a derived alias of the active project's list; refresh it
+      // only when it currently points at this session's project.
+      const nextSessions = s.activeProjectId === projectId && nextByProject[projectId]
+        ? nextByProject[projectId]
+        : s.sessions;
+      return { sessionsByProject: nextByProject, archivedSessionsByProject: nextArchived, sessions: nextSessions };
+    });
+
+    // Persist the provider change to the session row. Fire-and-forget, like
+    // the other updateSettings callers (model / effort / permissionMode).
+    void api.session.updateSettings({ sessionId: sid, providerId: id }).catch((err) => {
+      console.error("updateSettings(providerId) failed:", err);
+    });
   },
 
   reloadProviders: async () => {

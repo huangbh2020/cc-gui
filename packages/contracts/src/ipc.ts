@@ -490,6 +490,10 @@ export const UpdateSessionSettingsSchema = z.object({
   effort: z.string().optional(),
   permissionMode: z.string().optional(),
   customModelId: z.string().nullable().optional(),
+  /** Provider id (e.g. "claude-sdk"). Only honored while the session has no
+   *  messages yet — once a turn has run the provider is fixed at creation, so
+   *  the main handler rejects this field for non-empty sessions. */
+  providerId: z.string().optional(),
 });
 export type UpdateSessionSettingsInput = z.infer<typeof UpdateSessionSettingsSchema>;
 

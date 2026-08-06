@@ -43,20 +43,29 @@ export function ModelDropdown() {
   const customModelId = useSessionStore((s) => s.customModelId);
   const customModels = useSessionStore((s) => s.customModels);
   const setCustomModel = useSessionStore((s) => s.setCustomModel);
+  const setModel = useSessionStore((s) => s.setModel);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   const providerId = useSessionStore((s) => s.providerId);
   const providers = useSessionStore((s) => s.providers);
   const piAvailableModels = useSessionStore((s) => s.piAvailableModels);
 
   const provider = providers.find((p) => p.id === providerId);
-  // For most providers, builtin models come from capabilities (claude: static
-  // aliases). For pi-sdk, models are dynamic (user-configured in PiModelsPanel)
-  // and pulled from a separate IPC into `piAvailableModels` at startup /
-  // after each config save.
-  const builtinModels =
-    provider?.id === "pi-sdk" ? piAvailableModels : provider?.capabilities.builtinModels ?? [];
+  const isPi = provider?.id === "pi-sdk";
+  const isClaude = provider?.id === "claude-sdk";
+  // Built-in aliases come from the provider's capabilities (claude: static
+  // aliases Auto/Sonnet/Opus/Fable). Pi declares none — its models are dynamic
+  // (user-configured in PiModelsPanel) and surfaced via the separate
+  // `piAvailableModels` list below, NOT through builtinModels.
+  const builtinModels = provider?.capabilities.builtinModels ?? [];
   const supportsCustomEndpoint = provider?.capabilities.supportsCustomEndpoint ?? false;
   const showCustomSection = supportsCustomEndpoint && customModels.length > 0;
+  // Pi surfaces its dynamically-discovered models as a flat list (the same
+  // shape as builtin aliases). Claude shows its user-defined gateway configs
+  // as the "模型列表" section instead — its static aliases are intentionally
+  // hidden from the menu (users pick from their configured endpoints).
+  const showPiModels = isPi && piAvailableModels.length > 0;
+  // "管理模型" lands on the settings section for the active provider.
+  const manageTarget: string | null = isPi ? "pi-models" : isClaude ? "custom-models" : null;
 
   // Chip label: a bound custom config wins; otherwise a built-in alias or the
   // raw model string.
@@ -106,8 +115,13 @@ export function ModelDropdown() {
               "transition-[transform,opacity] duration-100",
             )}
           >
-            {/* Built-in aliases (provider-declared). */}
-            {builtinModels.length > 0 && (
+            {/* Built-in aliases (provider-declared). Claude and Pi both hide
+                this section: Claude users pick from their configured gateway
+                endpoints (the "模型列表" section below); Pi has no built-in
+                aliases at all (its models are user-configured, surfaced via
+                the pi "模型列表" section). Future providers that declare
+                builtinModels still surface them here. */}
+            {!isClaude && !isPi && builtinModels.length > 0 && (
               <div className="border-b border-edge/60 pb-1">
                 <div className="px-3 py-1 text-xs uppercase tracking-wide text-content-subtle">
                   内置模型
@@ -135,13 +149,48 @@ export function ModelDropdown() {
               </div>
             )}
 
+            {/* Pi models: dynamically discovered from ~/.pi/agent/models.json
+                (configured in the Pi models settings panel). Flat list, single
+                select — each entry maps to a "providerId/modelId" string that
+                PiAgentSdkProvider resolves to a Model object at turn time. We
+                use setModel (not setCustomModel) because pi has no custom-config
+                concept: the picked id is a concrete model, persisted verbatim
+                in the session's `model` field and consumed by the provider. */}
+            {showPiModels && (
+              <div className="border-b border-edge/60 pb-1">
+                <div className="px-3 py-1 text-xs uppercase tracking-wide text-content-subtle">
+                  模型列表
+                </div>
+                {piAvailableModels.map((b) => {
+                  const active = model === b.id;
+                  return (
+                    <Menu.Item
+                      key={b.id}
+                      className={cn(
+                        "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                        "data-[highlighted]:bg-surface-muted",
+                        active ? "text-accent" : "text-content-muted",
+                      )}
+                      onClick={() => setModel(b.id)}
+                    >
+                      <span className="flex min-w-0 items-baseline gap-2">
+                        <span className="font-medium">{b.label}</span>
+                        {b.hint && <span className="truncate text-xs text-content-subtle">{b.hint}</span>}
+                      </span>
+                      {active && <IconCheck size={14} className="shrink-0" />}
+                    </Menu.Item>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Custom-endpoint configs (only when the provider supports them).
                 Each config exposes MULTIPLE models (one token, many models on
                 the gateway) as a group with a hover-revealed submenu. */}
             {showCustomSection && (
               <div className="pt-1">
                 <div className="flex items-center justify-between px-3 py-1">
-                  <span className="text-xs uppercase tracking-wide text-content-subtle">自定义模型</span>
+                  <span className="text-xs uppercase tracking-wide text-content-subtle">模型列表</span>
                   <span className="text-xs text-content-subtle">{customModels.length}</span>
                 </div>
                 {customModels.map((m) => {
@@ -229,19 +278,36 @@ export function ModelDropdown() {
               </div>
             )}
 
-            {builtinModels.length === 0 && !showCustomSection && (
+            {/* Empty state: no models of any kind to show. Pi with no
+                configured providers still gets the "管理模型" entry below, so
+                it only hits this branch when the pi SDK itself failed to load
+                (piAvailableModels stays empty but manageTarget is set). */}
+            {!isClaude && !isPi && builtinModels.length === 0 && !showPiModels && !showCustomSection && (
               <div className="px-3 py-2 text-[13px] text-content-subtle">
-                此 SDK 不提供内置模型列表
+                暂无可用模型
+              </div>
+            )}
+            {/* Claude with no custom configs: nudge toward configuration. */}
+            {isClaude && !showCustomSection && (
+              <div className="px-3 py-2 text-[13px] text-content-subtle">
+                尚未配置模型,点击下方添加
+              </div>
+            )}
+            {/* Pi with no discovered models: nudge toward the Pi models panel. */}
+            {isPi && !showPiModels && (
+              <div className="px-3 py-2 text-[13px] text-content-subtle">
+                尚未配置模型,点击下方添加
               </div>
             )}
 
-            {/* Manage-models entry — only for providers that support custom
-                endpoints (pi manages its own models.json, so the entry hides). */}
-            {supportsCustomEndpoint && (
+            {/* Manage-models entry — shown for providers that own a model
+                configuration panel (claude → custom-models, pi → pi-models).
+                Targets the matching settings section on open. */}
+            {manageTarget && (
               <>
                 <div className="my-1 border-t border-edge" />
                 <Menu.Item
-                  onClick={() => setSettingsOpen(true)}
+                  onClick={() => setSettingsOpen(true, manageTarget)}
                   className={cn(
                     "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
                     "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",

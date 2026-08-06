@@ -114,13 +114,20 @@ function isInlineFileBlock(b: Block): boolean {
   return b.kind === "tool_use" && (b.toolName === "Edit" || b.toolName === "Write");
 }
 
-/** Linear scan: collect consecutive thinking / tool_use blocks into a run.
- *  Any text or error block flushes the run (and renders as its own segment).
- *  Edit / Write tool calls are pulled OUT of the run and emitted as their
- *  own single segment (collapsed) so their diff / content is available inline
- *  but doesn't dominate the stream. Even a single non-file tool_use with no
- *  surrounding text becomes a procedural group — that's the whole point:
- *  keep the prose stream clean. */
+/** Linear scan: collect thinking / tool_use blocks into a run.
+ *
+ *  Non-procedural blocks (text, error) are emitted as their own segments in
+ *  place, but do NOT break the run — thinking blocks on either side of an
+ *  interleaved text block merge into a single procedural run. This matters
+ *  for providers (e.g. pi) where a single turn's content stream alternates
+ *  thinking → text → thinking → text: without this merge, each thinking
+ *  segment becomes its own collapsible "思考" panel, producing the
+ *  "思考面板 → 几个字 → 又一个思考面板" artifact the user reported. By
+ *  keeping the run alive across text, all thinking in one turn folds into
+ *  one panel, with the text segments still shown inline between/after.
+ *
+ *  Edit / Write tool calls DO break the run — they're pulled out and emitted
+ *  as their own collapsed segment so their diff is available inline. */
 function groupBlocks(blocks: Block[]): Segment[] {
   const out: Segment[] = [];
   let run: ProceduralBlock[] = [];
@@ -139,7 +146,8 @@ function groupBlocks(blocks: Block[]): Segment[] {
     } else if (b.kind === "thinking" || b.kind === "tool_use") {
       run.push(b);
     } else {
-      flush();
+      // Text / error: emit as its own segment in place, but keep the run
+      // alive so a following thinking block merges into the same panel.
       out.push({ kind: "single", block: b });
     }
   }

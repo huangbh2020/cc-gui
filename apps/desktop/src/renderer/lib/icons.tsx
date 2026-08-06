@@ -267,3 +267,34 @@ export { SiClaude } from "react-icons/si";
 
 // VS Code icons
 export { VscMcp } from "react-icons/vsc";
+
+/* ───────── Custom brand marks (not in any icon library) ───────── */
+
+/**
+ * Pi (earendil-works/pi) brand mark — the official logo from pi.dev.
+ *
+ * react-icons / Simple Icons don't carry this brand, so we inline the SVG
+ * from pi.dev's logo-auto.svg. It's a blocky "Pi" glyph: a P shape (with an
+ * evenodd-cut hole) plus a detached i dot. fill="currentColor" lets the
+ * caller tint it via className (e.g. text-accent), matching the <Icon size>
+ * convention used everywhere else. viewBox 0 0 800 800 is the original.
+ */
+export function PiBrandIcon({ size = 16, className }: { size?: number; className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 800 800"
+      width={size}
+      height={size}
+      fill="currentColor"
+      className={className}
+      aria-hidden="true"
+    >
+      <path
+        fillRule="evenodd"
+        d="M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z"
+      />
+      <path d="M517.36 400 H634.72 V634.72 H517.36 Z" />
+    </svg>
+  );
+}

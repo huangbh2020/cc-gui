@@ -434,10 +434,11 @@ export const SessionRepo = {
     persist();
   },
 
-  /** Update session-scoped settings (model, effort, permissionMode, customModelId). */
+  /** Update session-scoped settings (model, effort, permissionMode,
+   *  customModelId, providerId). */
   updateSettings(
     id: string,
-    patch: { model?: string; effort?: string; permissionMode?: string; customModelId?: string | null },
+    patch: { model?: string; effort?: string; permissionMode?: string; customModelId?: string | null; providerId?: string },
   ): void {
     const sets: string[] = [];
     const vals: BindValue[] = [];
@@ -445,6 +446,7 @@ export const SessionRepo = {
     if (patch.effort !== undefined) { sets.push("effort = ?"); vals.push(v(patch.effort)); }
     if (patch.permissionMode !== undefined) { sets.push("permission_mode = ?"); vals.push(v(patch.permissionMode)); }
     if (patch.customModelId !== undefined) { sets.push("custom_model_id = ?"); vals.push(v(patch.customModelId)); }
+    if (patch.providerId !== undefined) { sets.push("provider_id = ?"); vals.push(v(patch.providerId)); }
     if (sets.length === 0) return;
     sets.push("updated_at = ?");
     vals.push(v(Date.now()), v(id));

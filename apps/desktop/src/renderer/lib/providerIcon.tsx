@@ -5,12 +5,13 @@
  * place: adding a new provider means adding one entry here, and every
  * surface (LeftBar rows, SessionTabs, Titlebar chip) picks it up.
  *
- * Icons: claude uses the Simple Icons brand mark (SiClaude); pi has no
- * brand mark in react-icons, so we use a Tabler terminal glyph (pi is a
- * terminal coding agent) in a purple tone.
+ * Icons: claude uses the Simple Icons brand mark (SiClaude); pi uses its
+ * official brand mark (PiBrandIcon, inlined from pi.dev since react-icons
+ * doesn't carry it). The pi glyph is monochrome (currentColor), tinted via
+ * the brand accent class.
  */
 import type { ComponentType } from "react";
-import { SiClaude, IconTerminal } from "@renderer/lib/icons.js";
+import { SiClaude, IconTerminal, PiBrandIcon } from "@renderer/lib/icons.js";
 
 export interface ProviderIconMeta {
   Icon: ComponentType<{ size?: number; className?: string }>;
@@ -27,7 +28,7 @@ const FALLBACK: ProviderIconMeta = {
 
 const PROVIDER_ICONS: Record<string, ProviderIconMeta> = {
   "claude-sdk": { Icon: SiClaude, color: "text-[#D97757]" },
-  "pi-sdk": { Icon: IconTerminal, color: "text-[#7C3AED]" },
+  "pi-sdk": { Icon: PiBrandIcon, color: "text-[#7C3AED]" },
 };
 
 export function getProviderIcon(providerId: string | null | undefined): ProviderIconMeta {
