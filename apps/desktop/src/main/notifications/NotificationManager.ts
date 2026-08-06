@@ -19,6 +19,7 @@
  * `notification:focusSession` so the renderer navigates to that session.
  */
 import { Notification } from "electron";
+import { join } from "node:path";
 import type { RuntimeEvent } from "@contracts/runtime";
 import { IPC, DEFAULT_NOTIFICATION_PREFS, NOTIFICATION_PREFS_SETTING_KEY, type NotificationPrefs } from "@contracts/ipc";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
@@ -26,6 +27,13 @@ import { getMainWindow, sendToRenderer } from "@main/window.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import { SessionRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
+
+/** Path to the app icon for OS notifications. Same source image as the
+ *  taskbar/window icon (build/icon.png); resolves relative to the compiled
+ *  main output (out/main → ../../build/icon.png). On packaged builds the icon
+ *  is embedded in the executable and the OS uses that, but passing it
+ *  explicitly guarantees the notification card shows the logo in dev too. */
+const NOTIFICATION_ICON = join(__dirname, "../../build/icon.png");
 
 /** JSON-parse with a typed fallback. Returns defaults on any parse error. */
 function parsePrefs(raw: string | null): NotificationPrefs {
@@ -172,7 +180,7 @@ class NotificationManager {
     if (!this.prefs.osEnabled) return;
     if (!Notification.isSupported()) return;
 
-    const notif = new Notification({ title, body, silent: false });
+    const notif = new Notification({ title, body, icon: NOTIFICATION_ICON, silent: false });
     notif.on("click", () => {
       const win = getMainWindow();
       if (!win || win.isDestroyed()) return;

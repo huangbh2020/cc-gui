@@ -1840,7 +1840,7 @@ const MessageRow = memo(function MessageRow({
 
   return (
     <div className={cn("group", isUser ? "mt-5 flex justify-end" : "mt-3")}>
-      <div className={isUser ? "max-w-[85%]" : "w-full"}>
+      <div className={isUser ? "max-w-[85%] min-w-0" : "w-full min-w-0"}>
         {/* Per-turn stat row - only on the first assistant message of a
             turn (the one carrying turnMeta), and not suppressed by a parent
             TurnPanel (hideTurnStat). Sits above the content. */}
@@ -1852,7 +1852,7 @@ const MessageRow = memo(function MessageRow({
           title={isUser ? fmtFullDateTime(msg.createdAt) : undefined}
           className={
             isUser
-              ? "rounded-lg bg-userBubble/10 px-3 py-2 text-content [font-size:var(--chat-font-size)]"
+              ? "overflow-hidden rounded-lg bg-userBubble/10 px-3 py-2 text-content [font-size:var(--chat-font-size)]"
               : "text-content [font-size:var(--chat-font-size)]"
           }
         >

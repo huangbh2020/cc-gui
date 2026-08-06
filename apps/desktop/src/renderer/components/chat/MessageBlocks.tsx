@@ -252,7 +252,7 @@ function ProceduralRunCard({
         <Chevron open={open} className="ml-auto" />
       </button>
       {open && (
-        <div className="space-y-1.5 py-1">
+        <div className="max-h-80 space-y-1.5 overflow-y-auto py-1">
           {blocks.map((b, i) => (
             <BlockView key={i} block={b} beforeMap={beforeMap} projectPath={projectPath} />
           ))}

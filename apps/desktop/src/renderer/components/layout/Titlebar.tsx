@@ -8,6 +8,7 @@ import {
   IconTerminal2,
   IconCode,
   IconWorld,
+  SiClaude,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchIndicator.js";
@@ -286,11 +287,11 @@ function ActiveThreadTitle() {
   });
   if (!title) return null;
   return (
-    <div
-      className="min-w-0 max-w-[280px] shrink-0 truncate px-1.5 text-xs font-medium text-content-muted"
-      title={title}
-    >
-      {title}
+    <div className="flex min-w-0 max-w-[280px] shrink-0 items-center gap-1 px-1.5 text-xs font-medium text-content-muted">
+      <SiClaude size={13} className="shrink-0 text-[#D97757]" title="Claude" />
+      <span className="truncate" title={title}>
+        {title}
+      </span>
     </div>
   );
 }

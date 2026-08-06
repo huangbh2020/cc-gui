@@ -27,7 +27,7 @@ export function DiffView({ diff }: { diff: ReturnType<typeof lineDiff> }) {
   const rows = annotateDiffWithLineNumbers(diff);
 
   return (
-    <div className="overflow-x-auto rounded bg-surface/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]">
+    <div className="max-h-80 overflow-auto rounded bg-surface/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]">
       {rows.map((d, i) => {
         // Fixed red/green diff colors that don't shift with the theme - the
         // accent/danger tokens change between light/dark (and track the

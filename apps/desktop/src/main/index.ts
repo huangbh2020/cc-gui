@@ -13,6 +13,27 @@ import { is } from "@main/utils.js";
 import { logStartup } from "@main/lib/startupTimer.js";
 import { log } from "@main/lib/logger.js";
 
+// App identity for OS-level surfaces (desktop notifications, taskbar grouping,
+// Windows AUMID). setName("Mcode") makes the system notification card title
+// read "Mcode" instead of the raw executable name ("electron" in dev, or
+// "@mcode/desktop" from package.json).
+//
+// ⚠️ setName() ALSO changes the default userData path (%APPDATA%/<name>),
+// which would orphan the existing database + logs (they live under the
+// pre-rename directory). To avoid a silent data wipe, snapshot the current
+// userData path BEFORE renaming, then pin it back with setPath() right after.
+// Unconditional setPath is safe: when the name already matched (packaged
+// builds where exe metadata is "Mcode"), prevUserData == current path and this
+// just rewrites the same value (a no-op).
+const prevUserData = app.getPath("userData");
+app.setName("Mcode");
+app.setPath("userData", prevUserData);
+// Windows: AppUserModelId drives taskbar grouping + the AUMID the toast center
+// uses to attribute notifications. Harmless on macOS/Linux (ignored).
+if (process.platform === "win32") {
+  app.setAppUserModelId("Mcode");
+}
+
 // Global exception handlers — install BEFORE anything else. Without these, an
 // uncaughtException (e.g. from `new BrowserWindow`, or a require() of a native
 // module that fails to load) or an unhandledRejection (from the fire-and-forget
