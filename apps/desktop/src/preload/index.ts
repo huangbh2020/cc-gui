@@ -89,6 +89,9 @@ const api = {
       ipcRenderer.invoke(IPC.CUSTOM_MODEL_DELETE, input)) as RpcMap["customModel.delete"],
     test: ((input) =>
       ipcRenderer.invoke(IPC.CUSTOM_MODEL_TEST, input)) as RpcMap["customModel.test"],
+    /** Settings UI eye-icon only — returns cleartext token for display. */
+    getToken: ((input) =>
+      ipcRenderer.invoke(IPC.CUSTOM_MODEL_GET_TOKEN, input)) as RpcMap["customModel.getToken"],
   },
 
   /** Endpoint presets — credential-free endpoint templates shared across
@@ -111,6 +114,9 @@ const api = {
     delete: ((input) =>
       ipcRenderer.invoke(IPC.PI_MODELS_DELETE, input)) as RpcMap["piModels.delete"],
     listAvailable: (() => ipcRenderer.invoke(IPC.PI_MODELS_LIST_AVAILABLE)) as RpcMap["piModels.listAvailable"],
+    /** Settings UI eye-icon only — returns cleartext apiKey for display. */
+    getApiKey: ((input) =>
+      ipcRenderer.invoke(IPC.PI_MODELS_GET_API_KEY, input)) as RpcMap["piModels.getApiKey"],
   },
 
   /** Color scheme: get/set the preference; theme.changed fires when the

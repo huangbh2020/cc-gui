@@ -64,8 +64,10 @@ export function ModelDropdown() {
   // as the "模型列表" section instead — its static aliases are intentionally
   // hidden from the menu (users pick from their configured endpoints).
   const showPiModels = isPi && piAvailableModels.length > 0;
-  // "管理模型" lands on the settings section for the active provider.
-  const manageTarget: string | null = isPi ? "pi-models" : isClaude ? "custom-models" : null;
+  // "管理模型" lands on the unified model-config settings section. Both claude
+  // (custom endpoints) and pi (models.json providers) now live on the same
+  // "custom-models" page, distinguished by a type badge in its left list.
+  const manageTarget: string | null = isPi || isClaude ? "custom-models" : null;
 
   // Chip label: resolve the current `model` against the ACTIVE provider's
   // model surface only. Model ids are per-provider (claude uses role/alias
@@ -311,8 +313,8 @@ export function ModelDropdown() {
             )}
 
             {/* Manage-models entry — shown for providers that own a model
-                configuration panel (claude → custom-models, pi → pi-models).
-                Targets the matching settings section on open. */}
+                configuration surface (claude + pi). Both now live on the
+                unified "custom-models" settings page. */}
             {manageTarget && (
               <>
                 <div className="my-1 border-t border-edge" />

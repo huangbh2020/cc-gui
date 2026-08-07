@@ -74,8 +74,6 @@ export function App() {
   const setRightOpen = useSessionStore((s) => s.setRightOpen);
   const bottomTerminalOpen = useSessionStore((s) => s.bottomTerminalOpen);
   const setBottomTerminalOpen = useSessionStore((s) => s.setBottomTerminalOpen);
-  const browserPanelOpen = useSessionStore((s) => s.browserPanelOpen);
-  const setBrowserPanelOpen = useSessionStore((s) => s.setBrowserPanelOpen);
 
   /** Draggable pane sizes + resize actions (from the store; persisted). */
   const leftWidth = useSessionStore((s) => s.leftWidth);
@@ -135,11 +133,9 @@ export function App() {
             leftOpen={leftOpen}
             rightOpen={rightOpen}
             bottomTerminalOpen={bottomTerminalOpen}
-            browserPanelOpen={browserPanelOpen}
             onToggleLeft={() => setLeftOpen(!leftOpen)}
             onToggleRight={() => setRightOpen(!rightOpen)}
             onToggleBottomTerminal={() => setBottomTerminalOpen(!bottomTerminalOpen)}
-            onToggleBrowser={() => setBrowserPanelOpen(!browserPanelOpen)}
           />
           {/* Panel row — bg-surface-muted as the contrasting track so the
               center pane's rounded bottom-left corner (in ThreePaneLayout)

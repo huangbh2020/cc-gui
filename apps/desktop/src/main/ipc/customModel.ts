@@ -15,6 +15,7 @@ import {
   SaveCustomModelSchema,
   DeleteCustomModelSchema,
   TestCustomModelSchema,
+  GetCustomModelTokenSchema,
 } from "@contracts/ipc";
 import type { ApiConfig } from "@contracts/customModel";
 import { CustomModelStore } from "@main/lib/secretStore.js";
@@ -43,6 +44,15 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
     const models = CustomModelStore.remove(input.id);
     log.info(`custom model deleted: ${input.id} (${models.length} remaining)`);
     return { models };
+  });
+
+  ipcMain.handle(IPC.CUSTOM_MODEL_GET_TOKEN, (_evt, raw) => {
+    const input = GetCustomModelTokenSchema.parse(raw);
+    // resolveApiConfig already decrypts the token in main memory; we reuse it
+    // rather than opening a second decryption path. The cleartext is returned
+    // here ONLY because the user clicked the eye icon in the settings form.
+    const cfg = CustomModelStore.resolveApiConfig(input.id);
+    return { token: cfg?.authToken ?? null };
   });
 
   ipcMain.handle(IPC.CUSTOM_MODEL_TEST, async (_evt, raw) => {

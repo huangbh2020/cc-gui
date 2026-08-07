@@ -43,6 +43,15 @@ export const PI_THINKING_KEYS = [
 ] as const;
 export type PiThinkingKey = (typeof PI_THINKING_KEYS)[number];
 
+/** Context-window presets the settings UI writes for Pi models. The UI no
+ *  longer asks the user to type a raw token count (mirroring the Claude
+ *  side's approach): a single "1M context" toggle picks between these two
+ *  values — off → 200k (the common large-model default), on → 1M. The
+ *  underlying `PiModelDefinition.contextWindow` field still stores whatever
+ *  number is written; these constants only pin the two UI-driven choices. */
+export const PI_DEFAULT_CONTEXT_WINDOW = 200_000;
+export const PI_1M_CONTEXT_WINDOW = 1_000_000;
+
 /** Per-model thinking-level → provider value map. Value tri-state:
  *  omitted (undefined) = use provider default; string = concrete value;
  *  null = not supported (UI hides / cycle skips). */

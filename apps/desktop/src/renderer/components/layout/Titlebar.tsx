@@ -7,7 +7,6 @@ import {
   IconLayoutSidebarRightExpand,
   IconTerminal2,
   IconCode,
-  IconWorld,
 } from "@renderer/lib/icons.js";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
@@ -25,12 +24,9 @@ interface Props {
   rightOpen: boolean;
   /** Bottom terminal bar visibility (workspace mode only). */
   bottomTerminalOpen: boolean;
-  /** Browser panel visibility (workspace mode only). */
-  browserPanelOpen?: boolean;
   onToggleLeft?: () => void;
   onToggleRight?: () => void;
   onToggleBottomTerminal?: () => void;
-  onToggleBrowser?: () => void;
   /** Settings mode: returns to the workspace view. */
   onBack?: () => void;
 }
@@ -71,21 +67,21 @@ export function Titlebar({
   onToggleLeft,
   onToggleRight,
   onToggleBottomTerminal,
-  onToggleBrowser,
-  browserPanelOpen,
   onBack,
 }: Props) {
   const isSettings = mode === "settings";
-  // When the browser overlay is open, the side panels are forced closed and
-  // their toggle buttons are hidden - the browser gets the full width.
+  // The browser overlay toggle now lives in the right-panel rail, but the
+  // overlay still forces the side panels closed and hides their toggles when
+  // open. Read its state straight from the store; the "返回工作台" button
+  // below uses setBrowserPanelOpen to exit the overlay.
+  const browserPanelOpen = useSessionStore((s) => s.browserPanelOpen);
+  const setBrowserPanelOpen = useSessionStore((s) => s.setBrowserPanelOpen);
   const isBrowserMode = !!browserPanelOpen && !isSettings;
 
   // The left strip tracks the sidebar's draggable width so the toggle button
   // and the settings back button stay aligned with the panel edge below.
   const leftWidth = useSessionStore((s) => s.leftWidth);
   const showLeftStrip = (leftOpen || isSettings) && !isBrowserMode;
-  // Open-browser-tab count (for the toggle button badge).
-  const browserTabCount = useSessionStore((s) => s.browserTabCount);
 
   // Subscribe once to the shortcut overrides so every toggle button's tooltip
   // shows the *effective* chord (override ?? default). Re-resolved per render
@@ -145,7 +141,7 @@ export function Titlebar({
           // affordances read consistently. The tooltip appends the effective
           // toggle-browser shortcut (the same command this button triggers).
           <button
-            onClick={onToggleBrowser}
+            onClick={() => setBrowserPanelOpen(false)}
             className={cn(
               "flex items-center gap-1.5 rounded px-1.5 py-1 text-xs font-medium",
               "text-content-muted transition-colors hover:bg-surface-hover hover:text-content",
@@ -197,31 +193,6 @@ export function Titlebar({
             {/* Editor column toggle - shows/hides the center-pane editor column
                 without closing the open file. Sits right of the branch pill. */}
             <EditorColumnToggle />
-            {/* Browser panel toggle - opens the embedded browser overlay. Sits
-                right of the editor toggle; shows a badge with the open-tab count.
-                Hidden while the browser overlay is open: in that mode the left
-                strip shows a "返回工作台" button that does the same job, so
-                keeping this toggle would be a redundant exit. */}
-            {!isBrowserMode && (
-              <button
-                onClick={onToggleBrowser}
-                className={cn(
-                  "relative flex items-center justify-center rounded p-1.5 transition-colors",
-                  browserPanelOpen
-                    ? "bg-surface-hover text-accent"
-                    : "text-content-muted hover:bg-surface-hover hover:text-content",
-                )}
-                title={(browserPanelOpen ? "隐藏浏览器" : "打开浏览器") + hintFor("layout.toggle-browser")}
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-              >
-                <IconWorld size={16} className="shrink-0" />
-                {browserTabCount > 0 && (
-                  <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-bold leading-none text-white">
-                    {browserTabCount}
-                  </span>
-                )}
-              </button>
-            )}
             <div className="flex-1" />
             {/* Bottom terminal toggle — sits just left of the right-panel
                 toggle. Active state highlighted with the accent token. */}

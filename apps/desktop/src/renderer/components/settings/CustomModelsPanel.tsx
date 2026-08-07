@@ -1,9 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
-import { Button, Dialog } from "@renderer/components/ui/index.js";
-import { IconPlus, IconTrash, IconAlertTriangle } from "@renderer/lib/icons.js";
+import { Button, ConfirmDialog, Input, Select, Tooltip } from "@renderer/components/ui/index.js";
+import {
+  IconPlus,
+  IconTrash,
+  IconChevronDown,
+  IconChevronRight,
+  IconEye,
+  IconEyeOff,
+  IconLoader2,
+  IconCheck,
+  IconKey,
+} from "@renderer/lib/icons.js";
 import {
   CUSTOM_MODEL_ROLES,
   CUSTOM_MODEL_ROLE_LABELS,
@@ -17,39 +27,155 @@ import type {
   CustomModelRoleKey,
 } from "@contracts/customModel";
 import type { EndpointPresetPublic } from "@contracts/endpointPreset";
+import {
+  PI_KNOWN_APIS,
+  PI_THINKING_KEYS,
+  PI_DEFAULT_CONTEXT_WINDOW,
+  PI_1M_CONTEXT_WINDOW,
+  type PiProviderConfig,
+  type PiProviderPublic,
+  type PiModelDefinition,
+  type PiThinkingKey,
+} from "@contracts/piModel";
 
 /**
- * Two-column panel for managing custom-model provider configs (Anthropic-
- * compatible endpoints: DeepSeek `/anthropic`, one-api, new-api, self-hosted
- * proxies, …). Lives inside the Settings modal under "模型配置".
+ * Unified model-config panel — the single "模型配置" settings surface.
  *
- * ## Layout
+ * Both provider families live on ONE page and share a left list + right form
+ * layout, distinguished by a type badge:
+ *   - Claude (Anthropic-compatible gateways, encrypted-token customModel store)
+ *   - Pi     (writes ~/.pi/agent/models.json, encrypted apiKey in settings map)
  *
- *   ┌─ left (provider list) ──┬─ right (config form / empty) ──┐
- *   │ • DeepSeek 中转          │  name / baseUrl / token / auth   │
- *   │ • OneAPI                 │  role-binding table              │
- *   │ + 新增供应商              │  advanced · test · save / delete │
- *   └──────────────────────────┴──────────────────────────────────┘
+ * Selecting an item loads a family-specific form (ClaudeProviderForm /
+ * PiProviderForm) on the right. "+ Claude 端点" / "+ Pi Provider" at the list
+ * foot create transient new entries that promote on save / discard on cancel.
  *
- * Selecting a provider on the left loads its (desensitized) values into the
- * form on the right. "+ 新增供应商" inserts a transient "new" entry that is
- * promoted to a real entry on save, or discarded on cancel.
+ * Credential viewing: Token / API Key fields default to masked (password). An
+ * eye-icon button fetches the cleartext via customModel.getToken /
+ * piModels.getApiKey and reveals it inline — a deliberate, user-initiated
+ * carve-out of the usual "cleartext never crosses IPC" rule.
  *
- * ## Model: role bindings (5 tiers) — unchanged
- *
- * A config is one endpoint (name + baseUrl + token + authMode) plus a binding
- * for each of the five Claude Code tiers. Each row of the table maps a tier
- * (Haiku / Sonnet / Opus / Fable / Subagent) to:
- *   - 显示名称 (dropdown label, e.g. "pro")
- *   - 实际请求模型 (gateway model id, e.g. "deepseek-v4-pro")
- *   - 声明支持 1M (whether selecting this tier sends betas=['context-1m-…'])
- * A tier with no 实际请求模型 is simply unbound — it won't appear in the
- * dropdown. At least one tier must be bound to save.
- *
- * Flow: pick a provider on the left → edit on the right → "Test connection"
- * probes the endpoint with the (not-yet-saved) values → "Save" / "Update"
- * encrypts the token on the main side and refreshes the list.
+ * Pi context window: the UI exposes a single "1M 上下文" toggle per model
+ * (off → 200k default, on → 1M), mirroring the Claude side's 1M declaration —
+ * the user no longer types a raw token count.
  */
+
+/* ════════════════════════ shared helpers ════════════════════════ */
+
+/** Labeled form field wrapper. */
+function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
+  return (
+    <label className="block">
+      <span className="mb-0.5 block text-[0.7857em] font-medium text-content-muted">{label}</span>
+      {children}
+      {hint && <span className="mt-0.5 block text-[0.6428em] leading-relaxed text-content-subtle">{hint}</span>}
+    </label>
+  );
+}
+
+/** Compact inline toggle switch (role="switch). */
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        onClick={() => onChange(!checked)}
+        className={cn(
+          "relative h-4 w-7 shrink-0 rounded-full transition-colors outline-none",
+          checked ? "bg-accent" : "bg-surface-hover",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 h-3 w-3 rounded-full bg-surface shadow transition-transform",
+            checked ? "left-3.5" : "left-0.5",
+          )}
+        />
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Positioner side="top">
+          <Tooltip.Popup>{label}</Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
+
+/** A credential input that defaults to masked and reveals plaintext via an
+ *  eye-icon button. `onReveal` is called once on first reveal and should
+ *  return the cleartext (new mode: the form value; edit mode: fetched via
+ *  IPC). Subsequent clicks just toggle the masked/text type. */
+function SecretInput({
+  value,
+  onChange,
+  placeholder,
+  onReveal,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  onReveal: () => Promise<string | null>;
+}) {
+  const [revealed, setRevealed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const toggle = async () => {
+    if (revealed) {
+      setRevealed(false);
+      return;
+    }
+    // First reveal of this mount: pull the plaintext in.
+    setLoading(true);
+    try {
+      const plain = await onReveal();
+      if (plain) {
+        onChange(plain);
+        setRevealed(true);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="relative">
+      <Input
+        type={revealed ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="pr-7"
+        spellCheck={false}
+        autoComplete="off"
+      />
+      <Tooltip.Root>
+        <Tooltip.Trigger
+          type="button"
+          onClick={() => void toggle()}
+          disabled={loading}
+          className="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-content-subtle outline-none hover:text-content"
+          aria-label={revealed ? "隐藏明文" : "显示明文"}
+        >
+          {loading ? (
+            <IconLoader2 size={13} className="animate-spin" />
+          ) : revealed ? (
+            <IconEyeOff size={13} />
+          ) : (
+            <IconEye size={13} />
+          )}
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Positioner side="top">
+            <Tooltip.Popup>{revealed ? "隐藏明文" : "显示明文"}</Tooltip.Popup>
+          </Tooltip.Positioner>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </div>
+  );
+}
+
+/* ════════════════════════ Claude form ════════════════════════ */
 
 type TestState =
   | { status: "idle" }
@@ -57,89 +183,292 @@ type TestState =
   | { status: "ok"; detail: string }
   | { status: "fail"; error: string };
 
-interface FormState {
+interface ClaudeFormState {
   id?: string;
   name: string;
   baseUrl: string;
   authMode: AuthMode;
-  /** Wire protocol of the endpoint. `anthropic` (default) talks to the
-   *  endpoint directly; `openai` activates the in-process protocol bridge. */
   protocol: Protocol;
   authToken: string;
-  /** Per-tier bindings. Always all five keys present in the form (some may be
-   *  empty/undefined) so the table renders every row. */
   roles: RoleBindings;
-  /** Which role's binding is the current "Test connection" target. */
   testRole: CustomModelRoleKey;
   disableNonEssentialTraffic: boolean;
-  timeoutMs: string; // string in the input; parsed on save
+  timeoutMs: string;
 }
 
-/** Build a fresh empty form with all five roles present. */
-function emptyForm(): FormState {
-  const roles: RoleBindings = {};
+function emptyClaudeForm(): ClaudeFormState {
   return {
     name: "",
     baseUrl: "",
     authMode: "auth_token",
     protocol: "anthropic",
     authToken: "",
-    roles,
+    roles: {},
     testRole: "sonnet",
     disableNonEssentialTraffic: true,
     timeoutMs: "",
   };
 }
 
-/** Build a form from an existing (desensitized) config for editing. */
-function formFromConfig(m: CustomModelPublic): FormState {
+function claudeFormFromConfig(m: CustomModelPublic): ClaudeFormState {
   return {
     id: m.id,
     name: m.name,
     baseUrl: m.baseUrl,
     authMode: m.authMode,
     protocol: m.protocol,
-    authToken: "", // blank on edit — omit on save means "keep existing"
+    authToken: "",
     roles: { ...m.roles },
     testRole:
-      (CUSTOM_MODEL_ROLES.find((r) => m.roles[r]?.requestModel?.trim()) as
-        | CustomModelRoleKey
-        | undefined) ?? "sonnet",
+      (CUSTOM_MODEL_ROLES.find((r) => m.roles[r]?.requestModel?.trim()) as CustomModelRoleKey | undefined) ?? "sonnet",
     disableNonEssentialTraffic: m.disableNonEssentialTraffic ?? true,
     timeoutMs: m.timeoutMs ? String(m.timeoutMs) : "",
   };
 }
 
+/* ════════════════════════ Pi form ════════════════════════ */
+
+interface PiModelFormState {
+  id: string;
+  name: string;
+  enable1m: boolean;
+  maxTokens: string;
+  reasoning: boolean;
+  thinking: Record<PiThinkingKey, "default" | "null" | "value">;
+  thinkingValue: Record<PiThinkingKey, string>;
+}
+
+interface PiFormState {
+  name: string;
+  baseUrl: string;
+  api: string;
+  apiKey: string;
+  authHeader: boolean;
+  models: PiModelFormState[];
+}
+
+function emptyPiModel(): PiModelFormState {
+  return {
+    id: "",
+    name: "",
+    enable1m: false,
+    maxTokens: "",
+    reasoning: false,
+    thinking: {
+      off: "default",
+      minimal: "default",
+      low: "default",
+      medium: "default",
+      high: "default",
+      xhigh: "default",
+    },
+    thinkingValue: { off: "", minimal: "", low: "", medium: "", high: "", xhigh: "" },
+  };
+}
+
+function emptyPiForm(): PiFormState {
+  return { name: "", baseUrl: "", api: "openai-completions", apiKey: "", authHeader: false, models: [] };
+}
+
+function piModelFromDef(def: PiModelDefinition): PiModelFormState {
+  const m = emptyPiModel();
+  m.id = def.id ?? "";
+  m.name = def.name ?? "";
+  m.enable1m = typeof def.contextWindow === "number" && def.contextWindow >= PI_1M_CONTEXT_WINDOW;
+  m.maxTokens = def.maxTokens ? String(def.maxTokens) : "";
+  m.reasoning = def.reasoning ?? false;
+  const tlm = def.thinkingLevelMap ?? {};
+  for (const k of PI_THINKING_KEYS) {
+    const v = tlm[k];
+    if (v === null) m.thinking[k] = "null";
+    else if (typeof v === "string") {
+      m.thinking[k] = "value";
+      m.thinkingValue[k] = v;
+    } else m.thinking[k] = "default";
+  }
+  return m;
+}
+
+function piFormFromConfig(name: string, cfg: PiProviderConfig): PiFormState {
+  return {
+    name: cfg.name ?? name,
+    baseUrl: cfg.baseUrl ?? "",
+    api: cfg.api ?? "openai-completions",
+    apiKey: "",
+    authHeader: cfg.authHeader ?? false,
+    models: (cfg.models ?? []).map(piModelFromDef),
+  };
+}
+
+/** Build the PiProviderConfig from the form (apiKey passed separately on save). */
+function piConfigFromForm(form: PiFormState): PiProviderConfig {
+  const models: PiModelDefinition[] = form.models
+    .filter((m) => m.id.trim())
+    .map((m) => {
+      const def: PiModelDefinition = {
+        id: m.id.trim(),
+        // 1M toggle picks the context-window preset; the user no longer types it.
+        contextWindow: m.enable1m ? PI_1M_CONTEXT_WINDOW : PI_DEFAULT_CONTEXT_WINDOW,
+      };
+      if (m.name.trim()) def.name = m.name.trim();
+      const mt = Number(m.maxTokens);
+      if (m.maxTokens.trim() && Number.isFinite(mt) && mt > 0) def.maxTokens = mt;
+      if (m.reasoning) def.reasoning = true;
+      const tlm: NonNullable<PiModelDefinition["thinkingLevelMap"]> = {};
+      let hasMap = false;
+      for (const k of PI_THINKING_KEYS) {
+        const mode = m.thinking[k];
+        if (mode === "null") {
+          tlm[k] = null;
+          hasMap = true;
+        } else if (mode === "value") {
+          const v = m.thinkingValue[k].trim();
+          if (v) {
+            tlm[k] = v;
+            hasMap = true;
+          }
+        }
+      }
+      if (hasMap) def.thinkingLevelMap = tlm;
+      return def;
+    });
+  const cfg: PiProviderConfig = {};
+  if (form.name.trim()) cfg.name = form.name.trim();
+  if (form.baseUrl.trim()) cfg.baseUrl = form.baseUrl.trim();
+  if (form.api) cfg.api = form.api;
+  if (form.authHeader) cfg.authHeader = true;
+  cfg.models = models;
+  return cfg;
+}
+
+/* ════════════════════════ unified list ════════════════════════ */
+
+type Selection = { kind: "claude"; id: string | "new" } | { kind: "pi"; id: string | "new" } | null;
+type ListItem = { kind: "claude" | "pi"; id: string; name: string; sub: string };
+
+/* ════════════════════════ main panel ════════════════════════ */
+
 export function CustomModelsPanel() {
   const customModels = useSessionStore((s) => s.customModels);
   const reloadCustomModels = useSessionStore((s) => s.reloadCustomModels);
 
-  /** Right-pane selection. `"new"` = the transient add entry; `null` = the
-   *  empty state (nothing chosen). */
-  const [selectedId, setSelectedId] = useState<string | "new" | null>(null);
-  const [form, setForm] = useState<FormState | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [test, setTest] = useState<TestState>({ status: "idle" });
+  const [piProviders, setPiProviders] = useState<Record<string, PiProviderPublic>>({});
+  const [selection, setSelection] = useState<Selection>(null);
+  const [claudeForm, setClaudeForm] = useState<ClaudeFormState | null>(null);
+  const [piForm, setPiForm] = useState<PiFormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Pending deletion (drives the confirm Dialog). */
-  const [pendingDelete, setPendingDelete] = useState<CustomModelPublic | null>(null);
-  /** Endpoint presets for the "从预设导入" dropdown. */
+  const [test, setTest] = useState<TestState>({ status: "idle" });
+  const [pendingDelete, setPendingDelete] = useState<Selection & { id: string } | null>(null);
   const [presets, setPresets] = useState<EndpointPresetPublic[]>([]);
-  /** Whether the inline "add preset" form is open (left column footer). */
   const [showPresetForm, setShowPresetForm] = useState(false);
-  /** Draft values for the inline add-preset form. */
   const [presetDraft, setPresetDraft] = useState({ name: "", baseUrl: "", authMode: "auth_token" as AuthMode });
 
-  // Load endpoint presets once on mount.
+  const reloadPi = async () => {
+    try {
+      const { providers } = await api.piModels.list();
+      setPiProviders(providers);
+    } catch (err) {
+      console.error("piModels.list failed:", err);
+    }
+  };
+
   useEffect(() => {
+    void reloadPi();
     void api.endpointPreset
       .list()
       .then(({ presets }) => setPresets(presets))
       .catch((err) => console.error("endpointPreset.list failed:", err));
   }, []);
 
-  /** Save a new endpoint preset (credential-free; token stays per-provider). */
+  const listItems = useMemo<ListItem[]>(() => {
+    const items: ListItem[] = customModels.map((m) => {
+      const bound = CUSTOM_MODEL_ROLES.filter((r) => m.roles[r]?.requestModel?.trim()).length;
+      return {
+        kind: "claude",
+        id: m.id,
+        name: m.name,
+        sub: bound > 0 ? `${bound} 角色 · ${m.authMode === "api_key" ? "x-api-key" : "Bearer"}` : "未绑定角色",
+      };
+    });
+    for (const [name, cfg] of Object.entries(piProviders)) {
+      items.push({
+        kind: "pi",
+        id: name,
+        name,
+        sub: [
+          (cfg.models?.length ?? 0) > 0 ? `${cfg.models!.length} 模型` : "无模型",
+          cfg.api,
+          cfg.hasApiKey ? "已配置 Key" : "未配置 Key",
+        ].join(" · "),
+      });
+    }
+    return items;
+  }, [customModels, piProviders]);
+
+  const isSelected = (item: ListItem) =>
+    selection?.kind === item.kind && selection.id === item.id;
+
+  const startNewClaude = () => {
+    setSelection({ kind: "claude", id: "new" });
+    setClaudeForm(emptyClaudeForm());
+    setPiForm(null);
+    setTest({ status: "idle" });
+    setError(null);
+  };
+  const startNewPi = () => {
+    setSelection({ kind: "pi", id: "new" });
+    setPiForm(emptyPiForm());
+    setClaudeForm(null);
+    setError(null);
+  };
+  const startEditClaude = (m: CustomModelPublic) => {
+    setSelection({ kind: "claude", id: m.id });
+    setClaudeForm(claudeFormFromConfig(m));
+    setPiForm(null);
+    setTest({ status: "idle" });
+    setError(null);
+  };
+  const startEditPi = (name: string) => {
+    const cfg = piProviders[name];
+    if (!cfg) return;
+    setSelection({ kind: "pi", id: name });
+    setPiForm(piFormFromConfig(name, cfg));
+    setClaudeForm(null);
+    setError(null);
+  };
+  const cancel = () => {
+    setSelection(null);
+    setClaudeForm(null);
+    setPiForm(null);
+    setTest({ status: "idle" });
+    setError(null);
+  };
+
+  /** Fetch cleartext credential for the currently-open form. New mode returns
+   *  the form value (already plaintext in the field); edit mode calls IPC. */
+  const revealToken = async (): Promise<string | null> => {
+    if (!selection || selection.id === "new") {
+      if (selection?.kind === "claude") return claudeForm?.authToken ?? null;
+      if (selection?.kind === "pi") return piForm?.apiKey ?? null;
+      return null;
+    }
+    if (selection.kind === "claude") return (await api.customModel.getToken({ id: selection.id })).token;
+    return (await api.piModels.getApiKey({ name: selection.id })).apiKey;
+  };
+
+  /** Apply a preset's baseUrl (+ authMode for claude) to the open form. */
+  const applyPreset = (presetId: string) => {
+    const preset = presets.find((p) => p.id === presetId);
+    if (!preset) return;
+    if (selection?.kind === "claude") {
+      setClaudeForm((f) => (f ? { ...f, baseUrl: preset.baseUrl, authMode: preset.authMode } : f));
+    } else if (selection?.kind === "pi") {
+      setPiForm((f) => (f ? { ...f, baseUrl: preset.baseUrl } : f));
+    }
+    setTest({ status: "idle" });
+  };
+
   const savePreset = async () => {
     if (!presetDraft.name.trim() || !presetDraft.baseUrl.trim()) return;
     try {
@@ -155,8 +484,6 @@ export function CustomModelsPanel() {
       console.error("endpointPreset.save failed:", err);
     }
   };
-
-  /** Delete an endpoint preset. */
   const deletePreset = async (id: string) => {
     try {
       const { presets: next } = await api.endpointPreset.delete({ id });
@@ -166,145 +493,22 @@ export function CustomModelsPanel() {
     }
   };
 
-  /** Fill the current form's baseUrl/authMode from a preset. Token is left
-   *  for the user to enter — presets are credential-free by design. */
-  const applyPreset = (presetId: string) => {
-    const preset = presets.find((p) => p.id === presetId);
-    if (!preset) return;
-    setForm((prev) => (prev ? { ...prev, baseUrl: preset.baseUrl, authMode: preset.authMode } : prev));
-    setTest({ status: "idle" });
-  };
-
-  const startAdd = () => {
-    setSelectedId("new");
-    setForm(emptyForm());
-    setAdvancedOpen(false);
-    setTest({ status: "idle" });
-    setError(null);
-  };
-
-  const startEdit = (m: CustomModelPublic) => {
-    setSelectedId(m.id);
-    setForm(formFromConfig(m));
-    // Auto-open advanced if any advanced field is set, so the user sees them.
-    setAdvancedOpen(Boolean(m.timeoutMs));
-    setTest({ status: "idle" });
-    setError(null);
-  };
-
-  const cancel = () => {
-    setSelectedId(null);
-    setForm(null);
-    setTest({ status: "idle" });
-    setError(null);
-  };
-
-  /** Functional field updater — avoids the closure-staleness bug where
-   *  browser autofill / fast typing could drop fields. */
-  const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
-
-  /** Patch a single field on a role binding. Creates the binding object if
-   *  absent. Passing undefined for a field clears it. */
-  const updateRole = (
-    role: CustomModelRoleKey,
-    patch: Partial<RoleBinding>,
-  ) =>
-    setForm((prev) => {
-      if (!prev) return prev;
-      const current = prev.roles[role] ?? {};
-      const merged: RoleBinding = { ...current, ...patch };
-      // Drop undefined keys so the persisted shape stays clean.
-      const cleaned: RoleBinding = {};
-      if (merged.displayName) cleaned.displayName = merged.displayName;
-      if (merged.requestModel) cleaned.requestModel = merged.requestModel;
-      if (merged.supports1m) cleaned.supports1m = merged.supports1m;
-      return {
-        ...prev,
-        roles: {
-          ...prev.roles,
-          [role]: Object.keys(cleaned).length > 0 ? cleaned : undefined,
-        },
-      };
-    });
-
-  /** Build the probe payload from the current form. The probe tests ONE
-   *  role's binding — the one at `testRole`. */
-  const buildProbeInput = () => {
-    if (!form) return null;
-    const timeoutMs = form.timeoutMs.trim() ? Number(form.timeoutMs.trim()) : undefined;
-    if (timeoutMs != null && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-      setError("超时必须是正整数(毫秒)");
-      return null;
-    }
-    const binding = form.roles[form.testRole];
-    const model = binding?.requestModel?.trim() ?? "";
-    setError(null);
-    return {
-      baseUrl: form.baseUrl.trim(),
-      authToken: form.authToken.trim(),
-      authMode: form.authMode,
-      protocol: form.protocol,
-      model,
-      supports1m: binding?.supports1m ?? false,
-      disableNonEssentialTraffic: form.disableNonEssentialTraffic,
-      timeoutMs,
-    };
-  };
-
-  const runTest = async () => {
-    const input = buildProbeInput();
-    if (!input) return;
-    if (!input.baseUrl || !input.model) {
-      setTest({
-        status: "fail",
-        error: `请填写 Base URL 和「${CUSTOM_MODEL_ROLE_LABELS[form!.testRole]}」角色的「实际请求模型」`,
-      });
-      return;
-    }
-    // Test always needs a token: on edit with a blank field, we can't test
-    // against the stored one (it never reaches the renderer). Tell the user.
-    if (!input.authToken) {
-      setTest({
-        status: "fail",
-        error: form?.id
-          ? "编辑模式下测试需重新填入 Token(明文不回传,无法复用已存的)"
-          : "请填写 Token",
-      });
-      return;
-    }
-    setTest({ status: "testing" });
-    try {
-      const result = await api.customModel.test(input);
-      if (result.ok) {
-        setTest({ status: "ok", detail: result.detail ?? "连接成功" });
-      } else {
-        setTest({ status: "fail", error: result.error ?? "未知错误" });
-      }
-    } catch (err) {
-      setTest({ status: "fail", error: (err as Error).message });
-    }
-  };
-
-  const save = async () => {
-    if (!form) return;
-    // Trim all bindings; drop fully-empty roles. Keep displayName only when a
-    // requestModel is also set (a display name with no backing model is
-    // meaningless in the dropdown).
+  const saveClaude = async () => {
+    if (!claudeForm) return;
     const roles: RoleBindings = {};
     let anyBound = false;
     for (const role of CUSTOM_MODEL_ROLES) {
-      const b = form.roles[role];
+      const b = claudeForm.roles[role];
       const requestModel = b?.requestModel?.trim();
       if (!requestModel) continue;
       anyBound = true;
       const cleaned: RoleBinding = { requestModel };
-      const displayName = b?.displayName?.trim();
-      if (displayName) cleaned.displayName = displayName;
+      const dn = b?.displayName?.trim();
+      if (dn) cleaned.displayName = dn;
       if (b?.supports1m) cleaned.supports1m = true;
       roles[role] = cleaned;
     }
-    if (!form.name.trim() || !form.baseUrl.trim()) {
+    if (!claudeForm.name.trim() || !claudeForm.baseUrl.trim()) {
       setError("名称、Base URL 不能为空");
       return;
     }
@@ -312,11 +516,11 @@ export function CustomModelsPanel() {
       setError("至少要为一个角色填写「实际请求模型」");
       return;
     }
-    if (!form.id && !form.authToken.trim()) {
+    if (!claudeForm.id && !claudeForm.authToken.trim()) {
       setError("新建时必须填写 Token");
       return;
     }
-    const timeoutMs = form.timeoutMs.trim() ? Number(form.timeoutMs.trim()) : undefined;
+    const timeoutMs = claudeForm.timeoutMs.trim() ? Number(claudeForm.timeoutMs.trim()) : undefined;
     if (timeoutMs != null && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
       setError("超时必须是正整数(毫秒)");
       return;
@@ -325,23 +529,20 @@ export function CustomModelsPanel() {
     setError(null);
     try {
       const { models: saved } = await api.customModel.save({
-        id: form.id,
-        name: form.name.trim(),
-        baseUrl: form.baseUrl.trim(),
-        authMode: form.authMode,
-        protocol: form.protocol,
-        // Omit authToken on edit when blank → main keeps the stored token.
-        authToken: form.authToken.trim() || undefined,
+        id: claudeForm.id,
+        name: claudeForm.name.trim(),
+        baseUrl: claudeForm.baseUrl.trim(),
+        authMode: claudeForm.authMode,
+        protocol: claudeForm.protocol,
+        authToken: claudeForm.authToken.trim() || undefined,
         roles,
-        disableNonEssentialTraffic: form.disableNonEssentialTraffic,
+        disableNonEssentialTraffic: claudeForm.disableNonEssentialTraffic,
         timeoutMs,
       });
       useSessionStore.setState({ customModels: saved });
-      // After a successful save, land on the saved entry (its id for an update,
-      // or the freshly-created one — last in the returned list by createdAt).
-      const landedId = form.id ?? saved[saved.length - 1]?.id ?? null;
-      setSelectedId(landedId);
-      setForm(null);
+      const landedId = claudeForm.id ?? saved[saved.length - 1]?.id ?? null;
+      setSelection(landedId ? { kind: "claude", id: landedId } : null);
+      setClaudeForm(null);
       setTest({ status: "idle" });
     } catch (err) {
       setError((err as Error).message);
@@ -351,21 +552,98 @@ export function CustomModelsPanel() {
     }
   };
 
+  const runClaudeTest = async () => {
+    if (!claudeForm) return;
+    const timeoutMs = claudeForm.timeoutMs.trim() ? Number(claudeForm.timeoutMs.trim()) : undefined;
+    if (timeoutMs != null && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+      setError("超时必须是正整数(毫秒)");
+      return;
+    }
+    const binding = claudeForm.roles[claudeForm.testRole];
+    const model = binding?.requestModel?.trim() ?? "";
+    if (!claudeForm.baseUrl.trim() || !model) {
+      setTest({
+        status: "fail",
+        error: `请填写 Base URL 和「${CUSTOM_MODEL_ROLE_LABELS[claudeForm.testRole]}」角色的「实际请求模型」`,
+      });
+      return;
+    }
+    if (!claudeForm.authToken.trim()) {
+      setTest({
+        status: "fail",
+        error: claudeForm.id ? "编辑模式下测试需重新填入 Token(明文不回传)" : "请填写 Token",
+      });
+      return;
+    }
+    setError(null);
+    setTest({ status: "testing" });
+    try {
+      const result = await api.customModel.test({
+        baseUrl: claudeForm.baseUrl.trim(),
+        authToken: claudeForm.authToken.trim(),
+        authMode: claudeForm.authMode,
+        protocol: claudeForm.protocol,
+        model,
+        supports1m: binding?.supports1m ?? false,
+        disableNonEssentialTraffic: claudeForm.disableNonEssentialTraffic,
+        timeoutMs,
+      });
+      setTest(result.ok ? { status: "ok", detail: result.detail ?? "连接成功" } : { status: "fail", error: result.error ?? "未知错误" });
+    } catch (err) {
+      setTest({ status: "fail", error: (err as Error).message });
+    }
+  };
+
+  const savePi = async () => {
+    if (!piForm) return;
+    if (!piForm.name.trim()) return setError("Provider 名称不能为空");
+    if (!piForm.baseUrl.trim()) return setError("Base URL 不能为空");
+    if (!piForm.api) return setError("API 类型不能为空");
+    if (selection?.id === "new" && !piForm.apiKey.trim()) return setError("请填写 API Key");
+    const valid = piForm.models.filter((m) => m.id.trim());
+    if (valid.length === 0) return setError("至少需要配置一个模型");
+    for (const m of valid) {
+      if (m.maxTokens.trim()) {
+        const mt = Number(m.maxTokens);
+        if (!Number.isFinite(mt) || mt <= 0) return setError(`模型 ${m.id}:maxTokens 必须大于 0`);
+      }
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const cfg = piConfigFromForm(piForm);
+      const { providers: next } = await api.piModels.save({
+        name: piForm.name.trim(),
+        config: cfg,
+        apiKey: piForm.apiKey,
+      });
+      setPiProviders(next);
+      setSelection({ kind: "pi", id: piForm.name.trim() });
+      void useSessionStore.getState().reloadPiAvailableModels();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const confirmRemove = async () => {
     const target = pendingDelete;
     if (!target) return;
     try {
-      const { models } = await api.customModel.delete({ id: target.id });
-      useSessionStore.setState({ customModels: models });
-      if (selectedId === target.id) {
-        setSelectedId(null);
-        setForm(null);
+      if (target.kind === "claude") {
+        const { models } = await api.customModel.delete({ id: target.id });
+        useSessionStore.setState({ customModels: models });
+      } else {
+        const { providers } = await api.piModels.delete({ name: target.id });
+        setPiProviders(providers);
+        void useSessionStore.getState().reloadPiAvailableModels();
       }
+      if (selection?.kind === target.kind && selection.id === target.id) cancel();
     } catch (err) {
       setError((err as Error).message);
-    } finally {
-      setPendingDelete(null);
     }
+    setPendingDelete(null);
   };
 
   return (
@@ -373,126 +651,92 @@ export function CustomModelsPanel() {
       <div className="mb-3">
         <h2 className="font-semibold text-content">模型配置</h2>
         <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
-          添加 Anthropic 兼容端点(DeepSeek / one-api / new-api / 自建网关)。Token 用系统钥匙串加密存储,明文不落盘。
-          每行把一个角色(Haiku/Sonnet/Opus/Fable/Subagent)绑定到网关真实模型。
+          统一管理 Claude(Anthropic 兼容端点)与 Pi Provider。Token / API Key 经系统钥匙串加密存储,点击右侧眼睛图标可临时查看明文。
         </p>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr] gap-4">
-        {/* ───────── Left: provider list ───────── */}
+      <div className="grid min-h-0 flex-1 grid-cols-[210px_1fr] gap-4">
+        {/* ───────── Left: unified provider list ───────── */}
         <aside className="flex min-h-0 flex-col rounded-md border border-edge bg-surface/40">
           <div className="flex items-center justify-between px-2.5 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
             <span>供应商</span>
-            <span className="tabular-nums">{customModels.length}</span>
+            <span className="tabular-nums">{listItems.length}</span>
           </div>
           <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
-            {/* Transient "new" entry — shown while the add form is open. */}
-            {selectedId === "new" && (
-              <div
-                className={cn(
-                  "relative block w-full rounded border border-dashed border-accent/60 bg-accent/5 px-2.5 py-1.5 text-left text-[0.7857em] italic text-accent",
-                )}
-              >
-                <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
-                新建供应商
-              </div>
-            )}
-            {customModels.map((m) => {
-              const isActive = selectedId === m.id;
-              const boundCount = CUSTOM_MODEL_ROLES.filter((r) =>
-                m.roles[r]?.requestModel?.trim(),
-              ).length;
+            {listItems.map((item) => {
+              const active = isSelected(item);
+              const isPi = item.kind === "pi";
               return (
                 <button
-                  key={m.id}
-                  onClick={() => startEdit(m)}
+                  key={`${item.kind}:${item.id}`}
+                  onClick={() =>
+                    item.kind === "claude"
+                      ? startEditClaude(customModels.find((m) => m.id === item.id)!)
+                      : startEditPi(item.id)
+                  }
                   className={cn(
                     "relative block w-full rounded px-2.5 py-1.5 text-left transition-colors",
-                    isActive
-                      ? "bg-surface-hover"
-                      : "hover:bg-surface-hover/60",
+                    active ? "bg-surface-hover" : "hover:bg-surface-hover/60",
                   )}
                 >
-                  {isActive && (
-                    <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
-                  )}
-                  <div className="truncate text-[0.7857em] font-medium text-content">
-                    {m.name}
+                  {active && <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />}
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "shrink-0 rounded px-1 py-px text-[0.6428em] font-medium",
+                        isPi ? "bg-accent/15 text-accent" : "bg-surface-muted text-content-muted",
+                      )}
+                    >
+                      {isPi ? "Pi" : "Claude"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[0.7857em] font-medium text-content">{item.name}</span>
                   </div>
-                  <div className="truncate text-[0.7143em] text-content-subtle">
-                    {boundCount > 0
-                      ? `${boundCount} 角色 · ${m.authMode === "api_key" ? "x-api-key" : "Bearer"}`
-                      : "未绑定角色"}
-                  </div>
+                  <div className="mt-0.5 truncate pl-0.5 text-[0.7143em] text-content-subtle">{item.sub}</div>
                 </button>
               );
             })}
-            {customModels.length === 0 && selectedId !== "new" && (
+            {selection?.id === "new" && (
+              <div className="relative block w-full rounded border border-dashed border-accent/60 bg-accent/5 px-2.5 py-1.5 text-left text-[0.7857em] italic text-accent">
+                <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+                新建 {selection.kind === "pi" ? "Pi Provider" : "Claude 端点"}
+              </div>
+            )}
+            {listItems.length === 0 && selection?.id !== "new" && (
               <div className="px-2 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
                 还没有供应商配置。
               </div>
             )}
           </nav>
-          <div className="border-t border-edge p-1.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={startAdd}
-              disabled={selectedId === "new"}
-              className="w-full justify-center gap-1"
-            >
-              <IconPlus size={12} />
-              新增供应商
+          <div className="space-y-1 border-t border-edge p-1.5">
+            <Button variant="outline" size="sm" onClick={startNewClaude} disabled={selection?.id === "new"} className="w-full justify-center gap-1">
+              <IconPlus size={12} /> Claude 端点
+            </Button>
+            <Button variant="outline" size="sm" onClick={startNewPi} disabled={selection?.id === "new"} className="w-full justify-center gap-1">
+              <IconPlus size={12} /> Pi Provider
             </Button>
           </div>
 
-          {/* ───── Endpoint presets (credential-free endpoint templates) ───── */}
+          {/* ───── Endpoint presets (credential-free, shared) ───── */}
           <div className="border-t border-edge/60 p-2">
             <div className="mb-1 flex items-center justify-between">
-              <span className="text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
-                端点预设
-              </span>
-              <button
-                type="button"
-                onClick={() => setShowPresetForm((v) => !v)}
-                className="text-[0.7143em] text-accent hover:text-accent/80"
-              >
+              <span className="text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">端点预设</span>
+              <button type="button" onClick={() => setShowPresetForm((v) => !v)} className="text-[0.7143em] text-accent hover:text-accent/80">
                 {showPresetForm ? "收起" : "+ 添加"}
               </button>
             </div>
             {showPresetForm && (
               <div className="mb-1.5 space-y-1">
-                <input
-                  type="text"
-                  value={presetDraft.name}
-                  onChange={(e) => setPresetDraft((d) => ({ ...d, name: e.target.value }))}
-                  placeholder="名称,如 DeepSeek 官方"
-                  className={inputCls}
-                />
-                <input
-                  type="text"
-                  value={presetDraft.baseUrl}
-                  onChange={(e) => setPresetDraft((d) => ({ ...d, baseUrl: e.target.value }))}
-                  placeholder="https://api.deepseek.com"
-                  className={inputCls}
-                />
+                <Input value={presetDraft.name} onChange={(e) => setPresetDraft((d) => ({ ...d, name: e.target.value }))} placeholder="名称,如 DeepSeek 官方" />
+                <Input value={presetDraft.baseUrl} onChange={(e) => setPresetDraft((d) => ({ ...d, baseUrl: e.target.value }))} placeholder="https://api.deepseek.com" />
                 <div className="flex gap-1">
-                  <select
-                    value={presetDraft.authMode}
-                    onChange={(e) =>
-                      setPresetDraft((d) => ({ ...d, authMode: e.target.value as AuthMode }))
-                    }
-                    className={cn(inputCls, "flex-1")}
-                  >
-                    <option value="auth_token">Bearer</option>
-                    <option value="api_key">x-api-key</option>
-                  </select>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={savePreset}
-                    disabled={!presetDraft.name.trim() || !presetDraft.baseUrl.trim()}
-                  >
+                  <Select.Root value={presetDraft.authMode} onValueChange={(v) => setPresetDraft((d) => ({ ...d, authMode: v as AuthMode }))}>
+                    <Select.Trigger className="flex-1"><Select.Value /></Select.Trigger>
+                    <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+                      <Select.Item value="auth_token">Bearer</Select.Item>
+                      <Select.Item value="api_key">x-api-key</Select.Item>
+                    </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+                  </Select.Root>
+                  <Button variant="primary" size="sm" onClick={() => void savePreset()} disabled={!presetDraft.name.trim() || !presetDraft.baseUrl.trim()}>
                     保存
                   </Button>
                 </div>
@@ -501,334 +745,240 @@ export function CustomModelsPanel() {
             <ul className="space-y-0.5">
               {presets.map((p) => (
                 <li key={p.id} className="group flex items-center gap-1 rounded px-1 py-0.5 text-[0.7143em] text-content-muted">
-                  <span className="min-w-0 flex-1 truncate" title={`${p.baseUrl} (${p.authMode})`}>
-                    {p.name}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void deletePreset(p.id)}
-                    className="shrink-0 text-content-subtle opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
-                    title="删除预设"
-                  >
+                  <span className="min-w-0 flex-1 truncate" title={`${p.baseUrl} (${p.authMode})`}>{p.name}</span>
+                  <button type="button" onClick={() => void deletePreset(p.id)} className="shrink-0 text-content-subtle opacity-0 transition-opacity hover:text-danger group-hover:opacity-100" title="删除预设">
                     <IconTrash size={11} />
                   </button>
                 </li>
               ))}
-              {presets.length === 0 && !showPresetForm && (
-                <li className="text-[0.7143em] text-content-subtle">暂无预设</li>
-              )}
+              {presets.length === 0 && !showPresetForm && <li className="text-[0.7143em] text-content-subtle">暂无预设</li>}
             </ul>
-            <p className="mt-1 text-[0.6428em] leading-relaxed text-content-subtle">
-              预设仅保存端点地址与认证方式(不含密钥),可在各供应商表单中一键导入。
-            </p>
           </div>
         </aside>
 
-        {/* ───────── Right: config form / empty state ───────── */}
+        {/* ───────── Right: family-specific form ───────── */}
         <div className="min-h-0 overflow-y-auto pr-1">
-          {form == null ? (
-            <EmptyDetail />
-          ) : (
-            <ProviderForm
-              form={form}
+          {selection?.kind === "claude" && claudeForm ? (
+            <ClaudeProviderForm
+              key={`claude:${claudeForm.id ?? "new"}`}
+              form={claudeForm}
+              setForm={setClaudeForm}
               test={test}
               saving={saving}
               error={error}
-              advancedOpen={advancedOpen}
-              update={update}
-              updateRole={updateRole}
-              setAdvancedOpen={setAdvancedOpen}
-              runTest={runTest}
-              save={save}
-              cancel={cancel}
               presets={presets}
               applyPreset={applyPreset}
-              onDelete={
-                form.id
-                  ? () => {
-                      const target = customModels.find((m) => m.id === form.id);
-                      if (target) setPendingDelete(target);
-                    }
-                  : undefined
-              }
+              revealToken={revealToken}
+              onTest={() => void runClaudeTest()}
+              onSave={() => void saveClaude()}
+              onCancel={cancel}
+              onDelete={claudeForm.id ? () => setPendingDelete({ kind: "claude", id: claudeForm.id! }) : undefined}
             />
+          ) : selection?.kind === "pi" && piForm ? (
+            <PiProviderForm
+              key={`pi:${selection.id}`}
+              form={piForm}
+              setForm={setPiForm}
+              saving={saving}
+              error={error}
+              presets={presets}
+              applyPreset={applyPreset}
+              revealToken={revealToken}
+              isEdit={selection.id !== "new"}
+              onSave={() => void savePi()}
+              onCancel={cancel}
+              onDelete={selection.id !== "new" ? () => setPendingDelete({ kind: "pi", id: selection.id }) : undefined}
+            />
+          ) : (
+            <EmptyDetail />
           )}
         </div>
       </div>
 
-      {/* ───────── Delete confirmation Dialog ───────── */}
-      <Dialog.Root
+      <ConfirmDialog
         open={pendingDelete != null}
-        onOpenChange={(open) => {
-          if (!open) setPendingDelete(null);
-        }}
-      >
-        <Dialog.Portal>
-          <Dialog.Backdrop />
-          <Dialog.Popup className="w-[360px] max-w-[90vw] p-4">
-            <div className="flex items-start gap-3">
-              <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-danger/10 text-danger">
-                <IconAlertTriangle size={16} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <Dialog.Title>删除供应商</Dialog.Title>
-                <Dialog.Description className="mt-1">
-                  确认删除「{pendingDelete?.name}」?此操作不可撤销,关联的 Token 也会一并清除。
-                </Dialog.Description>
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setPendingDelete(null)}
-              >
-                取消
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => void confirmRemove()}
-              >
-                <IconTrash size={12} />
-                删除
-              </Button>
-            </div>
-          </Dialog.Popup>
-        </Dialog.Portal>
-      </Dialog.Root>
+        title={`删除${pendingDelete?.kind === "pi" ? " Provider" : "供应商"}`}
+        description={
+          pendingDelete?.kind === "pi" ? (
+            <>确定删除 <code className="rounded bg-surface-muted px-1">{pendingDelete.id}</code> 吗?将从 models.json 移除该 Provider 及其模型。</>
+          ) : (
+            <>确认删除「{pendingDelete?.id}」?此操作不可撤销,关联的 Token 也会一并清除。</>
+          )
+        }
+        confirmText="删除"
+        danger
+        onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
+        onConfirm={() => void confirmRemove()}
+      />
     </div>
   );
 }
 
-/** Right-pane empty state — nothing selected. */
 function EmptyDetail() {
   return (
     <div className="flex h-full flex-col items-center justify-center text-center">
-      <div className="mb-2 text-2xl text-content-subtle">⚙️</div>
-      <p className="max-w-[220px] text-[0.7857em] leading-relaxed text-content-subtle">
-        从左侧选择一个供应商查看或修改配置,或点击「新增供应商」添加新的 Anthropic 兼容端点。
+      <span className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-surface-muted text-content-subtle">
+        <IconKey size={18} />
+      </span>
+      <p className="max-w-[240px] text-[0.7857em] leading-relaxed text-content-subtle">
+        从左侧选择一个供应商查看或修改配置,或点击「Claude 端点」「Pi Provider」新增。
       </p>
     </div>
   );
 }
 
-/** Right-pane config form. All the actual editing logic lives here; the parent
- *  owns the state and passes setters down. */
-function ProviderForm({
+/* ════════════════════════ Claude provider form ════════════════════════ */
+
+function ClaudeProviderForm({
   form,
+  setForm,
   test,
   saving,
   error,
-  advancedOpen,
-  update,
-  updateRole,
-  setAdvancedOpen,
-  runTest,
-  save,
-  cancel,
   presets,
   applyPreset,
+  revealToken,
+  onTest,
+  onSave,
+  onCancel,
   onDelete,
 }: {
-  form: FormState;
+  form: ClaudeFormState;
+  setForm: (f: ClaudeFormState | null) => void;
   test: TestState;
   saving: boolean;
   error: string | null;
-  advancedOpen: boolean;
-  update: <K extends keyof FormState>(key: K, value: FormState[K]) => void;
-  updateRole: (role: CustomModelRoleKey, patch: Partial<RoleBinding>) => void;
-  setAdvancedOpen: (updater: (v: boolean) => boolean) => void;
-  runTest: () => void;
-  save: () => void;
-  cancel: () => void;
-  /** Endpoint presets for the import dropdown. */
   presets: EndpointPresetPublic[];
-  /** Fill baseUrl/authMode from a preset. */
-  applyPreset: (presetId: string) => void;
+  applyPreset: (id: string) => void;
+  revealToken: () => Promise<string | null>;
+  onTest: () => void;
+  onSave: () => void;
+  onCancel: () => void;
   onDelete?: () => void;
 }) {
   const isEdit = !!form.id;
   const isOpenAi = form.protocol === "openai";
+  const [advancedOpen, setAdvancedOpen] = useState(Boolean(form.timeoutMs));
+
+  const update = <K extends keyof ClaudeFormState>(key: K, value: ClaudeFormState[K]) =>
+    setForm({ ...form, [key]: value });
+
+  const updateRole = (role: CustomModelRoleKey, patch: Partial<RoleBinding>) => {
+    const current = form.roles[role] ?? {};
+    const merged: RoleBinding = { ...current, ...patch };
+    const cleaned: RoleBinding = {};
+    if (merged.displayName) cleaned.displayName = merged.displayName;
+    if (merged.requestModel) cleaned.requestModel = merged.requestModel;
+    if (merged.supports1m) cleaned.supports1m = merged.supports1m;
+    setForm({ ...form, roles: { ...form.roles, [role]: Object.keys(cleaned).length > 0 ? cleaned : undefined } });
+  };
+
+  const fillAllRoles = () => {
+    const src = form.roles[form.testRole]?.requestModel?.trim();
+    if (!src) return;
+    const filled: RoleBindings = {};
+    for (const r of CUSTOM_MODEL_ROLES) filled[r] = { requestModel: src };
+    update("roles", filled);
+  };
+
   return (
     <div className="space-y-2.5">
       <Field label="API 格式">
-        <select
-          value={form.protocol}
-          onChange={(e) => update("protocol", e.target.value as Protocol)}
-          className={inputCls}
-        >
-          <option value="anthropic">Anthropic(原生 /v1/messages)</option>
-          <option value="openai">OpenAI(/v1/chat/completions,经本地协议翻译)</option>
-        </select>
+        <Select.Root value={form.protocol} onValueChange={(v) => update("protocol", v as Protocol)}>
+          <Select.Trigger className="w-full"><Select.Value /></Select.Trigger>
+          <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+            <Select.Item value="anthropic">Anthropic(原生 /v1/messages)</Select.Item>
+            <Select.Item value="openai">OpenAI(/v1/chat/completions,经本地协议翻译)</Select.Item>
+          </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+        </Select.Root>
       </Field>
       {isOpenAi && (
-        <p className="text-[10px] leading-relaxed text-content-subtle">
-          OpenAI 格式端点(OpenAI 官方 / Azure / vLLM / Ollama / one-api 等)会启用内置协议翻译层:Claude 仍按 Anthropic 协议运行,应用在本地把请求/响应实时翻译成 OpenAI 格式转发。建议把所有角色填成同一个模型,后台请求(Haiku/Subagent 等)也会用到。
-        </p>
-      )}
-      <Field label="名称">
-        <input
-          type="text"
-          value={form.name}
-          onChange={(e) => update("name", e.target.value)}
-          placeholder="DeepSeek 中转"
-          className={inputCls}
-          spellCheck={false}
-        />
-      </Field>
-      {presets.length > 0 && (
-        <Field label="从预设导入">
-          <select
-            value=""
-            onChange={(e) => {
-              if (e.target.value) applyPreset(e.target.value);
-            }}
-            className={inputCls}
-          >
-            <option value="" disabled>
-              选择端点预设(base URL / 认证方式自动填充)
-            </option>
-            {presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} · {p.baseUrl} ({p.authMode === "api_key" ? "x-api-key" : "Bearer"})
-              </option>
-            ))}
-          </select>
-        </Field>
-      )}
-      <Field label="Base URL">
-        <input
-          type="text"
-          value={form.baseUrl}
-          onChange={(e) => update("baseUrl", e.target.value)}
-          placeholder={isOpenAi ? "https://api.openai.com/v1" : "https://api.deepseek.com/anthropic"}
-          className={inputCls}
-          spellCheck={false}
-        />
-      </Field>
-      <div className="grid grid-cols-[1fr_120px] gap-2">
-        <Field label="Token / API Key">
-          <input
-            type="password"
-            value={form.authToken}
-            onChange={(e) => update("authToken", e.target.value)}
-            placeholder={isEdit ? "留空 = 保持现有 token 不变" : "sk-..."}
-            className={inputCls}
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </Field>
-        <Field label="认证方式">
-          <select
-            value={form.authMode}
-            onChange={(e) => update("authMode", e.target.value as AuthMode)}
-            className={inputCls}
-          >
-            <option value="auth_token">Bearer (AUTH_TOKEN)</option>
-            <option value="api_key">x-api-key (API_KEY)</option>
-          </select>
-        </Field>
-      </div>
-      {form.authMode === "api_key" && (
-        <p className="text-[0.7143em] leading-relaxed text-content-subtle">
-          提示:DeepSeek / one-api / new-api 等网关官方文档推荐 <code className="rounded bg-surface-muted px-0.5">Bearer (AUTH_TOKEN)</code>。若选 x-api-key 后网关返回 404「model may not exist」(而非 401),多半是网关用 404 隐藏端点存在 —— 改回 Bearer 重试。
+        <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+          OpenAI 格式端点(OpenAI 官方 / Azure / vLLM / Ollama / one-api 等)会启用内置协议翻译层:Claude 仍按 Anthropic 协议运行,应用在本地把请求/响应实时翻译成 OpenAI 格式转发。建议把所有角色填成同一个模型。
         </p>
       )}
 
-      {/* Role-binding table — the core of the config. */}
+      <Field label="名称">
+        <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="DeepSeek 中转" />
+      </Field>
+
+      {presets.length > 0 && (
+        <Field label="从预设导入">
+          <Select.Root value="" onValueChange={(v) => { const id = String(v); if (id) applyPreset(id); }}>
+            <Select.Trigger className="w-full"><Select.Value placeholder="选择端点预设(Base URL / 认证方式自动填充)" /></Select.Trigger>
+            <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+              {presets.map((p) => (
+                <Select.Item key={p.id} value={p.id}>{p.name} · {p.baseUrl}</Select.Item>
+              ))}
+            </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+          </Select.Root>
+        </Field>
+      )}
+
+      <Field label="Base URL">
+        <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder={isOpenAi ? "https://api.openai.com/v1" : "https://api.deepseek.com/anthropic"} />
+      </Field>
+
+      <div className="grid grid-cols-[1fr_120px] gap-2">
+        <Field label="Token / API Key">
+          <SecretInput
+            value={form.authToken}
+            onChange={(v) => update("authToken", v)}
+            placeholder={isEdit ? "留空 = 保持现有 token 不变" : "sk-..."}
+            onReveal={revealToken}
+          />
+        </Field>
+        <Field label="认证方式">
+          <Select.Root value={form.authMode} onValueChange={(v) => update("authMode", v as AuthMode)}>
+            <Select.Trigger className="w-full"><Select.Value /></Select.Trigger>
+            <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+              <Select.Item value="auth_token">Bearer</Select.Item>
+              <Select.Item value="api_key">x-api-key</Select.Item>
+            </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+          </Select.Root>
+        </Field>
+      </div>
+
+      {/* Role-binding table */}
       <div>
         <div className="mb-1 flex items-baseline justify-between">
-          <span className="text-[11px] font-medium text-content-muted">角色绑定</span>
-          <span className="flex items-center gap-2">
-            {isOpenAi && (
-              <button
-                type="button"
-                onClick={() => {
-                  // Copy the test-role's model to every role — OpenAI endpoints
-                  // usually expose a single model, so binding all five tiers
-                  // to it keeps background requests (Haiku/Subagent) routed too.
-                  const src = form.roles[form.testRole]?.requestModel?.trim();
-                  if (!src) return;
-                  const filled: RoleBindings = {};
-                  for (const r of CUSTOM_MODEL_ROLES) filled[r] = { requestModel: src };
-                  update("roles", filled);
-                }}
-                className="text-[10px] text-accent hover:text-accent/80"
-                title="把「测试角色」的模型填到所有角色(OpenAI 通常只有一个模型)"
-              >
-                一键填充主模型
-              </button>
-            )}
-            <span className="text-[10px] text-content-subtle">
-              点左侧圆点选择「测试连接」用哪个角色
-            </span>
-          </span>
+          <span className="text-[0.7857em] font-medium text-content-muted">角色绑定</span>
+          {isOpenAi && (
+            <button type="button" onClick={fillAllRoles} className="text-[0.7143em] text-accent hover:text-accent/80">
+              一键填充主模型
+            </button>
+          )}
         </div>
         <p className="mb-1.5 text-[0.7143em] leading-relaxed text-content-subtle">
-          Claude Code 按 5 个角色路由请求:Haiku/Sonnet/Opus/Fable 是模型别名;Subagent 是内置 Task 工具调用的模型。
-          填了「实际请求模型」的角色才会在下拉框出现。勾选 1M 后,选中该角色时会在模型名后追加 <code className="rounded bg-surface-muted px-0.5">[1m]</code> 后缀(DeepSeek 等网关的 1M 上下文声明方式)。
+          填了「实际请求模型」的角色才会出现在下拉框。点左侧圆点选择测试连接用哪个角色。
         </p>
         <div className="overflow-hidden rounded border border-edge">
-          {/* Header row */}
-          <div className="grid grid-cols-[20px_56px_1fr_1fr_44px] items-center gap-1.5 border-b border-edge bg-surface-muted px-1.5 py-1 text-[9px] font-medium uppercase tracking-wide text-content-subtle">
-            <span />
-            <span>角色</span>
-            <span>显示名称</span>
-            <span>实际请求模型</span>
-            <span className="text-center">1M</span>
+          <div className="grid grid-cols-[20px_56px_1fr_1fr_44px] items-center gap-1.5 border-b border-edge bg-surface-muted px-1.5 py-1 text-[0.6428em] font-medium uppercase tracking-wide text-content-subtle">
+            <span /><span>角色</span><span>显示名称</span><span>实际请求模型</span><span className="text-center">1M</span>
           </div>
-          {/* One row per role. */}
           {CUSTOM_MODEL_ROLES.map((role) => {
             const binding = form.roles[role] ?? {};
-            const isTestTarget = form.testRole === role;
+            const isTest = form.testRole === role;
             return (
-              <div
-                key={role}
-                className="grid grid-cols-[20px_56px_1fr_1fr_44px] items-center gap-1.5 border-b border-edge px-1.5 py-1 last:border-b-0"
-              >
-                <button
-                  type="button"
-                  onClick={() => update("testRole", role)}
-                  title={`用「${CUSTOM_MODEL_ROLE_LABELS[role]}」角色测试连接`}
-                  className={cn(
-                    "flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px]",
-                    isTestTarget
-                      ? "bg-accent text-surface"
-                      : "bg-surface-hover text-content-subtle hover:bg-surface-muted",
-                  )}
-                >
-                  ●
-                </button>
-                <span className="text-[0.7857em] font-medium text-content">
-                  {CUSTOM_MODEL_ROLE_LABELS[role]}
-                </span>
-                <input
-                  type="text"
-                  value={binding.displayName ?? ""}
-                  onChange={(e) =>
-                    updateRole(role, { displayName: e.target.value || undefined })
-                  }
-                  placeholder="可选"
-                  className={inputCls}
-                  spellCheck={false}
-                />
-                <input
-                  type="text"
-                  value={binding.requestModel ?? ""}
-                  onChange={(e) =>
-                    updateRole(role, { requestModel: e.target.value || undefined })
-                  }
-                  placeholder={roleHint(role)}
-                  className={cn(inputCls, "font-mono")}
-                  spellCheck={false}
-                />
+              <div key={role} className="grid grid-cols-[20px_56px_1fr_1fr_44px] items-center gap-1.5 border-b border-edge px-1.5 py-1 last:border-b-0">
+                <Tooltip.Root>
+                  <Tooltip.Trigger
+                    type="button"
+                    onClick={() => update("testRole", role)}
+                    className={cn(
+                      "flex h-3.5 w-3.5 items-center justify-center rounded-full text-[0.6428em] outline-none",
+                      isTest ? "bg-accent text-surface" : "bg-surface-hover text-content-subtle hover:bg-surface-muted",
+                    )}
+                  >
+                    <IconCheck size={8} className={isTest ? "opacity-100" : "opacity-0"} />
+                  </Tooltip.Trigger>
+                  <Tooltip.Portal><Tooltip.Positioner side="top"><Tooltip.Popup>用「{CUSTOM_MODEL_ROLE_LABELS[role]}」角色测试连接</Tooltip.Popup></Tooltip.Positioner></Tooltip.Portal>
+                </Tooltip.Root>
+                <span className="text-[0.7857em] font-medium text-content">{CUSTOM_MODEL_ROLE_LABELS[role]}</span>
+                <Input value={binding.displayName ?? ""} onChange={(e) => updateRole(role, { displayName: e.target.value || undefined })} placeholder="可选" />
+                <Input value={binding.requestModel ?? ""} onChange={(e) => updateRole(role, { requestModel: e.target.value || undefined })} placeholder={roleHint(role)} />
                 <div className="flex justify-center">
-                  <Toggle
-                    checked={Boolean(binding.supports1m)}
-                    onChange={(v) => updateRole(role, { supports1m: v || undefined })}
-                    label="选中此角色时在模型名后追加 [1m] 后缀(DeepSeek 等网关的 1M 上下文声明方式)"
-                  />
+                  <Toggle checked={Boolean(binding.supports1m)} onChange={(v) => updateRole(role, { supports1m: v || undefined })} label="声明 1M 上下文" />
                 </div>
               </div>
             );
@@ -836,34 +986,19 @@ function ProviderForm({
         </div>
       </div>
 
-      {/* Collapsible advanced section */}
-      <button
-        onClick={() => setAdvancedOpen((v) => !v)}
-        className="flex items-center gap-1 pt-1 text-[0.7857em] text-content-subtle hover:text-content-muted"
-      >
-        <span className={cn("inline-block transition-transform", advancedOpen && "rotate-90")}>▶</span>
+      {/* Advanced */}
+      <button type="button" onClick={() => setAdvancedOpen((v) => !v)} className="flex items-center gap-1 pt-1 text-[0.7857em] text-content-subtle hover:text-content-muted">
+        <IconChevronRight size={12} className={cn("transition-transform", advancedOpen && "rotate-90")} />
         高级选项(超时 / 禁用遥测)
       </button>
       {advancedOpen && (
         <div className="space-y-2 rounded border border-edge bg-surface/50 p-2">
           <div className="grid grid-cols-[1fr_140px] gap-2">
             <Field label="超时 (ms, 可选)">
-              <input
-                type="text"
-                value={form.timeoutMs}
-                onChange={(e) => update("timeoutMs", e.target.value)}
-                placeholder="3000000"
-                className={inputCls}
-                spellCheck={false}
-              />
+              <Input value={form.timeoutMs} onChange={(e) => update("timeoutMs", e.target.value)} placeholder="3000000" />
             </Field>
             <label className="flex items-end gap-1.5 pb-1 text-[0.7857em] text-content-muted">
-              <input
-                type="checkbox"
-                checked={form.disableNonEssentialTraffic}
-                onChange={(e) => update("disableNonEssentialTraffic", e.target.checked)}
-                className="accent-accent"
-              />
+              <input type="checkbox" checked={form.disableNonEssentialTraffic} onChange={(e) => update("disableNonEssentialTraffic", e.target.checked)} className="accent-accent" />
               禁用遥测
             </label>
           </div>
@@ -872,108 +1007,239 @@ function ProviderForm({
 
       {error && <div className="text-[0.7857em] text-danger">{error}</div>}
 
-      <div className="flex flex-wrap items-center gap-2 pt-1">
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={runTest}
-          disabled={test.status === "testing"}
-          title="测试当前选中的角色(左侧绿点的那个)"
-        >
-          {test.status === "testing" ? "测试中…" : "测试连接"}
-        </Button>
-        <span className="truncate text-[0.7143em] text-content-subtle">
-          测:{CUSTOM_MODEL_ROLE_LABELS[form.testRole]} · {form.roles[form.testRole]?.requestModel?.trim() || "(空)"}
-        </span>
-        {test.status === "ok" && (
-          <span className="text-[0.7857em] text-accent">✓ {test.detail}</span>
-        )}
-        {test.status === "fail" && (
-          <span className="text-[0.7857em] text-danger">✗ {test.error}</span>
-        )}
-
-        <div className="flex-1" />
-        {isEdit && onDelete && (
-          <Button variant="danger" size="sm" onClick={onDelete} title="删除此供应商">
-            <IconTrash size={12} />
-            删除
+      <FormActions
+        left={
+          <Button variant="secondary" size="sm" onClick={onTest} disabled={test.status === "testing"}>
+            {test.status === "testing" ? "测试中…" : "测试连接"}
           </Button>
-        )}
-        <Button variant="ghost" size="sm" onClick={cancel}>
-          取消
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={save}
-          disabled={saving}
-        >
-          {saving ? "保存中…" : isEdit ? "更新" : "保存"}
-        </Button>
-      </div>
+        }
+        testInfo={
+          <span className="truncate text-[0.7143em] text-content-subtle">
+            测:{CUSTOM_MODEL_ROLE_LABELS[form.testRole]} · {form.roles[form.testRole]?.requestModel?.trim() || "(空)"}
+          </span>
+        }
+        testStatus={test}
+        onDelete={onDelete}
+        onCancel={onCancel}
+        onSave={onSave}
+        saving={saving}
+        isEdit={isEdit}
+      />
     </div>
   );
 }
 
-/** Placeholder hint for the request-model input, per role. Just a UX nudge —
- *  the user can type anything. The sonnet hint shows the [1M] suffix form to
- *  remind the user that 1M is declared via suffix (just type the base name;
- *  the suffix is added automatically when 1M is toggled on). */
 function roleHint(role: CustomModelRoleKey): string {
   switch (role) {
-    case "haiku":
-      return "deepseek-v4-flash";
-    case "sonnet":
-      return "deepseek-v4-pro";
-    case "opus":
-      return "deepseek-v4-pro-max";
-    case "fable":
-      return "claude-fable-5";
-    case "subagent":
-      return "(Task 工具用,可留空)";
+    case "haiku": return "deepseek-v4-flash";
+    case "sonnet": return "deepseek-v4-pro";
+    case "opus": return "deepseek-v4-pro-max";
+    case "fable": return "claude-fable-5";
+    case "subagent": return "(Task 工具用,可留空)";
   }
 }
 
-const inputCls =
-  "min-w-0 flex-1 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
+/* ════════════════════════ Pi provider form ════════════════════════ */
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function PiProviderForm({
+  form,
+  setForm,
+  saving,
+  error,
+  presets,
+  applyPreset,
+  revealToken,
+  isEdit,
+  onSave,
+  onCancel,
+  onDelete,
+}: {
+  form: PiFormState;
+  setForm: (f: PiFormState | null) => void;
+  saving: boolean;
+  error: string | null;
+  presets: EndpointPresetPublic[];
+  applyPreset: (id: string) => void;
+  revealToken: () => Promise<string | null>;
+  isEdit: boolean;
+  onSave: () => void;
+  onCancel: () => void;
+  onDelete?: () => void;
+}) {
+  const [expandedModel, setExpandedModel] = useState<number | null>(null);
+
+  const update = <K extends keyof PiFormState>(key: K, value: PiFormState[K]) => setForm({ ...form, [key]: value });
+  const updateModel = (idx: number, patch: Partial<PiModelFormState>) =>
+    setForm({ ...form, models: form.models.map((m, i) => (i === idx ? { ...m, ...patch } : m)) });
+  const addModel = () => setForm({ ...form, models: [...form.models, emptyPiModel()] });
+  const removeModel = (idx: number) => setForm({ ...form, models: form.models.filter((_, i) => i !== idx) });
+
   return (
-    <label className="block">
-      <span className="mb-0.5 block text-[0.7857em] font-medium text-content-muted">{label}</span>
-      {children}
-    </label>
+    <div className="space-y-2.5">
+      {presets.length > 0 && (
+        <Field label="从预设导入">
+          <Select.Root value="" onValueChange={(v) => { const id = String(v); if (id) applyPreset(id); }}>
+            <Select.Trigger className="w-full"><Select.Value placeholder="选择端点预设(填 Base URL)" /></Select.Trigger>
+            <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+              {presets.map((p) => (<Select.Item key={p.id} value={p.id}>{p.name} · {p.baseUrl}</Select.Item>))}
+            </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+          </Select.Root>
+        </Field>
+      )}
+
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Provider 名称">
+          <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="deepseek" />
+        </Field>
+        <Field label="API 类型">
+          <Select.Root value={form.api} onValueChange={(v) => update("api", String(v))}>
+            <Select.Trigger className="w-full"><Select.Value /></Select.Trigger>
+            <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+              {PI_KNOWN_APIS.map((a) => (<Select.Item key={a} value={a}>{a}</Select.Item>))}
+            </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+          </Select.Root>
+        </Field>
+      </div>
+
+      <Field label="Base URL">
+        <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder="https://api.deepseek.com" />
+      </Field>
+
+      <Field label="API Key" hint="密钥经 safeStorage 加密存于设置表,turn 开始时注入到 Pi。">
+        <SecretInput
+          value={form.apiKey}
+          onChange={(v) => update("apiKey", v)}
+          placeholder={isEdit ? "留空 = 保持现有 Key" : "sk-..."}
+          onReveal={revealToken}
+        />
+      </Field>
+
+      <div className="flex items-center gap-2">
+        <Toggle checked={form.authHeader} onChange={(v) => update("authHeader", v)} label="自动添加 Authorization: Bearer 请求头" />
+        <span className="text-[0.7857em] text-content-muted">自动添加 Bearer 请求头</span>
+      </div>
+
+      {/* Models sub-table */}
+      <div>
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[0.7857em] font-medium text-content-muted">模型列表({form.models.filter((m) => m.id.trim()).length})</span>
+          <button type="button" onClick={addModel} className="flex items-center gap-1 text-[0.7857em] text-accent hover:text-accent/80">
+            <IconPlus size={11} /> 添加模型
+          </button>
+        </div>
+        {form.models.length === 0 && (
+          <p className="rounded border border-dashed border-edge px-2 py-3 text-center text-[0.7143em] text-content-subtle">
+            尚未添加模型,至少需要一个模型才能保存。
+          </p>
+        )}
+        <div className="space-y-1.5">
+          {form.models.map((m, idx) => (
+            <div key={idx} className="rounded border border-edge bg-surface/40 p-2">
+              <div className="grid grid-cols-[1fr_90px_70px_auto] items-center gap-1.5">
+                <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder="模型 id,如 deepseek-v4-pro" />
+                <Input value={m.maxTokens} onChange={(e) => updateModel(idx, { maxTokens: e.target.value })} placeholder="最大输出" title="最大输出 token" />
+                <label className="flex items-center gap-1 justify-self-center" title="启用 1M 上下文(关闭=200k)">
+                  <Toggle checked={m.enable1m} onChange={(v) => updateModel(idx, { enable1m: v })} label="启用 1M 上下文(关闭=200k)" />
+                  <span className="text-[0.6428em] text-content-muted">1M</span>
+                </label>
+                <span className="flex items-center gap-0.5">
+                  <button type="button" onClick={() => setExpandedModel(expandedModel === idx ? null : idx)} className="rounded p-0.5 text-content-muted hover:bg-surface-hover" title={expandedModel === idx ? "收起" : "展开思考级别 / 推理 / 显示名"}>
+                    {expandedModel === idx ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
+                  </button>
+                  <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title="删除模型">
+                    <IconTrash size={12} />
+                  </Button>
+                </span>
+              </div>
+              {expandedModel === idx && (
+                <div className="mt-2 space-y-2 border-t border-edge/60 pt-1.5">
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-1.5">
+                      <Toggle checked={m.reasoning} onChange={(v) => updateModel(idx, { reasoning: v })} label="支持推理" />
+                      <span className="text-[0.7143em] text-content-muted">推理</span>
+                    </label>
+                    <Field label="显示名(可选)">
+                      <Input value={m.name} onChange={(e) => updateModel(idx, { name: e.target.value })} placeholder="如 DeepSeek V4 Pro" />
+                    </Field>
+                  </div>
+                  <div>
+                    <span className="mb-1 block text-[0.7143em] text-content-muted">思考级别映射(默认=用模型默认;不支持=UI 隐藏该档;映射值=发送给 provider 的具体字符串)</span>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {PI_THINKING_KEYS.map((k) => (
+                        <label key={k} className="flex items-center gap-1.5">
+                          <span className="w-14 shrink-0 text-[0.7143em] text-content-muted">{k}</span>
+                          <Select.Root value={m.thinking[k]} onValueChange={(v) => updateModel(idx, { thinking: { ...m.thinking, [k]: v as PiModelFormState["thinking"][PiThinkingKey] } })}>
+                            <Select.Trigger className="flex-1"><Select.Value /></Select.Trigger>
+                            <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+                              <Select.Item value="default">默认</Select.Item>
+                              <Select.Item value="null">不支持</Select.Item>
+                              <Select.Item value="value">映射值</Select.Item>
+                            </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+                          </Select.Root>
+                          {m.thinking[k] === "value" && (
+                            <Input value={m.thinkingValue[k]} onChange={(e) => updateModel(idx, { thinkingValue: { ...m.thinkingValue, [k]: e.target.value } })} placeholder="如 max / high" className="flex-1" />
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {error && <div className="rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7857em] text-danger">{error}</div>}
+
+      <FormActions
+        onDelete={onDelete}
+        onCancel={onCancel}
+        onSave={onSave}
+        saving={saving}
+        isEdit={isEdit}
+      />
+    </div>
   );
 }
 
-/** Compact inline toggle switch. Styled to match the existing accent token. */
-function Toggle({
-  checked,
-  onChange,
-  label,
+/* ════════════════════════ shared action bar ════════════════════════ */
+
+function FormActions({
+  left,
+  testInfo,
+  testStatus,
+  onDelete,
+  onCancel,
+  onSave,
+  saving,
+  isEdit,
 }: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  label: string;
+  left?: React.ReactNode;
+  testInfo?: React.ReactNode;
+  testStatus?: TestState;
+  onDelete?: () => void;
+  onCancel: () => void;
+  onSave: () => void;
+  saving: boolean;
+  isEdit: boolean;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      title={label}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        "relative h-4 w-7 shrink-0 rounded-full transition-colors",
-        checked ? "bg-accent" : "bg-surface-hover",
+    <div className="flex flex-wrap items-center gap-2 pt-1">
+      {left}
+      {testInfo}
+      {testStatus?.status === "ok" && <span className="flex items-center gap-0.5 text-[0.7857em] text-accent"><IconCheck size={12} /> {testStatus.detail}</span>}
+      {testStatus?.status === "fail" && <span className="truncate text-[0.7857em] text-danger">✗ {testStatus.error}</span>}
+      <div className="flex-1" />
+      {isEdit && onDelete && (
+        <Button variant="danger" size="sm" onClick={onDelete} title="删除">
+          <IconTrash size={12} /> 删除
+        </Button>
       )}
-    >
-      <span
-        className={cn(
-          "absolute top-0.5 h-3 w-3 rounded-full bg-surface shadow transition-transform",
-          checked ? "left-3.5" : "left-0.5",
-        )}
-      />
-    </button>
+      <Button variant="ghost" size="sm" onClick={onCancel}>取消</Button>
+      <Button variant="primary" size="sm" onClick={onSave} disabled={saving}>
+        {saving ? "保存中…" : isEdit ? "更新" : "保存"}
+      </Button>
+    </div>
   );
 }

@@ -695,6 +695,14 @@ export const TestCustomModelSchema = z.object({
 });
 export type TestCustomModelInput = z.infer<typeof TestCustomModelSchema>;
 
+/** Fetch the cleartext auth token for an already-saved custom-model config.
+ *  This BREAKS the usual "cleartext never crosses IPC" rule on purpose: it
+ *  exists solely so the settings UI can show the token when the user clicks
+ *  the eye icon on an edit form. It MUST NOT be used by any background /
+ *  turn-time path (those resolve the token in main via resolveApiConfig). */
+export const GetCustomModelTokenSchema = z.object({ id: z.string().min(1) });
+export type GetCustomModelTokenInput = z.infer<typeof GetCustomModelTokenSchema>;
+
 /* ── Endpoint presets (credential-free endpoint templates) ── */
 
 export const SaveEndpointPresetSchema = z.object({
@@ -1928,6 +1936,8 @@ export interface RpcMap {
   "customModel.save": (input: SaveCustomModelInput) => Promise<{ models: CustomModelPublic[] }>;
   "customModel.delete": (input: { id: string }) => Promise<{ models: CustomModelPublic[] }>;
   "customModel.test": (input: TestCustomModelInput) => Promise<TestCustomModelResult>;
+  /** Settings UI eye-icon only — returns cleartext token for display. */
+  "customModel.getToken": (input: GetCustomModelTokenInput) => Promise<{ token: string | null }>;
   // Endpoint presets (credential-free endpoint templates)
   "endpointPreset.list": () => Promise<{ presets: EndpointPresetPublic[] }>;
   "endpointPreset.save": (input: SaveEndpointPresetInput) => Promise<{ presets: EndpointPresetPublic[] }>;
@@ -1936,8 +1946,9 @@ export interface RpcMap {
   "piModels.list": () => Promise<{ providers: Record<string, PiProviderPublic> }>;
   "piModels.save": (input: SavePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
   "piModels.delete": (input: DeletePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
-  /** Main-process only — returns cleartext apiKey for injection into the
-   *  pi authStorage at turn time. Never exposed to the renderer. */
+  /** Returns cleartext apiKey. Used two ways: (1) main-process turn-time
+   *  injection into the pi authStorage; (2) the settings UI's eye-icon view
+   *  (same security carve-out as customModel.getToken). */
   "piModels.getApiKey": (input: GetPiApiKeyInput) => Promise<{ apiKey: string | null }>;
   /** List models the SDK can authenticate with the current configured keys.
    *  Builds a fresh ModelRuntime with all encrypted apiKeys injected, then
@@ -2151,6 +2162,7 @@ export const IPC = {
   CUSTOM_MODEL_SAVE: "customModel:save",
   CUSTOM_MODEL_DELETE: "customModel:delete",
   CUSTOM_MODEL_TEST: "customModel:test",
+  CUSTOM_MODEL_GET_TOKEN: "customModel:getToken",
   // Endpoint presets (credential-free endpoint templates shared across providers)
   ENDPOINT_PRESET_LIST: "endpointPreset:list",
   ENDPOINT_PRESET_SAVE: "endpointPreset:save",
