@@ -16,6 +16,7 @@
  *  - `file:listDir`   — one-level directory listing for the file tree
  *  - `file:search`    — recursive file search for composer @ / add-context
  *  - `file:writeFile` — utf-8 write with parent-dir creation (Monaco save)
+ *  - `file:mkdir`     — recursive directory creation (file-tree 新建文件夹)
  */
 import type { IpcMain } from "electron";
 import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
@@ -27,6 +28,7 @@ import {
   FileListDirSchema,
   FileSearchSchema,
   FileWriteSchema,
+  FileMkdirSchema,
   FileGrepSchema,
 } from "@contracts/ipc";
 import type { FileSearchEntry, FileTreeEntry, FileGrepEntry } from "@contracts/ipc";
@@ -448,6 +450,27 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
       return { ok: true };
     } catch (err) {
       log.error(`file.writeFile failed for ${input.filePath}: ${(err as Error).message}`);
+      return { ok: false };
+    }
+  });
+
+  /* ── file:mkdir — recursive directory creation, scoped to a root ── */
+  ipcMain.handle(IPC.FILE_MKDIR, async (_evt, raw) => {
+    const input = FileMkdirSchema.parse(raw);
+    // Same root-scoping guard as writeFile: accept the first project whose
+    // root contains the target path.
+    const projects = ProjectRepo.list();
+    const root = projects.find((p) => pathWithin(p.path, input.dirPath));
+    if (!root) {
+      log.warn(`file.mkdir refused — path outside any project root: ${input.dirPath}`);
+      return { ok: false };
+    }
+    try {
+      await mkdir(input.dirPath, { recursive: true });
+      log.info(`file.mkdir created: ${relative(root.path, input.dirPath) || input.dirPath}`);
+      return { ok: true };
+    } catch (err) {
+      log.error(`file.mkdir failed for ${input.dirPath}: ${(err as Error).message}`);
       return { ok: false };
     }
   });

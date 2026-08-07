@@ -963,6 +963,17 @@ export const FileWriteSchema = z.object({
 });
 export type FileWriteInput = z.infer<typeof FileWriteSchema>;
 
+/** Create a directory (and any missing ancestors), scoped to a known project
+ *  root. Used by the file-tree "新建文件夹" action. `recursive: true` means an
+ *  already-existing dir is not an error. Returns `{ ok }`; on refusal or
+ *  failure `ok` is false and the handler logs. */
+export const FileMkdirSchema = z.object({
+  /** Absolute path of the directory to create. Must resolve inside a known
+   *  project root (path-traversal guard, same as writeFile). */
+  dirPath: z.string(),
+});
+export type FileMkdirInput = z.infer<typeof FileMkdirSchema>;
+
 /** Native multi-file picker (project-external files allowed). Used by the
  *  composer "添加上下文" button to attach files that live outside the active
  *  project root — unlike the project-scoped `file.search`, this surfaces any
@@ -1994,6 +2005,8 @@ export interface RpcMap {
   "file.search": (input: FileSearchInput) => Promise<{ files: FileSearchEntry[] }>;
   /** Write content to a file (creates parents), scoped to a project root. */
   "file.writeFile": (input: FileWriteInput) => Promise<{ ok: boolean }>;
+  /** Create a directory (recursive), scoped to a project root. */
+  "file.mkdir": (input: FileMkdirInput) => Promise<{ ok: boolean }>;
   /** Grep file contents under a project root (line-level matches). */
   "file.grep": (input: FileGrepInput) => Promise<{ matches: FileGrepEntry[] }>;
   // Git operations (P4 Git panel)
@@ -2210,6 +2223,8 @@ export const IPC = {
   FILE_LIST_DIR: "file:listDir",
   FILE_SEARCH: "file:search",
   FILE_WRITE: "file:writeFile",
+  // Create a directory (file-tree "新建文件夹")
+  FILE_MKDIR: "file:mkdir",
   FILE_GREP: "file:grep",
   // Git operations (P4 Git panel)
   GIT_DISCOVER_REPOS: "git:discoverRepos",
