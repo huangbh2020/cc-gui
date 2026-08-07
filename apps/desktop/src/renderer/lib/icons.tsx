@@ -126,6 +126,7 @@ export {
   IconBrandDocker,
   IconBrandGit,
   IconBrandSass,
+  IconBrandOpenai,
   IconNotebook,
   IconClipboard,
   IconPaperclip,
@@ -206,6 +207,7 @@ export {
   // Status-capsule icons
   IconHexagon,
   IconRobot,
+  IconRobotFace,
   IconCpu,
   // Theme picker icons
   IconDeviceDesktop,
@@ -260,6 +262,9 @@ export { PiSquareSplitHorizontal } from "react-icons/pi";
 
 // Remix icons
 export { RiApps2Line } from "react-icons/ri";
+
+// Phosphor icons
+export { PiRobot } from "react-icons/pi";
 
 // Simple Icons (brands)
 export { SiGithub } from "react-icons/si";

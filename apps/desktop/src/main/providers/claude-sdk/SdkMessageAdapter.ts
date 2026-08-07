@@ -290,8 +290,11 @@ interface AdapterState {
   lastResultReason?: TurnDoneEvent["reason"];
   /** Level signal of live background tasks (SDK `background_tasks_changed`).
    *  The SDK documents it as the authoritative "is background work running"
-   *  source: a level, not edge events — we keep the task_ids so the
-   *  turn.done gate below can't be fooled by a missed task_started. */
+   *  source — we track the task_ids here for observability / future use.
+   *  (Previously fed a turn.done gate in maybeEmitTurnDone; that gate is gone
+   *  — turn.done is now emitted solely by flushFinal() when the generator
+   *  closes — but we keep consuming the level signal so the wiring is intact
+   *  if we need an authoritative "still working" check later.) */
   backgroundTaskIds: Set<string>;
 }
 
@@ -769,6 +772,16 @@ export class SdkMessageAdapter {
 
     for (const b of blocks) {
       if (b.type === "tool_use" && b.id && b.name) {
+        // TODO(subagent-stream): subagent tool_use blocks carry a non-null
+        // `parent_tool_use_id` on the message envelope. They are currently
+        // filtered out of the main event stream to keep the main agent's
+        // process surface clean (the Task tool call itself is the only
+        // visible trace; subagent progress is summarized in the
+        // ActivityPopover via subagent.update snapshots). When we add a
+        // dedicated subagent transcript view, route these blocks there
+        // instead of dropping them.
+        if (m.parent_tool_use_id) continue;
+
         if (this.state.emittedToolUse.has(b.id)) continue;
         this.state.emittedToolUse.add(b.id);
 
@@ -984,6 +997,12 @@ export class SdkMessageAdapter {
 
     for (const b of blocks) {
       if (b.type === "tool_result" && b.tool_use_id) {
+        // TODO(subagent-stream): filter subagent tool_result blocks (non-null
+        // `parent_tool_use_id`) out of the main stream - their corresponding
+        // tool_use was already dropped in handleAssistant. When we add a
+        // dedicated subagent transcript view, route these there instead.
+        if (m.parent_tool_use_id) continue;
+
         this.ctx.emit({
           type: "tool.result",
           sessionId: this.sessionId,
@@ -1103,47 +1122,28 @@ export class SdkMessageAdapter {
         } satisfies ToolResultEvent);
       }
 
-      const reason = (m.stop_reason ?? "end_turn") as TurnDoneEvent["reason"];
-      this.maybeEmitTurnDone(reason);
+      // Capture the reason but do NOT emit turn.done here. CLI v2.1.198+ emits
+      // an INTERMEDIATE result (usage all-zero) when the main agent hands off to
+      // a backgrounded subagent — the stream resumes shortly after (a second
+      // init arrives within milliseconds). Treating that intermediate result as
+      // a turn end would prematurely clear `runningBySession` on the frontend
+      // (the UI flips to "stopped" while the subagent keeps running in the
+      // background). The real turn.done is emitted by flushFinal(), which fires
+      // only when the generator truly closes — immune to any number of
+      // intermediate results. `lastResultReason` carries the FINAL result's
+      // reason through to flushFinal.
+      this.state.lastResultReason = (m.stop_reason ?? "end_turn") as TurnDoneEvent["reason"];
     } else {
-      // Error result
+      // Error result. Emit the error event so the frontend shows it, but defer
+      // turn.done to flushFinal() — same rationale as the success branch: an
+      // error result may still be intermediate when subagents are involved.
       this.ctx.emit({
         type: "error",
         sessionId: this.sessionId,
         message: (m as { result?: string }).result ?? "Unknown error",
         code: "CLAUDE_ERROR",
       } satisfies ErrorEvent);
-      this.maybeEmitTurnDone("error");
-    }
-  }
-
-  /** Decide whether a `result` message really ends the turn, and emit
-   *  turn.done if so.
-   *
-   *  Since CLI v2.1.198 subagents run in the BACKGROUND by default. When the
-   *  main agent spawns one and then ends its own phase, the CLI emits an
-   *  intermediate `result` message while the subagent is still running — the
-   *  stream later resumes the parent turn once the subagent's result arrives
-   *  (verified: a session turn produced a `result` at 06:53:03 and the parent
-   *  kept streaming Write/ExitPlanMode until a second, final `result` at
-   *  06:54:18). Treating that intermediate result as a turn end would clear
-   *  `runningBySession` mid-work and unlock the composer's send button while
-   *  the subagent (and the resumed parent turn) are still active — the exact
-   *  symptom reported. So: only end the turn at result-time when NO subagent
-   *  is still running and no background task is tracked; otherwise defer the
-   *  real turn.done to flushFinal(), which fires when the whole stream closes
-   *  (the subagent roster is then auto-completed / killed first, so the gate
-   *  passes and the deferred emit carries the final result's reason).
-   *
-   *  `lastResultReason` is captured regardless so flushFinal has the right
-   *  reason to report. */
-  private maybeEmitTurnDone(reason: TurnDoneEvent["reason"]): void {
-    this.state.lastResultReason = reason;
-    const anyRunning = Array.from(this.state.subagents.values()).some(
-      (s) => s.status === "running",
-    );
-    if (!anyRunning && this.state.backgroundTaskIds.size === 0) {
-      this.emitTurnDone(reason);
+      this.state.lastResultReason = "error";
     }
   }
 

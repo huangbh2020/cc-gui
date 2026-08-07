@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
-  IconRobot,
+  PiRobot,
   IconListDetails,
   IconClipboard,
   IconChevronDown,
@@ -121,7 +121,7 @@ export function StatusCapsule({
               {runningAgents > 0 && (
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
               )}
-              <IconRobot size={13} className={runningAgents > 0 ? "text-warning" : "opacity-90"} />
+              <PiRobot size={13} className={runningAgents > 0 ? "text-warning" : "opacity-90"} />
               <span>{runningAgents > 0 ? runningAgents : subagents.length}</span>
             </span>
             {needDivider() && <Divider />}

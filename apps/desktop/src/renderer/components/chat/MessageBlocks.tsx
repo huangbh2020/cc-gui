@@ -18,7 +18,7 @@ import {
   IconNotebook,
   IconSearch,
   IconListCheck,
-  IconRobot,
+  PiRobot,
   IconWorldWww,
   IconWorldSearch,
   IconHelpCircle,
@@ -39,7 +39,40 @@ import { FileLink } from "./FileLink.js";
  *  `input.content` against what was on disk before the turn. Empty when
  *  the turn is still running (no turn.files yet) or after a rewind — in
  *  those cases Write falls back to a plain new-content preview. */
+
 export type BeforeContentMap = Map<string, string>;
+
+/** Toggle a collapsible card while keeping the clicked header at the same
+ *  viewport position. Without this, expanding a card inserts content below
+ *  the header and the virtual list's height recompute pushes everything
+ *  down - the header the user just clicked scrolls out of view. We snapshot
+ *  the header's `rect.top` before the state flip and, after the DOM updates
+ *  (rAF), scroll the nearest scroll container by the delta so the header
+ *  lands back where it was. Collapsing is a no-op scroll (content above the
+ *  fold never moves; only content below shrinks). */
+function toggleHoldPosition(
+  e: React.MouseEvent<HTMLButtonElement>,
+  setOpen: (updater: (v: boolean) => boolean) => void,
+) {
+  const btn = e.currentTarget;
+  const beforeTop = btn.getBoundingClientRect().top;
+  setOpen((v) => !v);
+  requestAnimationFrame(() => {
+    const afterTop = btn.getBoundingClientRect().top;
+    const delta = afterTop - beforeTop;
+    if (delta === 0) return;
+    // Walk up to the nearest scroll container and adjust its scrollTop.
+    let el: HTMLElement | null = btn.parentElement;
+    while (el) {
+      const style = getComputedStyle(el);
+      if (/(auto|scroll)/.test(style.overflowY)) {
+        el.scrollTop += delta;
+        return;
+      }
+      el = el.parentElement;
+    }
+  });
+}
 
 /** Render the content blocks of a message.
  *
@@ -97,62 +130,142 @@ export { MessageBlocks };
 export type ToolUseBlock = Extract<Block, { kind: "tool_use" }>;
 export type ThinkingBlock = Extract<Block, { kind: "thinking" }>;
 /** Procedural blocks are the "model action" surface — thinking and tool
- *  calls. They get grouped together so a turn that thinks + fires off N
- *  tools reads as one compact card, not a wall of cards. */
+ *  calls. Used by `groupBlocks` to classify which blocks can be grouped. */
 export type ProceduralBlock = ThinkingBlock | ToolUseBlock;
 type Segment =
   | { kind: "single"; block: Block; defaultOpen?: boolean }
-  | { kind: "procedural"; blocks: ProceduralBlock[] };
+  | { kind: "batch"; blocks: ToolUseBlock[] };
 
-/** File-mutating tool calls (Edit / Write) render INLINE in the stream
- *  (collapsed by default), bypassing the "思考 + N 个操作" procedural-group
- *  collapse. Keeping them flat makes the actual file changes scannable as a
- *  one-line summary (+N -M) without burying the prose stream under diff
- *  bodies. Write gets the same treatment so a new/overwritten file is its
- *  own visible card rather than buried inside a group. */
-function isInlineFileBlock(b: Block): boolean {
-  return b.kind === "tool_use" && (b.toolName === "Edit" || b.toolName === "Write");
+/** Tool calls that are HIGH-FREQUENCY, LOW-INFO operations - the model fires
+ *  off Read/Bash/Grep/Glob in long bursts while exploring. Collapsing these
+ *  into a single "操作集合" card keeps the stream scannable; each individual
+ *  call's detail is rarely worth the vertical space. MultiEdit/TodoWrite are
+ *  included too: they're mechanical (batch edits / task-list updates), not
+ *  narrative. The ticker on the group header still shows what's running live. */
+const BATCH_TOOL_NAMES = new Set([
+  "Read", "Glob", "Grep",
+  "Bash", "PowerShell",
+  "MultiEdit", "NotebookEdit",
+  "TodoWrite", "TaskCreate", "TaskUpdate",
+  "WebSearch", "WebFetch",
+]);
+function isBatchTool(b: Block): b is ToolUseBlock {
+  return b.kind === "tool_use" && BATCH_TOOL_NAMES.has(b.toolName);
 }
 
-/** Linear scan: collect thinking / tool_use blocks into a run.
+/** Linear scan over a turn's blocks, producing render segments.
  *
- *  Non-procedural blocks (text, error) are emitted as their own segments in
- *  place, but do NOT break the run — thinking blocks on either side of an
- *  interleaved text block merge into a single procedural run. This matters
- *  for providers (e.g. pi) where a single turn's content stream alternates
- *  thinking → text → thinking → text: without this merge, each thinking
- *  segment becomes its own collapsible "思考" panel, producing the
- *  "思考面板 → 几个字 → 又一个思考面板" artifact the user reported. By
- *  keeping the run alive across text, all thinking in one turn folds into
- *  one panel, with the text segments still shown inline between/after.
+ *  Grouping rule (by "is this worth independent vertical space?"):
+ *   - BATCH tools (Read/Bash/Grep/...) -> accumulate into a `batch` run; the
+ *     run survives across interleaved text (narration between commands) so a
+ *     burst of N reads + commentary folds into ONE group card, not N cards.
+ *   - thinking, Task (subagent), AskUserQuestion, Edit, Write -> always
+ *     standalone: they break the batch run and emit as their own segment.
+ *   - text / error -> standalone, but do NOT break the run (so a batch burst
+ *     split by narration still merges back into one group).
  *
- *  Edit / Write tool calls DO break the run — they're pulled out and emitted
- *  as their own collapsed segment so their diff is available inline. */
+ *  This is the inverse of the old behavior which grouped thinking INTO the
+ *  tool run; thinking is now pulled out as a peer, and only low-info batch
+ *  tools collapse together. Edit/Write breaking the run is preserved. */
 function groupBlocks(blocks: Block[]): Segment[] {
   const out: Segment[] = [];
-  let run: ProceduralBlock[] = [];
+  let run: ToolUseBlock[] = [];
   const flush = () => {
     if (run.length > 0) {
-      out.push({ kind: "procedural", blocks: run });
+      out.push({ kind: "batch", blocks: run });
       run = [];
     }
   };
   for (const b of blocks) {
-    if (isInlineFileBlock(b)) {
-      // An inline Edit/Write breaks the procedural run: flush whatever has
-      // accumulated, then emit the file tool as a standalone collapsed segment.
-      flush();
-      out.push({ kind: "single", block: b, defaultOpen: false });
-    } else if (b.kind === "thinking" || b.kind === "tool_use") {
+    if (isBatchTool(b)) {
       run.push(b);
     } else {
-      // Text / error: emit as its own segment in place, but keep the run
-      // alive so a following thinking block merges into the same panel.
-      out.push({ kind: "single", block: b });
+      // thinking / standalone tool (Task/AskUserQuestion/Edit/Write) / text /
+      // error / other blocks break the batch run and emit as their own segment.
+      flush();
+      out.push({ kind: "single", block: b, defaultOpen: false });
     }
   }
   flush();
   return out;
+}
+
+/** A collapsible card for a run of consecutive BATCH tool calls (Read/Bash/
+ *  Grep/...) INSIDE an expanded TurnPanel. One summary line when collapsed
+ *  (tool tally + live ticker), each child tool card folded underneath when
+ *  expanded. Only low-info batch tools land here; thinking, Task (subagent),
+ *  AskUserQuestion, Edit and Write are pulled out by groupBlocks as their own
+ *  standalone rows - so this group never hides a high-signal action. */
+function BatchToolGroup({
+  blocks,
+  beforeMap,
+  turnActive = false,
+  projectPath,
+}: {
+  blocks: ToolUseBlock[];
+  beforeMap?: BeforeContentMap;
+  /** Whether the owning turn is still streaming. Drives the current-operation
+   *  ticker on the header so the user can see what this group is executing
+   *  right now. Clears when the turn ends so historical cards never show a
+   *  stale operation. */
+  turnActive?: boolean;
+  projectPath?: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const aggregateStatus: "running" | "done" | "error" = blocks.some((b) => b.status === "running")
+    ? "running"
+    : blocks.some((b) => b.status === "error")
+      ? "error"
+      : "done";
+
+  // The newest tool currently executing inside this group (drives the header
+  // ticker). Reverse scan picks the most recent running tool.
+  const runningTool = useMemo(() => {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if (blocks[i].status === "running") return blocks[i];
+    }
+    return null;
+  }, [blocks]);
+
+  // Tool-name tally in first-invocation order.
+  const counts = new Map<string, number>();
+  for (const b of blocks) counts.set(b.toolName, (counts.get(b.toolName) ?? 0) + 1);
+  const breakdown = [...counts.entries()].map(([n, c]) => `${n} ×${c}`).join(" · ");
+
+  const label = `${blocks.length} 个操作`;
+
+  return (
+    <div className="[font-size:var(--chat-fs-sm)]">
+      <button
+        onClick={(e) => toggleHoldPosition(e, setOpen)}
+        className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/40"
+      >
+        <IconTools size={13} className="shrink-0 text-content-subtle" />
+        <span className="font-medium text-content-muted">{label}</span>
+        {breakdown && <span className="truncate text-content-subtle">{breakdown}</span>}
+        {/* Live current-operation ticker - only while the turn is streaming.
+            Sits right of the tool tally and rolls up like a slot machine as
+            the agent moves between commands. Rendered inside the <button>
+            (CurrentOpTicker emits only phrasing content). */}
+        {turnActive && <CurrentOpTicker op={runningTool} turnActive={turnActive} />}
+        {/* Error marker on the right - success needs no glyph, only failures
+            surface so the user can spot the broken call without expanding. */}
+        {aggregateStatus === "error" && <StatusIcon status="error" />}
+        <Chevron open={open} className="ml-auto" />
+      </button>
+      {open && (
+        // Cap height so a large batch (20 reads) doesn't stretch the stream;
+        // the list scrolls internally instead. The left border marks this as
+        // an expanded group body, visually nested under its header.
+        <div className="max-h-80 space-y-1.5 overflow-y-auto border-l border-edge py-1 pl-2">
+          {blocks.map((b, i) => (
+            <BlockView key={i} block={b} beforeMap={beforeMap} projectPath={projectPath} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Render a collapsible chevron icon (▾ when open, ▸ when closed). An optional
@@ -184,160 +297,30 @@ function StatusIcon({ status }: { status: "running" | "done" | "error" }) {
   return null;
 }
 
-/** A compact collapsible card for a run of consecutive procedural blocks
- *  (thinking + non-file tool calls) INSIDE an expanded TurnPanel. Mirrors the
- *  original pre-turn-aggregation "思考 + N 个操作" group: one summary line
- *  when collapsed, each child (thinking / tool card) folded underneath when
- *  expanded. File-mutating tools (Edit / Write) never land here — they're
- *  pulled out by groupBlocks to render as their own inline cards. */
-function ProceduralRunCard({
-  blocks,
-  beforeMap,
-  defaultOpen = false,
-  turnActive = false,
-  projectPath,
-}: {
-  blocks: ProceduralBlock[];
-  beforeMap?: BeforeContentMap;
-  defaultOpen?: boolean;
-  /** Whether the owning turn is still streaming. Drives the current-operation
-   *  ticker on the header (right of the tool tally) so the user can see what
-   *  this group is executing right now. Clears when the turn ends so
-   *  historical cards never show a stale operation. */
-  turnActive?: boolean;
-  projectPath?: string | null;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
-  const thinkingCount = blocks.filter((b) => b.kind === "thinking").length;
-
-  const aggregateStatus: "running" | "done" | "error" = toolBlocks.some((b) => b.status === "running")
-    ? "running"
-    : toolBlocks.some((b) => b.status === "error")
-      ? "error"
-      : "done";
-
-  // The newest tool currently executing inside this group (drives the header
-  // ticker). Reverse scan picks the most recent running tool — matches the
-  // TurnPanel's own runningTool logic.
-  const runningTool = useMemo(() => {
-    for (let i = toolBlocks.length - 1; i >= 0; i--) {
-      if (toolBlocks[i].status === "running") return toolBlocks[i];
-    }
-    return null;
-  }, [toolBlocks]);
-
-  // Tool-name tally in first-invocation order.
-  const counts = new Map<string, number>();
-  for (const b of toolBlocks) counts.set(b.toolName, (counts.get(b.toolName) ?? 0) + 1);
-  const breakdown = [...counts.entries()].map(([n, c]) => `${n} ×${c}`).join(" · ");
-
-  const label =
-    thinkingCount > 0 && toolBlocks.length > 0
-      ? `思考 + ${toolBlocks.length} 个操作`
-      : toolBlocks.length > 0
-        ? `${toolBlocks.length} 个操作`
-        : "思考";
-
-  return (
-    <div className="[font-size:var(--chat-fs-sm)]">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/40"
-      >
-        {aggregateStatus === "done" ? (
-          <IconCheck size={12} className="shrink-0 text-accent" />
-        ) : (
-          <StatusIcon status={aggregateStatus} />
-        )}
-        <span className="font-medium text-content-muted">{label}</span>
-        {breakdown && <span className="truncate text-content-subtle">{breakdown}</span>}
-        {/* Live current-operation ticker — only while the turn is streaming.
-            Sits right of the tool tally and rolls up like a slot machine as
-            the agent moves between commands. Rendered inside the <button>
-            (CurrentOpTicker emits only phrasing content). */}
-        {turnActive && <CurrentOpTicker op={runningTool} turnActive={turnActive} />}
-        <Chevron open={open} className="ml-auto" />
-      </button>
-      {open && (
-        <div className="max-h-80 space-y-1.5 overflow-y-auto py-1">
-          {blocks.map((b, i) => (
-            <BlockView key={i} block={b} beforeMap={beforeMap} projectPath={projectPath} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Render the body of an expanded TurnPanel: run groupBlocks over the panel's
- *  blocks and emit each segment — procedural runs collapse into a
- *  ProceduralRunCard, file tools (Edit/Write) and text render as standalone
- *  inline blocks. This restores the pre-aggregation grouping behavior inside
- *  the panel.
- *
- *  Procedural run cards ALWAYS default to collapsed — the outer TurnPanel is
- *  what opens/closes with the turn lifecycle; the run cards inside are a
- *  drill-down the user opens on demand. `live` is unused for collapse but
- *  kept on the signature for callers that pass it. */
-function PanelBody({
-  blocks,
-  beforeMap,
-  onOpenPlan,
-  turnActive = false,
-  projectPath,
-}: {
-  blocks: Block[];
-  beforeMap?: BeforeContentMap;
-  onOpenPlan?: (plan: string) => void;
-  /** Whether the owning turn is still streaming. Forwarded to each
-   *  ProceduralRunCard so its header ticker can show the live operation. */
-  turnActive?: boolean;
-  projectPath?: string | null;
-}) {
-  const segments = groupBlocks(blocks);
-  return (
-    <div className="space-y-1.5">
-      {segments.map((seg, i) =>
-        seg.kind === "single" ? (
-          <BlockView
-            key={i}
-            block={seg.block}
-            defaultOpen={seg.defaultOpen}
-            beforeMap={beforeMap}
-            onOpenPlan={onOpenPlan}
-            projectPath={projectPath}
-          />
-        ) : (
-          <ProceduralRunCard
-            key={i}
-            blocks={seg.blocks}
-            beforeMap={beforeMap}
-            turnActive={turnActive}
-            projectPath={projectPath}
-          />
-        ),
-      )}
-    </div>
-  );
-}
-
 /** Collapsible panel that hides a whole turn's process data (thinking +
  *  tool calls + any text the model emitted between tool calls, like "let me
- *  read this file first") behind a one-line "开始 HH:MM:SS · 用时 NN.Ns"
- *  header. This is the boundary between "model process" and "model output
- *  for the user": everything up to and including the last tool call lives
- *  inside this panel, while only the final reply text (after the last tool)
- *  renders outside it and stays visible.
+ *  read this file first") behind a one-line "HH:MM:SS · NN.Ns" header. This is
+ *  the boundary between "model process" and "model output for the user":
+ *  everything up to and including the last tool call lives inside this panel,
+ *  while only the final reply text (after the last tool) renders outside it
+ *  and stays visible.
+ *
+ *  Inside the expanded panel, blocks are grouped by signal value (see
+ *  `groupBlocks`): high-frequency/low-info BATCH tools (Read/Bash/Grep/...)
+ *  collapse into a single "操作集合" card so a burst of 20 reads takes one
+ *  line, not 20; while thinking, Task (subagent), AskUserQuestion, Edit and
+ *  Write render as their own standalone rows - they're high-signal and
+ *  shouldn't be buried inside a collapsed group.
  *
  *  - While the turn is still running (turnMeta.endedAt undefined) the panel
  *    stays OPEN by default so the user can watch the model work; the header
- *    shows a live-ticking duration. `turnActive` additionally drives the live
- *    "current operation" ticker inside the expanded body.
- *  - The panel collapses ONLY when the turn ends (turn.done sets endedAt) —
+ *    shows a live-ticking duration plus a "current operation" ticker (what the
+ *    model is doing right now, rolling like a slot machine as it moves between
+ *    commands).
+ *  - The panel collapses ONLY when the turn ends (turn.done sets endedAt) -
  *    not when the final reply text starts streaming. The user can still
  *    re-expand by clicking.
- *  - The header is minimal: just "开始 HH:MM:SS · 用时 NN.Ns". The live
+ *  - The header is minimal: just "HH:MM:SS · NN.Ns" + live ticker. The live
  *    duration and the chevron already carry the running/completed state, so
  *    no status glyph is shown. */
 export function TurnPanel({
@@ -355,10 +338,11 @@ export function TurnPanel({
   /** Pre-turn file contents for Write-tool diffing. Forwarded down to
    *  WriteToolCard so diffs render inside the expanded panel. */
   beforeMap?: BeforeContentMap;
-  /** Whether this turn is the live streaming tail. Drives the "current
-   *  operation" ticker inside the expanded body (shows what the model is
-   *  doing right now). Does NOT control collapse - that's tied to
-   *  turnMeta.endedAt so the panel stays open for the whole run. */
+  /** Whether this turn is the live streaming tail. Drives the header's
+   *  "current operation" ticker (shows what the model is doing right now) and
+   *  clears it when the turn ends so completed cards never show a stale
+   *  operation. Does NOT control collapse - that's tied to turnMeta.endedAt
+   *  so the panel stays open for the whole run. */
   turnActive?: boolean;
   /** The turn's timing metadata. `startedAt` feeds the header clock and the
    *  duration baseline; `endedAt` undefined means the turn is still running
@@ -366,7 +350,7 @@ export function TurnPanel({
   turnMeta?: TurnMeta;
   /** Forwarded to BlockView for plan blocks (opens the PlanDrawer). */
   onOpenPlan?: (plan: string) => void;
-  /** Project root for file-path resolution, forwarded to PanelBody/BlockView. */
+  /** Project root for file-path resolution, forwarded to BlockView. */
   projectPath?: string | null;
 }) {
   const completed = turnMeta?.endedAt !== undefined;
@@ -374,11 +358,21 @@ export function TurnPanel({
   // watch the model work) and collapses only once the turn ends (turn.done).
   // Initial state follows `completed` so a freshly mounted running turn opens
   // and a historical (ended) turn starts collapsed. LegendList recycles/
-  // remounts items during streaming — re-mounting a running turn re-seeds
+  // remounts items during streaming - re-mounting a running turn re-seeds
   // open=true, keeping the process visible throughout.
   const [open, setOpen] = useState(!completed);
 
   const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
+
+  // The newest tool currently executing in this turn (drives the header
+  // ticker). Reverse scan picks the most recent running tool so the ticker
+  // always reflects the live operation, not a stale earlier one.
+  const runningTool = useMemo(() => {
+    for (let i = toolBlocks.length - 1; i >= 0; i--) {
+      if (toolBlocks[i].status === "running") return toolBlocks[i];
+    }
+    return null;
+  }, [toolBlocks]);
 
   // Live duration via the app-wide 1s clock. Frozen turns compute a static
   // value (endedAt - startedAt) and the useNow subscription is harmless
@@ -390,30 +384,42 @@ export function TurnPanel({
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e) => toggleHoldPosition(e, setOpen)}
         className="flex w-full items-center gap-1.5 border-b border-edge py-1.5 text-left text-[13px] text-content-subtle hover:bg-surface-muted/40"
       >
-        <span>开始</span>
         <span className="tabular-nums text-content-muted">{fmtClock(startedAt)}</span>
         <span className="text-content-subtle">·</span>
-        <span>用时</span>
         <span className="tabular-nums text-content-muted">{fmtDuration(duration)}</span>
-        <Chevron open={open} />
+        {/* Live current-operation ticker - only while the turn is streaming.
+            Sits right of the duration and rolls up like a slot machine as the
+            agent moves between commands. Rendered inside the <button>
+            (CurrentOpTicker emits only phrasing content). Clears when the turn
+            ends so historical cards never show a stale operation. */}
+        {turnActive && <CurrentOpTicker op={runningTool} turnActive={turnActive} />}
+        <Chevron open={open} className="ml-auto" />
       </button>
       {open && (
         <div className="space-y-1.5 py-2">
-          {/* The live current-operation ticker now lives on each
-              ProceduralRunCard's header (right of the "Bash ×2" tally), where
-              it belongs — so the user sees what EACH group is running, not a
-              single global line here. `turnActive` is forwarded down to drive
-              those tickers; they clear themselves when the turn ends. */}
-          <PanelBody
-            blocks={blocks}
-            beforeMap={beforeMap}
-            onOpenPlan={onOpenPlan}
-            turnActive={turnActive}
-            projectPath={projectPath}
-          />
+          {groupBlocks(blocks).map((seg, i) =>
+            seg.kind === "single" ? (
+              <BlockView
+                key={i}
+                block={seg.block}
+                defaultOpen={seg.defaultOpen}
+                beforeMap={beforeMap}
+                onOpenPlan={onOpenPlan}
+                projectPath={projectPath}
+              />
+            ) : (
+              <BatchToolGroup
+                key={i}
+                blocks={seg.blocks}
+                beforeMap={beforeMap}
+                turnActive={turnActive}
+                projectPath={projectPath}
+              />
+            ),
+          )}
         </div>
       )}
     </div>
@@ -724,7 +730,7 @@ function EditToolCard({
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e) => toggleHoldPosition(e, setOpen)}
         className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/50"
       >
         <StatusIcon status={status} />
@@ -740,7 +746,7 @@ function EditToolCard({
         </span>
       </button>
       {open && (
-        <div className="space-y-2 py-2 px-1">
+        <div className="space-y-2 border-l border-edge py-2 pl-2">
           <DiffView diff={diff} />
           {result !== undefined && (
             <div>
@@ -803,7 +809,7 @@ function WriteToolCard({
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e) => toggleHoldPosition(e, setOpen)}
         className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/50"
       >
         <StatusIcon status={status} />
@@ -820,7 +826,7 @@ function WriteToolCard({
         </span>
       </button>
       {open && (
-        <div className="space-y-2 py-2 px-1">
+        <div className="space-y-2 border-l border-edge py-2 pl-2">
           {diff ? (
             <div>
               <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">
@@ -869,7 +875,7 @@ function GenericToolCard({
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e) => toggleHoldPosition(e, setOpen)}
         className="flex w-full items-center gap-2 py-1.5 text-left hover:bg-surface-muted/50"
       >
         <StatusIcon status={block.status} />
@@ -885,10 +891,10 @@ function GenericToolCard({
         <Chevron open={open} />
       </button>
       {open && (
-        <div className="space-y-2 py-2 px-1">
+        <div className="space-y-2 border-l border-edge py-2 pl-2">
           <div>
             <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">Input</div>
-            <pre className="overflow-x-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
+            <pre className="max-h-60 overflow-auto rounded bg-surface/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
               {safeStringify(block.input)}
             </pre>
           </div>
@@ -922,16 +928,19 @@ function Collapsible({
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e) => toggleHoldPosition(e, setOpen)}
         className="flex w-full items-center gap-2 py-1.5 text-left text-content-muted hover:bg-surface-muted/40"
       >
-        <Chevron open={open} />
         <IconBulb size={13} className="shrink-0 text-content-subtle" />
         <span className="font-medium text-content-muted">{label}</span>
         <span className="ml-1 truncate text-content-subtle">{hint}</span>
+        <Chevron open={open} className="ml-auto" />
       </button>
       {open && (
-        <div className="py-2 px-1 text-content-muted">
+        // Cap height so a long thinking block doesn't stretch the stream;
+        // it scrolls internally instead. The left border marks this as an
+        // expanded body, visually nested under its header.
+        <div className="max-h-80 overflow-y-auto border-l border-edge py-2 pl-2 text-content-muted">
           <p className="whitespace-pre-wrap break-words">{children as unknown as string}</p>
         </div>
       )}
@@ -1001,7 +1010,7 @@ const TOOL_ICON_MAP: Record<string, ComponentType<{ size?: number; className?: s
   TodoWrite: IconListCheck,
   TaskCreate: IconListCheck,
   TaskUpdate: IconListCheck,
-  Task: IconRobot,
+  Task: PiRobot,
   WebSearch: IconWorldSearch,
   WebFetch: IconWorldWww,
   AskUserQuestion: IconHelpCircle,
@@ -1037,6 +1046,18 @@ export function toolSummary(name: string, input: unknown): string {
       return String(obj.pattern ?? "");
     case "TodoWrite":
       return "todos";
+    case "AskUserQuestion": {
+      // input is { questions: [{ header, question, multiSelect, options }] }
+      // (or a { item: [...] } wrapper). Show the first question's text so the
+      // collapsed card reads as an actual question, not "[object Object]".
+      const raw = (obj.questions ?? obj.item) as unknown;
+      const first = Array.isArray(raw) ? raw[0] : null;
+      if (first && typeof first === "object") {
+        const q = (first as Record<string, unknown>).question;
+        if (typeof q === "string") return q;
+      }
+      return "";
+    }
     default:
       return Object.values(obj).slice(0, 1).map(String).join("").slice(0, 60);
   }
