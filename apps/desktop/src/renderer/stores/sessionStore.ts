@@ -3583,6 +3583,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (e.type === "turn.done" || e.type === "error") {
       forceDeltaFlush();
     }
+    // Pi's tool.use carries the owning messageId (see PiMessageAdapter). The
+    // narration text that precedes it is still sitting in the delta buffer —
+    // flush it first so the tool block lands on a real message instead of
+    // falling back to the open-turn heuristic (which would pile every tool
+    // onto the turn's opener).
+    if (e.type === "tool.use" && e.messageId) {
+      forceDeltaFlush();
+    }
 
     // Stale `turn.done` guard — fixes the stop→edit→resend race.
     //
@@ -3888,14 +3896,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           break;
         }
         case "tool.use": {
-          // Target the CURRENT turn's trailing assistant message — i.e. the
-          // last assistant message whose turnMeta has no endedAt (turn.done
-          // hasn't landed). We must NOT use "last assistant message" naively:
-          // after an edit-resend (or any history truncation), the truncated
-          // history's last assistant message is a CLOSED turn (turnMeta.endedAt
-          // is set), and appending the new turn's tool_use to it would merge
-          // two turns into one giant panel. Same "open turn" heuristic used by
-          // the text.delta / plan.update / compact paths.
+          // Pi path: the event carries the owning messageId (see
+          // PiMessageAdapter) — the narration text was already flushed to
+          // that message (forceDeltaFlush above), so append the tool directly
+          // to it. This keeps the interleaved "text → tool → text → tool"
+          // timeline intact; without it every pi tool would pile onto the
+          // turn's opener via the heuristic below.
+          const targetIdx = e.messageId ? next.findIndex((m) => m.id === e.messageId) : -1;
+          if (targetIdx >= 0) {
+            const block: Block = { kind: "tool_use", toolCallId: e.toolCallId, toolName: e.toolName, input: e.input, status: "running" };
+            const updated = { ...next[targetIdx], blocks: [...next[targetIdx].blocks, block] };
+            next = next.map((m, i) => (i === targetIdx ? updated : m));
+            break;
+          }
+          // Claude path (no messageId) / fallback: target the CURRENT turn's
+          // trailing assistant message — i.e. the last assistant message whose
+          // turnMeta has no endedAt (turn.done hasn't landed). We must NOT use
+          // "last assistant message" naively: after an edit-resend (or any
+          // history truncation), the truncated history's last assistant
+          // message is a CLOSED turn (turnMeta.endedAt is set), and appending
+          // the new turn's tool_use to it would merge two turns into one giant
+          // panel. Same "open turn" heuristic used by the text.delta /
+          // plan.update / compact paths.
           const openIdx = findOpenTurnTrailingAssistant(next);
           let lastAssistant = openIdx >= 0 ? next[openIdx] : undefined;
           if (!lastAssistant) {

@@ -38,6 +38,14 @@ export class PiMessageAdapter {
   /** Tracks the most recently seen contentIndex so message_end can emit a
    *  message.complete with a valid id. */
   private lastMessageId: string | null = null;
+  /** The messageId that tool_execution_start events should attach to. Pi's
+   *  `message_update` stream carries the narration text (contentIndex 0/1)
+   *  before the toolcall blocks (contentIndex 2+), and `tool_execution_start`
+   *  fires AFTER message_end — detached from any messageId. Snapshotting the
+   *  latest text/thinking messageId at `toolcall_start` lets the subsequent
+   *  tool.use event carry the owning message, so the renderer keeps the
+   *  "text → tool" timeline instead of piling every tool onto the turn opener. */
+  private pendingToolTargetId: string | null = null;
 
   constructor(
     private readonly ctx: ProviderContext,
@@ -61,6 +69,10 @@ export class PiMessageAdapter {
         this.blockMessageIds.clear();
         break;
       case "tool_execution_start":
+        // Attach the tool to the message that narrated it (snapshot at
+        // toolcall_start). Without this the store's open-turn heuristic would
+        // append every tool to the turn's first message, flattening the
+        // interleaved "text → tool → text → tool" timeline into one pile.
         this.emit({
           type: "tool.use",
           sessionId: this.sessionId,
@@ -68,6 +80,7 @@ export class PiMessageAdapter {
           toolName: event.toolName,
           input: event.args,
           requiresApproval: false, // Pi has no canUseTool interception; tools run directly
+          ...(this.pendingToolTargetId ? { messageId: this.pendingToolTargetId } : {}),
         });
         break;
       case "tool_execution_end":
@@ -140,6 +153,13 @@ export class PiMessageAdapter {
         messageId,
         text: sub.delta,
       });
+    } else if (sub.type === "toolcall_start") {
+      // The narration for this tool has already streamed (text/thinking
+      // deltas), so lastMessageId points at the message that should own the
+      // tool. Snapshot it for the upcoming tool_execution_start — pi fires
+      // that event after message_end, outside the messageId context. A tool
+      // block never emits a delta of its own; it just records the target.
+      this.pendingToolTargetId = this.lastMessageId;
     }
   }
 

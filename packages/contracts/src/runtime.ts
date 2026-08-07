@@ -103,6 +103,15 @@ export interface ToolUseEvent {
   input: unknown;
   /** True if this tool call requires user approval before executing. */
   requiresApproval: boolean;
+  /** Optional: the assistant message this tool belongs to. Claude's tool_use
+   *  blocks arrive inside the full assistant message, so the store naturally
+   *  appends them to the same message as the narration text. Pi's
+   *  `tool_execution_start` event, by contrast, is detached from the message
+   *  stream — the adapter forwards the target messageId here so the tool
+   *  block lands on the same message as its narration text (keeping the
+   *  process/reply timeline intact instead of piling every tool onto the
+   *  turn's opener). Provider-optional: claude omits it. */
+  messageId?: string;
 }
 
 /** A tool finished and returned a result. */
