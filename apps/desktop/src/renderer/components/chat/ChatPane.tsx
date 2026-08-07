@@ -246,6 +246,40 @@ function groupMessagesForRender(
     const isTurnTail =
       !!lastMsg && lastMsg.role === "assistant" && isCompletedTurnTail(messages, lastTurnMsgIndex, isRunning);
 
+    // LIVE turn → flat output. While the turn is still streaming we do NOT
+    // group its messages into a turnGroup: a narration text and its tool_use
+    // arrive as SEPARATE events (claude sends text and tool_use as
+    // independent assistant messages; the tool attaches to the narration
+    // message only when its tool.use lands). Grouping during streaming would
+    // briefly classify the narration as the final reply (it sits after the
+    // previous tool), then yank it back into the panel when its tool arrives
+    // — a visible flicker. Instead, emit every message of the live turn as
+    // its own single item (flat stream: text + tool cards inline), and only
+    // collapse the whole turn into a turnGroup once it completes (the
+    // isStreamingTail-false path below). Each message's own MessageBlocks
+    // still folds consecutive batch tools into one card.
+    if (isStreamingTail) {
+      const byMsg = new Map<ChatMessage, Block[]>();
+      for (const { block, msg } of turnBlocks) {
+        const arr = byMsg.get(msg);
+        if (arr) arr.push(block);
+        else byMsg.set(msg, [block]);
+      }
+      for (const [msg, blocks] of byMsg) {
+        items.push({
+          kind: "single",
+          msg: { ...msg, blocks },
+          isStreamingTail: msg.id === lastMsg?.id,
+          isTurnTail: false,
+        });
+      }
+      turnBlocks = [];
+      turnMeta = undefined;
+      lastTurnMsgIndex = -1;
+      hasOpenTurn = false;
+      return;
+    }
+
     // Find the index of the LAST procedural block (thinking / tool_use) in
     // the turn's timeline. Everything at or before it is "process" —
     // including any text the model wove between tool calls ("let me read
@@ -259,24 +293,11 @@ function groupMessagesForRender(
     let panelBlocks: Block[] = [];
     const textMsgs: ChatMessage[] = [];
 
-    // While the turn is still the live streaming tail, we want the process
-    // panel to stay OPEN and show what the model is doing. Two cases:
-    //  (a) The model hasn't reached its final reply yet — the live tail is a
-    //      procedural block, or only process narration has arrived. We can't
-    //      know whether more tools are coming, so keep EVERYTHING inside the
-    //      panel (so process text doesn't flicker out and back in). No reply
-    //      is shown yet.
-    //  (b) The model has already moved past its last tool call into reply
-    //      text (there are blocks AFTER lastProcIdx). That trailing text IS
-    //      the final reply streaming in — split it out so it shows below the
-    //      (now collapsing) panel, exactly as the user requested: the process
-    //      folds away the moment the reply starts.
-    const replyStarted = lastProcIdx >= 0 && lastProcIdx < turnBlocks.length - 1;
-    const holdAllInPanel = isStreamingTail && !replyStarted;
-
-    if (holdAllInPanel) {
-      panelBlocks = turnBlocks.map((t) => t.block);
-    } else if (lastProcIdx >= 0) {
+    // Completed turn (isStreamingTail false): every tool is attached by now,
+    // so narration text sits before the last tool (inside the panel) and the
+    // true final reply after it (outside). Pure-text turns have no procedural
+    // block at all and render as plain messages.
+    if (lastProcIdx >= 0) {
       // Process surface: blocks [0 .. lastProcIdx] (procedural + woven text).
       panelBlocks = turnBlocks.slice(0, lastProcIdx + 1).map((t) => t.block);
       // Reply surface: blocks after the last tool, regrouped by source message
@@ -341,7 +362,7 @@ function groupMessagesForRender(
         const tail = cleaned.length > 0 ? cleaned[cleaned.length - 1] : null;
         textMsgs.push(
           tail
-            ? { ...tail, turnMeta: undefined, blocks: extracted }
+            ? { ...tail, id: `files_tail_${tail.id}`, turnMeta: undefined, blocks: extracted }
             : {
                 id: `files_tail_${turnMeta?.startedAt ?? Date.now()}`,
                 sessionId: "",

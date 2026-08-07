@@ -598,13 +598,10 @@ function CommandRowContent({ cmd }: { cmd: CommandDef }) {
 
 function SessionRowContent({ session }: { session: Session }) {
   const title = session.title?.trim() || "无标题会话";
-  const { Icon } = getProviderIcon(session.providerId);
+  const { Icon, color } = getProviderIcon(session.providerId);
   return (
     <>
-      <Icon
-        size={15}
-        className="shrink-0 text-content-muted group-data-[highlighted]:text-accent"
-      />
+      <Icon size={15} className={cn("shrink-0", color)} />
       <span className="min-w-0 flex-1 truncate">{title}</span>
     </>
   );

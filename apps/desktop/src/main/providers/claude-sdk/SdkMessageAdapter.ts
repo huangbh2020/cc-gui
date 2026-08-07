@@ -258,6 +258,15 @@ export function parseQuestions(input: unknown): AskUserQuestionItem[] {
 interface AdapterState {
   blockMessageIds: Map<number, string>;
   emittedToolUse: Set<string>;
+  /** The messageId of the most recent text/thinking assistant message.
+   *  Claude's SDK sends text and tool_use as SEPARATE assistant messages
+   *  (one content block type per message — see docs/claude-stream-json.md
+   *  §4), so a tool_use block can never look backward within its own
+   *  content array for the narration text. Track the last narration
+   *  messageId across messages instead: each tool.use carries it, keeping
+   *  the interleaved "text → tool → text → tool" timeline intact (same
+   *  fix pattern as PiMessageAdapter.pendingToolTargetId). */
+  lastNarrationMessageId: string | null;
   tasks: TodoUpdateEvent["todos"];
   /** Per-message sentinel scanners — only created when AskUserQuestion tool is unavailable. */
   textScanners: Map<string, SentinelScanner>;
@@ -338,6 +347,7 @@ export class SdkMessageAdapter {
     this.state = {
       blockMessageIds: new Map(),
       emittedToolUse: new Set(),
+      lastNarrationMessageId: null,
       tasks: [...initialTodos],
       textScanners: new Map(),
       lastKnownContextWindow: 0,
@@ -770,7 +780,19 @@ export class SdkMessageAdapter {
       });
     }
 
-    for (const b of blocks) {
+    for (const [idx, b] of blocks.entries()) {
+      // Track the narration text so a subsequent tool_use block (which
+      // claude's SDK sends as a SEPARATE assistant message — one content
+      // block type per message, see docs/claude-stream-json.md §4) can
+      // attach to the message that narrated it. blockMessageIds maps the
+      // content-block index → messageId (assigned at content_block_start in
+      // handleStreamEvent; text.delta uses the same map), so the index here
+      // matches the stream's content index.
+      if (b.type === "text" || b.type === "thinking") {
+        const narrationId = this.state.blockMessageIds.get(idx);
+        if (narrationId) this.state.lastNarrationMessageId = narrationId;
+        continue;
+      }
       if (b.type === "tool_use" && b.id && b.name) {
         // TODO(subagent-stream): subagent tool_use blocks carry a non-null
         // `parent_tool_use_id` on the message envelope. They are currently
@@ -785,6 +807,21 @@ export class SdkMessageAdapter {
         if (this.state.emittedToolUse.has(b.id)) continue;
         this.state.emittedToolUse.add(b.id);
 
+        // Attach the tool to the message that narrated it. Claude's SDK
+        // sends text and tool_use as SEPARATE assistant messages (one
+        // content-block type per message — see docs/claude-stream-json.md
+        // §4), so a tool block can't look backward within its own content
+        // array for narration text. Instead we carry the most recent
+        // text/thinking messageId tracked across messages
+        // (lastNarrationMessageId, set below). Without this the store's
+        // open-turn heuristic piles EVERY tool of the turn onto the opener,
+        // while the interleaved narration text ("let me check…", "v8 is 25
+        // pages…") becomes orphan messages AFTER the last tool — the
+        // renderer then classifies them as the final reply and they leak
+        // out of the TurnPanel. Same fix Pi got via
+        // PiMessageAdapter.pendingToolTargetId.
+        const messageId = this.state.lastNarrationMessageId ?? undefined;
+
         this.ctx.emit({
           type: "tool.use",
           sessionId: this.sessionId,
@@ -792,6 +829,7 @@ export class SdkMessageAdapter {
           toolName: b.name,
           input: b.input,
           requiresApproval: false,
+          ...(messageId ? { messageId } : {}),
         } satisfies ToolUseEvent);
 
         // Snapshot the pre-turn content for every file-mutating tool so the

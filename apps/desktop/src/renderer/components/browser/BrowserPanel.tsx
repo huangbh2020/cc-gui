@@ -114,6 +114,11 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
   useEffect(() => {
     pickedItemsRef.current = pickedItems;
   }, [pickedItems]);
+  /** In-flight guard for the initial-tab create. React StrictMode (dev) runs
+   *  mount effects twice back-to-back; without this the two runs both call
+   *  createTab() before the first tab lands in the store, opening the browser
+   *  with two duplicate tabs. */
+  const creatingTabRef = useRef(false);
 
   /** Whether THIS container is currently the active one (owns the views). The
    *  overlay is active while `browserPanelOpen`; the sidebar is active while
@@ -219,11 +224,16 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
 
   // First time THIS container becomes active with no tabs at all: create the
   // initial tab. (Tabs are shared, so this only fires once per session no
-  // matter which container mounts first.)
+  // matter which container mounts first.) creatingTabRef skips the redundant
+  // run from StrictMode's double effect invocation on mount.
   useEffect(() => {
     if (!isActive) return;
     if (tabsRef.current.length > 0) return; // already have tabs
-    void createTab();
+    if (creatingTabRef.current) return; // an initial create is already in flight
+    creatingTabRef.current = true;
+    void createTab().finally(() => {
+      creatingTabRef.current = false;
+    });
   }, [isActive, createTab]);
 
   // Show/hide the active tab's view as THIS container activates/deactivates.

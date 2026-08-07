@@ -600,8 +600,8 @@ export function LeftBar() {
                       <ArchivedRow
                         key={s.id}
                         icon={(() => {
-                          const { Icon } = getProviderIcon(s.providerId);
-                          return <Icon size={14} className="opacity-60" />;
+                          const { Icon, color } = getProviderIcon(s.providerId);
+                          return <Icon size={14} className={cn("opacity-60", color)} />;
                         })()}
                         title={s.title}
                         onRestore={() => void archiveSession(s.id, false)}

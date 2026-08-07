@@ -19,6 +19,7 @@ import {
   GetPiApiKeySchema,
 } from "@contracts/ipc";
 import type { BuiltinModelOption } from "@contracts/provider";
+import { PI_1M_CONTEXT_WINDOW } from "@contracts/piModel";
 import type { PiProviderConfig } from "@contracts/piModel";
 import { PiModelsStore } from "@main/lib/piModelsStore.js";
 import { loadPiSdk } from "@main/providers/pi-sdk/piSdkLoader.js";
@@ -26,9 +27,12 @@ import { log } from "@main/lib/logger.js";
 
 /** Best-effort projection of a pi Model into BuiltinModelOption.
  *  `providerId/modelId` shape lets the picker send a single string to
- *  `req.model` that Pi understands. */
+ *  `req.model` that Pi understands. Only 1M-context models carry a hint
+ *  ("1M"); everything else shows no trailing text after the model name
+ *  (threshold matches the settings panel's 1M toggle). */
 function projectModel(model: { id: string; name?: string; provider: string; contextWindow?: number }): BuiltinModelOption {
-  const hint = model.contextWindow ? `ctx ${model.contextWindow.toLocaleString()}` : model.provider;
+  const hint =
+    model.contextWindow && model.contextWindow >= PI_1M_CONTEXT_WINDOW ? "1M" : undefined;
   return {
     id: `${model.provider}/${model.id}`,
     label: model.name ?? model.id,

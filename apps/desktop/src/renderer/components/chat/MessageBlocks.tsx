@@ -119,7 +119,7 @@ const MessageBlocks = memo(function MessageBlocks({
         seg.kind === "single" ? (
           <BlockView key={i} block={seg.block} defaultOpen={seg.defaultOpen} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} projectPath={projectPath} />
         ) : (
-          <TurnPanel key={i} blocks={seg.blocks} beforeMap={beforeMap} turnActive={isStreamingTail} onOpenPlan={onOpenPlan} projectPath={projectPath} />
+          <BatchToolGroup key={i} blocks={seg.blocks} beforeMap={beforeMap} turnActive={isStreamingTail} projectPath={projectPath} />
         ),
       )}
     </div>

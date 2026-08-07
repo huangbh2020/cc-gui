@@ -7,8 +7,9 @@
  *
  * Icons: claude uses the Simple Icons brand mark (SiClaude); pi uses its
  * official brand mark (PiBrandIcon, inlined from pi.dev since react-icons
- * doesn't carry it). The pi glyph is monochrome (currentColor), tinted via
- * the brand accent class.
+ * doesn't carry it). The pi glyph is monochrome (currentColor) and is shown
+ * in the official black — falling back to the content token in dark mode so
+ * it stays visible on the dark surface.
  */
 import type { ComponentType } from "react";
 import { SiClaude, IconTerminal, PiBrandIcon } from "@renderer/lib/icons.js";
@@ -28,7 +29,7 @@ const FALLBACK: ProviderIconMeta = {
 
 const PROVIDER_ICONS: Record<string, ProviderIconMeta> = {
   "claude-sdk": { Icon: SiClaude, color: "text-[#D97757]" },
-  "pi-sdk": { Icon: PiBrandIcon, color: "text-[#7C3AED]" },
+  "pi-sdk": { Icon: PiBrandIcon, color: "text-black dark:text-content" },
 };
 
 export function getProviderIcon(providerId: string | null | undefined): ProviderIconMeta {
