@@ -38,7 +38,7 @@ import {
 /** App display name (matches the root package.json "name"). */
 const APP_NAME = "Mcode";
 /** One-line description shown under the app name. */
-const APP_DESC = "基于 Claude Agent SDK 构建的桌面端 GUI(Electron 三栏 IDE)";
+const APP_DESC = "基于 Agent SDK 构建的多 agent 桌面端 GUI(Electron 三栏 IDE)";
 /** GitHub repo URL. */
 const REPO_URL = "https://github.com/huangbh2020/mcode";
 /** GitHub Releases latest URL — where the user lands to manually download on
@@ -346,8 +346,8 @@ export function AboutPanel() {
       <p className="mt-8 flex w-full max-w-md items-center justify-center gap-1.5 text-center text-[0.7143em] leading-relaxed text-content-subtle">
         <IconInfoCircle size={12} className="shrink-0" />
         <span>
-          本应用为开源软件(MIT 许可证),仅作 Claude Code 的交互界面,不内嵌
-          claude 二进制。Claude 是 Anthropic 的商标。
+          本应用为开源软件(MIT 许可证),仅作编码 agent 的交互界面,不内嵌任何
+          agent 二进制。Claude 是 Anthropic 的商标,Pi 是 Earendil Works 的产品。
         </span>
       </p>
     </section>

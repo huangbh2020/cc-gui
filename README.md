@@ -6,14 +6,19 @@
 
 ## English
 
-**Mcode** - *my* Code. A desktop GUI for [Claude Code](https://code.claude.com/) - a three-pane IDE built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk). It does **not** reimplement the agent; it provides the interaction surface: session management, real-time streaming, tool approvals, and IDE affordances (files, git, terminal).
+**Mcode** - *my* Code. A desktop GUI for coding agents - a three-pane IDE built on top of agent SDKs ([Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) and [Pi Coding Agent](https://pi.dev/)). It does **not** reimplement the agent; it provides the interaction surface: session management, real-time streaming, tool approvals, and IDE affordances (files, git, terminal).
 
 ![Home](docs/images/首页分栏效果.png)
 
 ### Features
 
+#### 🤖 Multi-provider agents
+- Built-in **Claude** provider (via `@anthropic-ai/claude-agent-sdk`) and **Pi** provider (via `@earendil-works/pi-coding-agent`) — pick one in the composer before the first message of a session.
+- Each provider declares its own capabilities, and the UI adapts automatically: thinking levels, permission modes, built-in models, custom endpoint support.
+- Pi: 8 thinking levels, tools allowlist instead of permission modes, model discovery from `~/.pi/agent/models.json` (maintained through **Settings → Pi Models**), no tool approvals yet.
+
 #### 💬 Real-time conversation
-- Drives the Claude agent loop through the Agent SDK; messages stream in live, token by token.
+- Drives the agent loop through the chosen provider SDK; messages stream in live, token by token.
 - Assistant messages, tool calls, and tool results are rendered as structured cards.
 - Tool-use approvals: allow / allow-once / deny, with a per-session pending queue.
 - Attach files, paste images, and use slash commands from the composer.
@@ -42,15 +47,16 @@
 
 #### 🔄 Other
 - Auto-update via `electron-updater` (pulls `latest*.yml` from GitHub Releases); manual check in **Settings → About**.
-- Provider abstraction layer (`AgentProvider`) — designed to extend to other agent platforms later.
+- Provider abstraction layer (`AgentProvider`) — Claude and Pi today, easy to extend to other agent platforms.
 
 ### Requirements
 
 - Node.js ≥ 22.13 (pnpm 11 requires it)
 - pnpm ≥ 9 (`corepack enable && corepack prepare pnpm@latest --activate`)
-- An Anthropic API key (`ANTHROPIC_API_KEY`) — the Agent SDK bills per API key, not via a Max/Pro subscription.
+- **Claude provider**: an Anthropic API key (`ANTHROPIC_API_KEY`) — the Agent SDK bills per API key, not via a Max/Pro subscription.
+- **Pi provider**: configure at least one provider/model through **Settings → Pi Models** (equivalent to editing `~/.pi/agent/models.json`). API keys entered there are encrypted with Electron `safeStorage`; no env vars required.
 
-> **Note:** The Claude Agent SDK bundles its own `claude` binary. You no longer need to install the Claude Code CLI separately.
+> **Note:** The Claude Agent SDK bundles its own `claude` binary, and the Pi SDK manages its own runtime — you don't need to install any CLI separately.
 
 ### Getting started
 
@@ -105,27 +111,32 @@ Pre-built binaries are published on [GitHub Releases](https://github.com/huangbh
 | Shell | Electron 33, electron-vite, electron-builder 25 |
 | Frontend | React 19, Zustand 5, Tailwind CSS 3, @base-ui/react, @tabler/icons |
 | Editor / Terminal | Monaco Editor, xterm.js + node-pty |
-| Agent | @anthropic-ai/claude-agent-sdk, electron-updater |
+| Agent | @anthropic-ai/claude-agent-sdk, @earendil-works/pi-coding-agent |
 | Persistence | sql.js (SQLite in pure WASM) |
 | Contracts | zod (cross-process IPC validation) |
 | Tooling | pnpm 11, Turbo, TypeScript 5 (strict) |
 
 ### License
 
-MIT. This project does not redistribute or bundle a standalone `claude` binary — the Agent SDK manages its own bundled binary internally.
+MIT. This project does not redistribute or bundle any agent binary — each SDK manages its own bundled runtime internally (Claude's Agent SDK and Pi's coding-agent SDK both manage their own).
 
 ---
 
 ## 中文
 
-**Mcode** - *my* Code。基于 [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) 构建的 [Claude Code](https://code.claude.com/) 桌面端 GUI--一个三栏 IDE。本应用**不重新实现 agent**,只提供交互界面:会话管理、实时流式渲染、工具审批、IDE 能力(文件、git、终端)。
+**Mcode** - *my* Code。基于 Agent SDK 构建的**多 agent 桌面端 GUI**--一个三栏 IDE。目前已接入 **Claude**([Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk))与 **Pi**([Pi Coding Agent](https://pi.dev/))两个 agent 后端。本应用**不重新实现 agent**,只提供交互界面:会话管理、实时流式渲染、工具审批、IDE 能力(文件、git、终端)。
 
 ![首页](docs/images/首页分栏效果.png)
 
 ### 功能特性
 
+#### 🤖 多 Agent Provider
+- 内置 **Claude**(基于 `@anthropic-ai/claude-agent-sdk`)与 **Pi**(基于 `@earendil-works/pi-coding-agent`)两个 provider,会话首条消息前可在输入框选择。
+- 每个 provider 声明自己的能力,UI 自动适配:思考级别、权限模式、内置模型、自定义端点支持。
+- Pi:8 档思考级别、用工具白名单替代权限模式、模型从 `~/.pi/agent/models.json` 自动发现(可在**设置 → Pi 模型**维护)、暂无工具审批。
+
 #### 💬 实时对话
-- 通过 Agent SDK 驱动 Claude agent loop,消息按 token 实时流式渲染。
+- 通过所选 provider 的 SDK 驱动 agent loop,消息按 token 实时流式渲染。
 - assistant 消息、工具调用、工具结果以结构化卡片展示。
 - 工具审批:允许 / 允许一次 / 拒绝,每个会话独立维护待审批队列。
 - 输入框支持附加文件、粘贴图片、斜杠命令。
@@ -154,15 +165,16 @@ MIT. This project does not redistribute or bundle a standalone `claude` binary �
 
 #### 🔄 其他
 - 自动更新:通过 `electron-updater` 从 GitHub Releases 拉 `latest*.yml`;也可在**设置 → 关于**手动检查。
-- Provider 抽象层(`AgentProvider`)——为后续接入其他 agent 平台预留。
+- Provider 抽象层(`AgentProvider`)——目前内置 Claude 与 Pi,易于扩展其他 agent 平台。
 
 ### 环境要求
 
 - Node.js ≥ 22.13(pnpm 11 要求)
 - pnpm ≥ 9(`corepack enable && corepack prepare pnpm@latest --activate`)
-- Anthropic API key(`ANTHROPIC_API_KEY`)——Agent SDK 按 API key 计费,不能使用 Max/Pro 订阅。
+- **Claude provider**:Anthropic API key(`ANTHROPIC_API_KEY`)——Agent SDK 按 API key 计费,不能使用 Max/Pro 订阅。
+- **Pi provider**:通过**设置 → Pi 模型**至少配置一个 provider/模型(等价于编辑 `~/.pi/agent/models.json`)。在 GUI 中填写的 API key 使用 Electron `safeStorage` 加密存储,无需设置环境变量。
 
-> **注意**:Claude Agent SDK 自带 `claude` 二进制,不再需要单独安装 Claude Code CLI。
+> **注意**:Claude Agent SDK 自带 `claude` 二进制,Pi SDK 也自行管理其运行时,均无需单独安装 CLI。
 
 ### 快速开始
 
@@ -217,11 +229,11 @@ pnpm package
 | 壳层 | Electron 33、electron-vite、electron-builder 25 |
 | 前端 | React 19、Zustand 5、Tailwind CSS 3、@base-ui/react、@tabler/icons |
 | 编辑器/终端 | Monaco Editor、xterm.js + node-pty |
-| Agent | @anthropic-ai/claude-agent-sdk、electron-updater |
+| Agent | @anthropic-ai/claude-agent-sdk、@earendil-works/pi-coding-agent |
 | 持久化 | sql.js(纯 WASM 的 SQLite) |
 | 契约 | zod(跨进程 IPC 校验) |
 | 工具链 | pnpm 11、Turbo、TypeScript 5(strict) |
 
 ### 许可证
 
-MIT。本项目不重新分发或内嵌独立的 `claude` 二进制——Agent SDK 内部管理其自带二进制。
+MIT。本项目不重新分发或内嵌任何 agent 二进制——各 SDK 自行管理其运行时(Claude Agent SDK 与 Pi coding-agent SDK 均如此)。
