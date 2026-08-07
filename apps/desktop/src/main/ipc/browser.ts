@@ -39,7 +39,7 @@ export function registerBrowserHandlers(ipcMain: IpcMain): void {
       if (!isKnownProjectPath(projectPath)) {
         return { ok: false as const, error: "未知项目路径，拒绝创建浏览器" };
       }
-      return BrowserManager.create(projectPath);
+      return BrowserManager.create(projectPath, input.initialDevice);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error(`browser.create failed: ${msg}`);

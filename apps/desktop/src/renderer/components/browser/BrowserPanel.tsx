@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import type { BrowserTab } from "@renderer/stores/sessionStore.js";
 import type { PickedElement, BrowserDevicePreset } from "@contracts/ipc";
 import { BrowserToolbar } from "./BrowserToolbar.js";
 import { BrowserTabs, type BrowserTabDisplay } from "./BrowserTabs.js";
@@ -9,40 +10,39 @@ import { PickedElementsBar } from "./PickedElementsBar.js";
 import { ConfirmDialog } from "@renderer/components/ui/confirm-dialog.js";
 
 /**
- * Embedded browser panel overlay (multi-tab).
+ * Browser panel — multi-tab, shared between two containers.
  *
- * Renders a full-workspace overlay (below the 40px titlebar) containing a tab
- * strip + a BrowserToolbar + a placeholder div. The actual web pages are
- * rendered by main-process WebContentsViews that float ABOVE the renderer at
- * OS level - one view per tab. The placeholder div is just a measurement
- * target whose getBoundingClientRect() drives `api.browser.setBounds` for the
- * active tab's view; background tabs' views stay parked offscreen.
+ * - `mode="overlay"`: a full-workspace overlay (below the 40px titlebar) — the
+ *   PC-fullscreen experience. Picked elements stage in a bottom bar and only
+ *   enter the composer when the user clicks "添加".
+ * - `mode="sidebar"`: embedded inside the right IDE panel — the mobile-first
+ *   experience. New tabs default to the iPhone device preset, the view fills
+ *   the sidebar width, and picked elements go straight to the composer.
+ *
+ * Tabs live in the session store (`browserTabs` / `browserActiveTabId`) so they
+ * survive a container swap: switching modes unmounts one container (hiding the
+ * active view) and mounts the other (re-showing it + re-syncing bounds). The
+ * actual web pages are rendered by main-process WebContentsViews that float
+ * ABOVE the renderer at OS level - one view per tab. The placeholder div
+ * (`stageRef`) is just a measurement target whose getBoundingClientRect()
+ * drives `api.browser.setBounds` for the active tab's view; background tabs'
+ * views stay parked offscreen.
  *
  * The main process (BrowserManager) already supports N concurrent views keyed
  * by browserId - every navigation/loading/pickResult event carries the
- * browserId so this component can route updates to the owning tab. Closing the
- * panel only hides the views (preserving browsing state); reopening restores
- * the active tab. Views are destroyed on app quit (disposeAll) or when a tab
- * is explicitly closed.
+ * browserId so this component can route updates to the owning tab.
  */
 
-/** One browser tab. `id` is renderer-local; `browserId` is the main-process
- *  view id. All navigation/loading/pick state is per-tab. */
-interface BrowserTab {
-  id: string;
-  browserId: string;
-  url: string;
-  title: string;
-  loading: boolean;
-  canGoBack: boolean;
-  canGoForward: boolean;
-  pickMode: boolean;
-  /** Device emulation preset (desktop = full width, mobile = narrow + centered). */
-  device: BrowserDevicePreset;
+/** Display mode for this container. */
+export type BrowserMode = "overlay" | "sidebar";
+
+export interface BrowserPanelProps {
+  mode: BrowserMode;
 }
 
-/** Emulated viewport widths for mobile presets. The view's bounds are narrowed
- *  to this width and centered in the stage so the page renders at phone size. */
+/** Emulated viewport widths for mobile presets (overlay mode). The view's
+ *  bounds are narrowed to this width and centered in the stage so the page
+ *  renders at phone size. Sidebar mode ignores this and fills the column. */
 const DEVICE_WIDTH: Record<BrowserDevicePreset, number | null> = {
   desktop: null, // full stage width
   iphone: 390,
@@ -58,33 +58,39 @@ function newTabId(): string {
   }
 }
 
-export function BrowserPanel() {
+export function BrowserPanel({ mode }: BrowserPanelProps) {
+  // Layout / mode state from the store.
   const open = useSessionStore((s) => s.browserPanelOpen);
   const setOpen = useSessionStore((s) => s.setBrowserPanelOpen);
+  const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
+  const setRightOpen = useSessionStore((s) => s.setRightOpen);
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const projects = useSessionStore((s) => s.projects);
   const enqueueChatElement = useSessionStore((s) => s.enqueueChatElement);
   const setBrowserTabCount = useSessionStore((s) => s.setBrowserTabCount);
+  // Shared tabs state (lifted to the store so both containers see the same list).
+  const tabs = useSessionStore((s) => s.browserTabs);
+  const activeTabId = useSessionStore((s) => s.browserActiveTabId);
+  const setTabs = useSessionStore((s) => s.setBrowserTabs);
+  const setActiveTabId = useSessionStore((s) => s.setBrowserActiveTabId);
+  const addTab = useSessionStore((s) => s.addBrowserTab);
+  const removeTab = useSessionStore((s) => s.removeBrowserTab);
+  const patchTabInStore = useSessionStore((s) => s.patchBrowserTab);
+
   /** Confirm-destroy dialog visibility. Opening the dialog first hides the
    *  active WebContentsView so the (renderer-DOM) dialog isn't covered by the
    *  OS-level view floating above the stage. */
   const [confirmDestroy, setConfirmDestroy] = useState(false);
-
-  /** All open tabs. Each owns a main-process WebContentsView (by browserId). */
-  const [tabs, setTabs] = useState<BrowserTab[]>([]);
-
-  // Sync the tab count to the store so the Titlebar toggle button can show a
-  // badge with the current number of open browser tabs.
-  useEffect(() => {
-    setBrowserTabCount(tabs.length);
-  }, [tabs.length, setBrowserTabCount]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  /** Error message shown in the stage when tab creation fails (e.g. no active
+   *  project). Renders in the placeholder div so it isn't covered by a view. */
   const [error, setError] = useState<string | null>(null);
+
   /** Ephemeral confirmation card when an element is picked (shows what was
    *  captured + staged in the bar below). */
   const [pickFlash, setPickFlash] = useState(0);
-  /** Picked elements shown in the bottom picked-elements bar (visual feedback
-   *  only - the elements are also enqueued to the composer via the store).
+  /** Picked elements shown in the bottom picked-elements bar (overlay mode only
+   *  - visual feedback during the staged-add flow; the elements are also
+   *  enqueued to the composer via the store when the user clicks "添加").
    *  Cleared when the panel closes so each browser session starts fresh. */
   const [pickedItems, setPickedItems] = useState<PickedElement[]>([]);
   /** The most recently picked element, shown as a brief floating preview card
@@ -109,6 +115,12 @@ export function BrowserPanel() {
     pickedItemsRef.current = pickedItems;
   }, [pickedItems]);
 
+  /** Whether THIS container is currently the active one (owns the views). The
+   *  overlay is active while `browserPanelOpen`; the sidebar is active while
+   *  mounted AND the overlay is NOT open (overlay takes precedence so the two
+   *  containers never fight over the same view). */
+  const isActive = mode === "overlay" ? open : !open;
+
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
   /** Resolve the active project's path (needed for browser.create). */
@@ -116,17 +128,14 @@ export function BrowserPanel() {
     ? projects.find((p) => p.id === activeProjectId)?.path ?? null
     : null;
 
-  /** Helper: update a single tab's fields by browserId. */
-  const patchTab = useCallback((browserId: string, patch: Partial<BrowserTab>) => {
-    setTabs((prev) => prev.map((t) => (t.browserId === browserId ? { ...t, ...patch } : t)));
-  }, []);
-
   /** Send the placeholder div's window-relative rect to main for the active
-   *  tab's view. When a mobile device preset is active, the view is narrowed
-   *  to the device's emulated width and centered horizontally in the stage
-   *  (so the page renders at phone size with empty space on both sides).
-   *  rAF-throttled by callers. Background tabs are visible:false in main, so
-   *  their setBounds is a no-op - only the active view moves. */
+   *  tab's view. In overlay mode with a mobile device preset, the view is
+   *  narrowed to the device's emulated width and centered horizontally in the
+   *  stage (so the page renders at phone size with empty space on both sides).
+   *  In sidebar mode the view always fills the sidebar width (mobile pages are
+   *  expected to reflow; the sidebar IS the phone-sized column). rAF-throttled
+   *  by callers. Background tabs are visible:false in main, so their setBounds
+   *  is a no-op - only the active view moves. */
   const syncBounds = useCallback(() => {
     const id = activeTabIdRef.current;
     const tab = tabsRef.current.find((t) => t.id === id);
@@ -134,10 +143,18 @@ export function BrowserPanel() {
     if (!tab || !stage) return;
     const r = stage.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return;
-    // For mobile presets, narrow the view to the device width and center it.
-    const devW = DEVICE_WIDTH[tab.device];
-    const viewW = devW != null ? Math.min(devW, r.width) : r.width;
-    const viewX = devW != null ? Math.round(r.left + (r.width - viewW) / 2) : Math.round(r.left);
+    let viewW: number;
+    let viewX: number;
+    if (mode === "sidebar") {
+      // Sidebar: fill the column. The sidebar width is the device width.
+      viewW = r.width;
+      viewX = Math.round(r.left);
+    } else {
+      // Overlay: narrow + center for mobile presets; full width for desktop.
+      const devW = DEVICE_WIDTH[tab.device];
+      viewW = devW != null ? Math.min(devW, r.width) : r.width;
+      viewX = devW != null ? Math.round(r.left + (r.width - viewW) / 2) : Math.round(r.left);
+    }
     const bounds = { x: viewX, y: Math.round(r.top), w: Math.round(viewW), h: Math.round(r.height) };
     const prev = lastBoundsRef.current;
     if (prev && prev.x === bounds.x && prev.y === bounds.y && prev.w === bounds.w && prev.h === bounds.h) return;
@@ -149,7 +166,7 @@ export function BrowserPanel() {
       width: bounds.w,
       height: bounds.h,
     });
-  }, []);
+  }, [mode]);
 
   /** Create a new browser view (main) + a new tab entry, hide the old active
    *  tab's view, show the new one, and focus it. Returns the new tab or null. */
@@ -158,7 +175,11 @@ export function BrowserPanel() {
       setError("请先选择一个项目");
       return null;
     }
-    const res = await api.browser.create({ projectPath });
+    // Sidebar starts in mobile mode. We pass initialDevice so the main process
+    // applies emulation at dom-ready (the safe earliest point) — calling
+    // setDevice synchronously here crashes the GPU process before it's ready.
+    const initialDevice = mode === "sidebar" ? "iphone" : undefined;
+    const res = await api.browser.create({ projectPath, initialDevice });
     if (!res.ok) {
       setError(res.error);
       return null;
@@ -173,7 +194,8 @@ export function BrowserPanel() {
       canGoBack: false,
       canGoForward: false,
       pickMode: false,
-      device: "desktop",
+      // Sidebar defaults to mobile; overlay defaults to desktop.
+      device: mode === "sidebar" ? "iphone" : "desktop",
     };
     // Load a blank start page.
     void api.browser.loadUrl({ browserId, url: "about:blank" });
@@ -188,39 +210,41 @@ export function BrowserPanel() {
       void api.browser.hide({ browserId: prevTab.browserId });
     }
     void api.browser.show({ browserId });
-    setTabs((prev) => [...prev, tab]);
+    addTab(tab);
     setActiveTabId(tab.id);
     setError(null);
     requestAnimationFrame(syncBounds);
     return tab;
-  }, [projectPath, syncBounds]);
+  }, [projectPath, mode, addTab, setActiveTabId, syncBounds]);
 
-  // First open: create the initial tab (only when open && no tabs yet).
+  // First time THIS container becomes active with no tabs at all: create the
+  // initial tab. (Tabs are shared, so this only fires once per session no
+  // matter which container mounts first.)
   useEffect(() => {
-    if (!open) return;
+    if (!isActive) return;
     if (tabsRef.current.length > 0) return; // already have tabs
     void createTab();
-  }, [open, createTab]);
+  }, [isActive, createTab]);
 
-  // Show/hide the active tab's view when the panel opens/closes. Closing the
-  // panel hides the view WITHOUT destroying it (preserves browsing state);
-  // reopening shows it again.
+  // Show/hide the active tab's view as THIS container activates/deactivates.
+  // Deactivating hides the view WITHOUT destroying it (preserves browsing
+  // state); the other container will re-show it when it activates.
   useEffect(() => {
-    if (!open) {
-      // Panel closing: hide the active tab's view.
+    if (!isActive) {
+      // Container deactivating: hide the active tab's view.
       const tab = activeTabIdRef.current
         ? tabsRef.current.find((t) => t.id === activeTabIdRef.current)
         : null;
       if (tab) {
         if (tab.pickMode) {
           void api.browser.setPickMode({ browserId: tab.browserId, enabled: false });
-          patchTab(tab.browserId, { pickMode: false });
+          patchTabInStore(tab.browserId, { pickMode: false });
         }
         void api.browser.hide({ browserId: tab.browserId });
       }
       return;
     }
-    // Panel opening with existing tabs: re-show the active view + sync bounds.
+    // Container activating with existing tabs: re-show the active view + sync.
     if (tabsRef.current.length === 0) return; // first-open tab creation handled above
     const tab = activeTabIdRef.current
       ? tabsRef.current.find((t) => t.id === activeTabIdRef.current)
@@ -229,11 +253,28 @@ export function BrowserPanel() {
       void api.browser.show({ browserId: tab.browserId });
       requestAnimationFrame(syncBounds);
     }
-  }, [open, patchTab, syncBounds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive]);
+
+  // When the component unmounts (container swap / panel close), hide the active
+  // view so it can't linger over the workspace. The view survives in main.
+  useEffect(() => {
+    return () => {
+      const tab = activeTabIdRef.current
+        ? tabsRef.current.find((t) => t.id === activeTabIdRef.current)
+        : null;
+      if (tab) {
+        if (tab.pickMode) {
+          void api.browser.setPickMode({ browserId: tab.browserId, enabled: false });
+        }
+        void api.browser.hide({ browserId: tab.browserId });
+      }
+    };
+  }, []);
 
   // ResizeObserver -> syncBounds (rAF-throttled inside).
   useEffect(() => {
-    if (!open) return;
+    if (!isActive) return;
     const stage = stageRef.current;
     if (!stage) return;
     let raf = 0;
@@ -255,18 +296,19 @@ export function BrowserPanel() {
       ro.disconnect();
       window.removeEventListener("resize", onWinResize);
     };
-  }, [open, syncBounds]);
+  }, [isActive, syncBounds]);
 
   // Subscribe to browser:event pushes. Route each event to the owning tab by
-  // browserId and update that tab's state only.
+  // browserId and update that tab's state only. Subscribed whenever this
+  // container is active (the other container takes over otherwise).
   useEffect(() => {
-    if (!open) return;
+    if (!isActive) return;
     const unsub = api.on.browserEvent((msg) => {
       const tab = tabsRef.current.find((t) => t.browserId === msg.browserId);
       if (!tab) return; // not one of our tabs (e.g. stale view)
       if (msg.type === "navigation") {
         const p = msg.payload as { url?: string; title?: string; canGoBack?: boolean; canGoForward?: boolean };
-        patchTab(msg.browserId, {
+        patchTabInStore(msg.browserId, {
           ...(typeof p.url === "string" ? { url: p.url } : {}),
           ...(typeof p.title === "string" ? { title: p.title } : {}),
           ...(typeof p.canGoBack === "boolean" ? { canGoBack: p.canGoBack } : {}),
@@ -274,21 +316,24 @@ export function BrowserPanel() {
         });
       } else if (msg.type === "loading") {
         const p = msg.payload as { isLoading?: boolean };
-        if (typeof p.isLoading === "boolean") patchTab(msg.browserId, { loading: p.isLoading });
+        if (typeof p.isLoading === "boolean") patchTabInStore(msg.browserId, { loading: p.isLoading });
       } else if (msg.type === "pickResult") {
         const el = msg.payload as PickedElement;
         if (el && typeof el.selector === "string") {
-          // Stage the element in the picked-items bar - do NOT enqueue to the
-          // composer yet. The user reviews the staged list and clicks "添加"
-          // to flush all staged elements at once (handleAddPicked).
-          setPickedItems((prev) => [...prev, el]);
+          if (mode === "sidebar") {
+            // Sidebar: send straight to the composer (mobile-first flow).
+            enqueueChatElement(el);
+          } else {
+            // Overlay: stage in the picked-items bar for batch review.
+            setPickedItems((prev) => [...prev, el]);
+          }
           setFlashPreview(el);
           setPickFlash((n) => n + 1);
         }
       }
     });
     return unsub;
-  }, [open, enqueueChatElement, patchTab]);
+  }, [isActive, mode, enqueueChatElement, patchTabInStore]);
 
   // Clear the pick flash + floating preview after a moment.
   useEffect(() => {
@@ -307,7 +352,7 @@ export function BrowserPanel() {
   }, []);
   const handleClearPicked = useCallback(() => setPickedItems([]), []);
 
-  /** Flush all staged elements to the composer (enqueue each one) and return
+  /** Flush all staged elements to the composer (overlay mode only) and return
    *  to the main workspace. This is the commit action for the staging bar:
    *  elements picked in the browser are only added to the input box when the
    *  user clicks "添加". */
@@ -339,10 +384,10 @@ export function BrowserPanel() {
     (raw: string) => {
       if (!activeTab) return;
       const u = normalizeUrl(raw);
-      patchTab(activeTab.browserId, { url: u });
+      patchTabInStore(activeTab.browserId, { url: u });
       void api.browser.loadUrl({ browserId: activeTab.browserId, url: u });
     },
-    [activeTab, patchTab],
+    [activeTab, patchTabInStore],
   );
 
   const handleBack = useCallback(() => {
@@ -359,20 +404,21 @@ export function BrowserPanel() {
     if (!activeTab) return;
     const next = !activeTab.pickMode;
     void api.browser.setPickMode({ browserId: activeTab.browserId, enabled: next }).then((res) => {
-      if (res.ok) patchTab(activeTab.browserId, { pickMode: next });
+      if (res.ok) patchTabInStore(activeTab.browserId, { pickMode: next });
     });
-  }, [activeTab, patchTab]);
+  }, [activeTab, patchTabInStore]);
 
   /** Switch the active tab's device emulation preset. The main process applies
-   *  Chromium device emulation (mobile viewport + touch + UA); the renderer
-   *  narrows the view's bounds to the device width and centers it. The bounds
-   *  re-sync happens on the next animation frame. */
+   *  Chromium device emulation (mobile viewport + touch + UA); the overlay
+   *  renderer narrows the view's bounds to the device width and centers it
+   *  (sidebar always fills the column). The bounds re-sync happens on the next
+   *  animation frame. */
   const handleDeviceChange = useCallback(
     (device: BrowserDevicePreset) => {
       if (!activeTab || activeTab.device === device) return;
       void api.browser.setDevice({ browserId: activeTab.browserId, device }).then((res) => {
         if (!res.ok) return;
-        patchTab(activeTab.browserId, { device });
+        patchTabInStore(activeTab.browserId, { device });
         // Force a bounds re-sync: the dedupe check in syncBounds compares
         // against lastBoundsRef, so we must clear it to let the new (narrower
         // or wider) rect through.
@@ -380,7 +426,7 @@ export function BrowserPanel() {
         requestAnimationFrame(syncBounds);
       });
     },
-    [activeTab, patchTab, syncBounds],
+    [activeTab, patchTabInStore, syncBounds],
   );
 
   /** Select a tab: hide the old active view, show the new one. */
@@ -395,18 +441,18 @@ export function BrowserPanel() {
       // Turn off pick mode on the outgoing tab (picker doesn't cross tabs).
       if (oldTab && oldTab.pickMode) {
         void api.browser.setPickMode({ browserId: oldTab.browserId, enabled: false });
-        patchTab(oldTab.browserId, { pickMode: false });
+        patchTabInStore(oldTab.browserId, { pickMode: false });
       }
       if (oldTab) void api.browser.hide({ browserId: oldTab.browserId });
       void api.browser.show({ browserId: newTab.browserId });
       setActiveTabId(id);
       requestAnimationFrame(syncBounds);
     },
-    [patchTab, syncBounds],
+    [patchTabInStore, setActiveTabId, syncBounds],
   );
 
   /** Close a tab: destroy its view, remove it, and activate a neighbor. If it
-   *  was the last tab, close the whole panel. */
+   *  was the last tab, close the whole panel (overlay) / exit the sidebar. */
   const handleCloseTab = useCallback(
     (id: string) => {
       const idx = tabsRef.current.findIndex((t) => t.id === id);
@@ -416,10 +462,14 @@ export function BrowserPanel() {
       const remaining = tabsRef.current.filter((t) => t.id !== id);
       setTabs(remaining);
       if (remaining.length === 0) {
-        // Last tab closed -> close the panel.
+        // Last tab closed -> exit the browser entirely.
         setActiveTabId(null);
         lastBoundsRef.current = null;
-        setOpen(false);
+        if (mode === "overlay") {
+          setOpen(false);
+        } else {
+          setRightPanelTab("files");
+        }
         return;
       }
       // If we closed the active tab, activate the neighbor (previous, or the
@@ -431,7 +481,7 @@ export function BrowserPanel() {
         requestAnimationFrame(syncBounds);
       }
     },
-    [setOpen, syncBounds],
+    [mode, setTabs, setActiveTabId, setOpen, setRightPanelTab, syncBounds],
   );
 
   /** New tab button: create a fresh tab and focus it. */
@@ -439,9 +489,29 @@ export function BrowserPanel() {
     void createTab();
   }, [createTab]);
 
+  /** Overlay: "返回工作台" hides the overlay (views stay alive). Sidebar has no
+   *  equivalent (closing is via the rail icon toggle / 关闭浏览器). */
   const handleClose = useCallback(() => {
-    setOpen(false);
-  }, [setOpen]);
+    if (mode === "overlay") setOpen(false);
+  }, [mode, setOpen]);
+
+  /** Switch to the OTHER container: sidebar → overlay (PC fullscreen) or
+   *  overlay → sidebar (mobile column). The active view is hidden on unmount
+   *  of this container and re-shown when the other container mounts; tabs are
+   *  shared via the store so they carry over. */
+  const handleSwitchMode = useCallback(() => {
+    if (mode === "sidebar") {
+      // Sidebar → overlay: drop the sidebar tab + open the fullscreen overlay.
+      setRightPanelTab("files");
+      setOpen(true);
+    } else {
+      // Overlay → sidebar: close the overlay + switch the right panel to the
+      // browser tab (and make sure the right panel is visible).
+      setOpen(false);
+      setRightOpen(true);
+      setRightPanelTab("browser");
+    }
+  }, [mode, setRightPanelTab, setOpen, setRightOpen]);
 
   /** "关闭浏览器" button: open a confirmation dialog before tearing down all
    *  tabs. We hide the active view first so the OS-level WebContentsView can't
@@ -453,15 +523,14 @@ export function BrowserPanel() {
     if (tab) {
       if (tab.pickMode) {
         void api.browser.setPickMode({ browserId: tab.browserId, enabled: false });
-        patchTab(tab.browserId, { pickMode: false });
+        patchTabInStore(tab.browserId, { pickMode: false });
       }
       void api.browser.hide({ browserId: tab.browserId });
     }
     setConfirmDestroy(true);
-  }, [patchTab]);
+  }, [patchTabInStore]);
 
-  /** Confirm: destroy every tab's view in main, clear local state, close the
-   *  panel. Mirrors handleCloseTab's per-tab teardown but applied to all. */
+  /** Confirm: destroy every tab's view in main, clear shared state, exit. */
   const handleConfirmDestroy = useCallback(() => {
     for (const t of tabsRef.current) {
       void api.browser.close({ browserId: t.browserId });
@@ -471,10 +540,21 @@ export function BrowserPanel() {
     lastBoundsRef.current = null;
     setPickedItems([]);
     setConfirmDestroy(false);
-    setOpen(false);
-  }, [setOpen]);
+    if (mode === "overlay") {
+      setOpen(false);
+    } else {
+      setRightPanelTab("files");
+    }
+  }, [mode, setTabs, setActiveTabId, setOpen, setRightPanelTab]);
 
-  if (!open) return null;
+  // Sync the shared tab count to the store so the rail/Titlebar badges work.
+  // (Only one container is active at a time, so no double-counting.)
+  useEffect(() => {
+    if (!isActive) return;
+    setBrowserTabCount(tabs.length);
+  }, [tabs.length, isActive, setBrowserTabCount]);
+
+  if (mode === "overlay" && !open) return null;
 
   // Tabs for display (strip browserId - the tab strip doesn't need it).
   const displayTabs: BrowserTabDisplay[] = tabs.map((t) => ({
@@ -484,8 +564,13 @@ export function BrowserPanel() {
     loading: t.loading,
   }));
 
+  const rootClass =
+    mode === "overlay"
+      ? "fixed inset-x-0 top-10 bottom-0 z-40 flex flex-col bg-surface"
+      : "flex h-full flex-col bg-surface";
+
   return (
-    <div className="fixed inset-x-0 top-10 bottom-0 z-40 flex flex-col bg-surface">
+    <div className={rootClass}>
       <BrowserTabs
         tabs={displayTabs}
         activeTabId={activeTabId}
@@ -494,13 +579,14 @@ export function BrowserPanel() {
         onNew={handleNewTab}
       />
       <BrowserToolbar
+        mode={mode}
         url={activeTab?.url ?? ""}
         loading={activeTab?.loading ?? false}
         canGoBack={activeTab?.canGoBack ?? false}
         canGoForward={activeTab?.canGoForward ?? false}
         pickMode={activeTab?.pickMode ?? false}
         device={activeTab?.device ?? "desktop"}
-        onUrlChange={(u) => activeTab && patchTab(activeTab.browserId, { url: u })}
+        onUrlChange={(u) => activeTab && patchTabInStore(activeTab.browserId, { url: u })}
         onNavigate={handleNavigate}
         onBack={handleBack}
         onForward={handleForward}
@@ -508,6 +594,7 @@ export function BrowserPanel() {
         onTogglePickMode={handleTogglePickMode}
         onDeviceChange={handleDeviceChange}
         onClose={handleClose}
+        onSwitchMode={handleSwitchMode}
         onRequestDestroy={handleRequestDestroy}
       />
       {/* The stage is the measurement target for the active tab's
@@ -521,7 +608,9 @@ export function BrowserPanel() {
         )}
         {activeTab?.pickMode && (
           <div className="pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full bg-accent/90 px-3 py-1 text-[11px] font-medium text-white shadow">
-            点击页面元素以添加到输入框 · 按 Esc 退出
+            {mode === "sidebar"
+              ? "点击页面元素直接添加到输入框 · 按 Esc 退出"
+              : "点击页面元素以添加到输入框 · 按 Esc 退出"}
           </div>
         )}
         {/* Floating preview card: appears briefly on each pick, showing the
@@ -539,7 +628,9 @@ export function BrowserPanel() {
           >
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/25 text-[11px]">✓</span>
             <div className="min-w-0">
-              <div className="text-[11px] font-medium leading-tight">已拾取到列表</div>
+              <div className="text-[11px] font-medium leading-tight">
+                {mode === "sidebar" ? "已添加到输入框" : "已拾取到列表"}
+              </div>
               <div className="max-w-[240px] truncate text-[10px] leading-tight text-white/80">
                 {flashPreview.preview || flashPreview.selector}
               </div>
@@ -547,11 +638,17 @@ export function BrowserPanel() {
           </div>
         )}
       </div>
-      {/* Picked-elements bar: a Chrome-download-bar-style strip showing all
-          elements picked in this browser session. Gives persistent feedback
-          (count + what was picked) that survives beyond the brief flash card.
-          Auto-hides when empty. */}
-      <PickedElementsBar items={pickedItems} onRemove={handleRemovePicked} onClear={handleClearPicked} onAdd={handleAddPicked} />
+      {/* Picked-elements bar (overlay mode only): a Chrome-download-bar-style
+          strip showing all elements picked in this browser session. The sidebar
+          flow enqueues immediately so it has no staging bar. */}
+      {mode === "overlay" && (
+        <PickedElementsBar
+          items={pickedItems}
+          onRemove={handleRemovePicked}
+          onClear={handleClearPicked}
+          onAdd={handleAddPicked}
+        />
+      )}
 
       {/* Destroy confirmation. Rendered at panel root so it sits above the
           stage; the active view was already hidden in handleRequestDestroy so
@@ -567,7 +664,8 @@ export function BrowserPanel() {
         onOpenChange={(o) => {
           setConfirmDestroy(o);
           if (!o) {
-            // Cancel: re-show the active view (panel is still open).
+            // Cancel: re-show the active view (panel is still active).
+            if (!isActive) return;
             const tab = activeTabIdRef.current
               ? tabsRef.current.find((t) => t.id === activeTabIdRef.current)
               : null;

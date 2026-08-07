@@ -174,16 +174,18 @@ export const UI_ACCENT_COLOR_SETTING_KEY = "ui.accentColor";
 
 /**
  * Setting key under which the active right-panel tab is persisted.
- * Value is one of "files" | "git". The right panel reads it at boot and
- * restores the last-used tab. (Terminal used to live here as a tab but moved
- * to the bottom bar, and Browser was a P5 placeholder that has since been
- * removed — a persisted value of "terminal" or "browser" is rejected by the
- * schema on hydrate and falls back to "files".)
+ * Value is one of "files" | "git" | "browser". The right panel reads it at boot
+ * and restores the last-used tab. "browser" re-enables the browser as an
+ * embedded sidebar panel (mobile-first); on hydrate the store still falls back
+ * to "files" so the browser doesn't auto-open at startup — the "browser" value
+ * is only reached via an explicit user toggle during the session.
+ * (Terminal used to live here as a tab but moved to the bottom bar; a persisted
+ * "terminal" value is rejected by the schema and falls back to "files".)
  */
 export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
 
 /** zod schema + TS union for the right-panel tab preference. */
-export const RightPanelTabSchema = z.enum(["files", "git"]);
+export const RightPanelTabSchema = z.enum(["files", "git", "browser"]);
 export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
 
 /**
@@ -1796,6 +1798,11 @@ export interface BrowserRect {
 
 export const BrowserCreateSchema = z.object({
   projectPath: z.string().min(1),
+  /** Optional initial device-emulation preset applied once the view's renderer
+   *  is ready (dom-ready). Used by the sidebar container to start in mobile
+   *  mode without calling setDevice too early (which can crash the GPU
+   *  process before it's initialized). Omit = desktop (no emulation). */
+  initialDevice: z.enum(["desktop", "iphone", "android"]).optional(),
 });
 export type BrowserCreateInput = z.infer<typeof BrowserCreateSchema>;
 

@@ -9,8 +9,11 @@ import {
   IconLoader2,
   IconDeviceDesktop,
   IconDeviceMobile,
+  IconArrowsMaximize,
+  IconArrowsMinimize,
 } from "@renderer/lib/icons.js";
 import type { BrowserDevicePreset } from "@contracts/ipc";
+import type { BrowserMode } from "./BrowserPanel.js";
 
 /**
  * Toolbar for the embedded browser panel. Pure presentational - all state
@@ -20,6 +23,8 @@ import type { BrowserDevicePreset } from "@contracts/ipc";
  * by the view.
  */
 export interface BrowserToolbarProps {
+  /** Which container this toolbar lives in (drives the leading button). */
+  mode: BrowserMode;
   /** Current address-bar text (controlled). */
   url: string;
   /** Whether the page is currently loading (drives the reload -> spinner swap). */
@@ -38,10 +43,12 @@ export interface BrowserToolbarProps {
   onTogglePickMode: () => void;
   /** Switch the device emulation preset. */
   onDeviceChange: (device: BrowserDevicePreset) => void;
-  /** Return to the main workspace: hide the browser overlay but keep the
-   *  WebContentsViews alive (browsing state preserved). Bound to the back
-   *  arrow AND the thread-title chip. */
+  /** Overlay only: return to the main workspace (hide the overlay, keep views
+   *  alive). Sidebar ignores this. */
   onClose: () => void;
+  /** Switch to the other container: sidebar → overlay (PC fullscreen) or
+   *  overlay → sidebar (mobile column). Tabs carry over via the shared store. */
+  onSwitchMode: () => void;
   /** Request to destroy the browser entirely — the parent opens a
    *  confirmation dialog; on confirm all tabs/views are torn down. */
   onRequestDestroy: () => void;
@@ -83,6 +90,7 @@ function ToolButton({
 }
 
 export function BrowserToolbar({
+  mode,
   url,
   loading,
   canGoBack,
@@ -97,6 +105,7 @@ export function BrowserToolbar({
   onTogglePickMode,
   onDeviceChange,
   onClose,
+  onSwitchMode,
   onRequestDestroy,
 }: BrowserToolbarProps) {
   const devices: {
@@ -111,11 +120,27 @@ export function BrowserToolbar({
   ];
   return (
     <div className="flex h-11 shrink-0 items-center gap-1 border-b border-edge bg-surface px-2">
-      {/* Back to main workspace - visually distinct (accent on hover) so the
-          user sees how to leave the browser overlay. */}
-      <ToolButton onClick={onClose} title="返回主面板">
-        <IconArrowLeft size={16} />
-      </ToolButton>
+      {mode === "overlay" ? (
+        <>
+          {/* Overlay: "返回工作台" leaves the fullscreen overlay (views stay
+              alive). Visually distinct (accent on hover) so the user sees how
+              to exit. */}
+          <ToolButton onClick={onClose} title="返回工作台">
+            <IconArrowLeft size={16} />
+          </ToolButton>
+          {/* Switch to the embedded sidebar (mobile column). */}
+          <ToolButton onClick={onSwitchMode} title="切换到侧边栏">
+            <IconArrowsMinimize size={16} />
+          </ToolButton>
+        </>
+      ) : (
+        /* Sidebar: "展开为 PC 全屏" swaps to the fullscreen overlay. The
+           sidebar has no "close" button here — closing is via the rail icon
+           toggle or the 关闭浏览器 button on the right. */
+        <ToolButton onClick={onSwitchMode} title="展开为 PC 全屏">
+          <IconArrowsMaximize size={16} />
+        </ToolButton>
+      )}
 
       <div className="mx-1 h-5 w-px bg-edge" />
 

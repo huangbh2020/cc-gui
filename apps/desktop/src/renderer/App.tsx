@@ -106,7 +106,7 @@ export function App() {
           z-50 dialogs so ConfirmDialog etc. still sit on top). */}
       <CommandPalette />
       <SearchDialog />
-      <BrowserPanel />
+      <BrowserPanel mode="overlay" />
       {settingsOpen ? (
         <>
           <Titlebar

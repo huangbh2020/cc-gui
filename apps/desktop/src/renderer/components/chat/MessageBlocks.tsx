@@ -141,13 +141,22 @@ type Segment =
  *  into a single "操作集合" card keeps the stream scannable; each individual
  *  call's detail is rarely worth the vertical space. MultiEdit/TodoWrite are
  *  included too: they're mechanical (batch edits / task-list updates), not
- *  narrative. The ticker on the group header still shows what's running live. */
+ *  narrative. The ticker on the group header still shows what's running live.
+ *
+ *  Provider-neutral: Claude (claude-sdk) capitalizes tool names (Read/Grep/…)
+ *  while Pi (pi-sdk) lowercases them (read/grep/…). The renderer sees raw
+ *  toolName strings, so the set carries BOTH casings plus Pi-only tools
+ *  (find = Pi's glob, ls = Pi-only) — this keeps grouping working without
+ *  forcing every call site to normalize. See pi sdk core/tools/*.js. */
 const BATCH_TOOL_NAMES = new Set([
+  // Claude (capitalized)
   "Read", "Glob", "Grep",
   "Bash", "PowerShell",
   "MultiEdit", "NotebookEdit",
   "TodoWrite", "TaskCreate", "TaskUpdate",
   "WebSearch", "WebFetch",
+  // Pi (lowercase) — find is Pi's glob, ls is Pi-only
+  "read", "find", "grep", "bash", "ls",
 ]);
 function isBatchTool(b: Block): b is ToolUseBlock {
   return b.kind === "tool_use" && BATCH_TOOL_NAMES.has(b.toolName);
@@ -1031,6 +1040,16 @@ const TOOL_ICON_MAP: Record<string, ComponentType<{ size?: number; className?: s
   AskUserQuestion: IconHelpCircle,
   EnterPlanMode: IconClipboard,
   ExitPlanMode: IconClipboard,
+  // Pi (lowercase) aliases — Pi's tool names are lowercase (read/grep/bash/…);
+  // map them to the same glyphs as their Claude equivalents so pi tool cards
+  // get semantic icons instead of falling back to the generic tools glyph.
+  read: IconFileSearch,
+  find: IconFileSearch, // Pi's glob equivalent
+  ls: IconFileSearch,
+  bash: IconTerminal,
+  grep: IconSearch,
+  edit: IconReplace,
+  write: IconFilePlus,
 };
 
 /** The left-side glyph of an action card. Sized 13 to sit between the 12px
@@ -1073,6 +1092,21 @@ export function toolSummary(name: string, input: unknown): string {
       }
       return "";
     }
+    // Pi (lowercase) tool names. Pi's read/write/edit take a `path` field
+    // (not Claude's `file_path`); accept either so summaries survive if a
+    // future pi version renames the field. find = Pi's glob, ls = Pi-only.
+    case "read":
+    case "write":
+    case "edit":
+      return String(obj.file_path ?? obj.path ?? "");
+    case "bash":
+      return String(obj.command ?? obj.description ?? "");
+    case "find":
+      return String(obj.pattern ?? "");
+    case "grep":
+      return String(obj.pattern ?? "");
+    case "ls":
+      return String(obj.path ?? "");
     default:
       return Object.values(obj).slice(0, 1).map(String).join("").slice(0, 60);
   }
@@ -1117,18 +1151,35 @@ function isWriteInput(i: unknown): i is { file_path: string; content: string } {
   return typeof o.file_path === "string" && typeof o.content === "string";
 }
 
+/** Pull a single-file path out of a tool input, accepting either Claude's
+ *  `file_path` or Pi's `path` field (Pi's read/write/edit use `path`). Used by
+ *  extractToolFilePath to decide whether the card's summary line should
+ *  render as a clickable file link. */
+function pathField(input: unknown): string | null {
+  if (!input || typeof input !== "object") return null;
+  const o = input as Record<string, unknown>;
+  if (typeof o.file_path === "string") return o.file_path;
+  if (typeof o.path === "string") return o.path;
+  return null;
+}
+
 /** Extract a `file_path` from a tool's input when the tool is one that
  *  operates on a single file (Read / Write / Edit). Returns null for tools
  *  whose summary is not a path (Bash, Grep, Glob, etc.) so GenericToolCard
  *  renders their plain-text summary instead of a link. Reuses the Edit/Write
- *  type guards and adds a plain Read fallback. */
+ *  type guards and adds a plain Read fallback. Accepts both Claude
+ *  (capitalized) and Pi (lowercase) tool names. */
 function extractToolFilePath(toolName: string, input: unknown): string | null {
+  // Claude (Edit/Write are narrowed first so the structured cards get the
+  // exact field; Read falls through to the lenient pathField).
   if (toolName === "Edit" && isEditInput(input)) return input.file_path;
   if (toolName === "Write" && isWriteInput(input)) return input.file_path;
-  if (toolName === "Read") {
-    if (!input || typeof input !== "object") return null;
-    const o = input as Record<string, unknown>;
-    return typeof o.file_path === "string" ? o.file_path : null;
+  if (toolName === "Read") return pathField(input);
+  // Pi (lowercase). Pi's edit input is { path, edits:[…] } and write is
+  // { path, content } — both carry `path`, so the lenient pathField covers
+  // them without needing pi-specific type guards.
+  if (toolName === "read" || toolName === "write" || toolName === "edit") {
+    return pathField(input);
   }
   return null;
 }

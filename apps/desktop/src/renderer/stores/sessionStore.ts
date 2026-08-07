@@ -57,7 +57,25 @@ import {
   type Accelerator,
   type LspLanguageState,
   type PickedElement,
+  type BrowserDevicePreset,
 } from "@contracts/ipc";
+
+/** One browser tab, shared across the sidebar and overlay containers. `id` is
+ *  renderer-local; `browserId` is the main-process view id. All
+ *  navigation/loading/pick state is per-tab. Lives in the store (not component
+ *  state) so the sidebar and overlay containers can swap without losing tabs. */
+export interface BrowserTab {
+  id: string;
+  browserId: string;
+  url: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  pickMode: boolean;
+  /** Device emulation preset (desktop = full width, mobile = narrow). */
+  device: BrowserDevicePreset;
+}
 import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 
@@ -407,6 +425,12 @@ export interface SessionState {
    *  the Titlebar toggle button can show a count badge). Updated by the panel
    *  via setBrowserTabCount. NOT persisted. */
   browserTabCount: number;
+  /** Open browser tabs, shared between the sidebar (mobile-first) and overlay
+   *  (PC fullscreen) containers. Each owns a main-process WebContentsView by
+   *  browserId; the view pool survives container swaps. NOT persisted. */
+  browserTabs: BrowserTab[];
+  /** The currently active browser tab id (shared across containers). */
+  browserActiveTabId: string | null;
   /* ── Draggable pane sizes ──
    *  Persisted as one JSON blob (UI_PANE_WIDTHS_SETTING_KEY) and re-clamped
    *  on hydrate. Updated live during drag (synchronous set); the DB write is
@@ -762,6 +786,16 @@ export interface SessionState {
   setBrowserPanelOpen: (open: boolean) => void;
   /** Update the open-browser-tab count (drives the Titlebar badge). */
   setBrowserTabCount: (count: number) => void;
+  /** Replace the whole browser-tabs list (shared sidebar/overlay state). */
+  setBrowserTabs: (tabs: BrowserTab[]) => void;
+  /** Set the active browser tab id. */
+  setBrowserActiveTabId: (id: string | null) => void;
+  /** Append a new browser tab. */
+  addBrowserTab: (tab: BrowserTab) => void;
+  /** Remove a browser tab by its renderer-local id; returns nothing. */
+  removeBrowserTab: (id: string) => void;
+  /** Patch one browser tab by its main-process browserId. */
+  patchBrowserTab: (browserId: string, patch: Partial<BrowserTab>) => void;
   /** Apply an incremental delta to the left sidebar width (clamped, then a
    *  debounced DB write). Called by the drag handle on every mousemove. */
   adjustLeftWidth: (deltaPx: number) => void;
@@ -2115,6 +2149,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // Browser panel overlay - closed by default. NOT persisted.
   browserPanelOpen: false,
   browserTabCount: 0,
+  browserTabs: [],
+  browserActiveTabId: null,
   // Draggable pane sizes. Persisted as one JSON blob (UI_PANE_WIDTHS_SETTING_KEY);
   // init() hydrates + clamps. These defaults match the original hardcoded
   // widths so the first-run layout is unchanged.
@@ -4112,8 +4148,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setLeftOpen: (open) => set({ leftOpen: open }),
   setRightOpen: (open) => set({ rightOpen: open }),
   setBottomTerminalOpen: (open) => set({ bottomTerminalOpen: open }),
-  setBrowserPanelOpen: (open) => set({ browserPanelOpen: open }),
+  setBrowserPanelOpen: (open) => {
+    // Opening the fullscreen overlay forces the right panel closed so the
+    // embedded sidebar browser unmounts — the two containers must never be
+    // active at once (they'd fight over the shared WebContentsView). Closing
+    // the overlay leaves rightOpen as-is (the user can reopen the panel).
+    if (open) {
+      set({ browserPanelOpen: true, rightOpen: false });
+    } else {
+      set({ browserPanelOpen: false });
+    }
+  },
   setBrowserTabCount: (count) => set({ browserTabCount: Math.max(0, count) }),
+  setBrowserTabs: (tabs) => set({ browserTabs: tabs }),
+  setBrowserActiveTabId: (id) => set({ browserActiveTabId: id }),
+  addBrowserTab: (tab) => set((s) => ({ browserTabs: [...s.browserTabs, tab] })),
+  removeBrowserTab: (id) =>
+    set((s) => ({ browserTabs: s.browserTabs.filter((t) => t.id !== id) })),
+  patchBrowserTab: (browserId, patch) =>
+    set((s) => ({
+      browserTabs: s.browserTabs.map((t) => (t.browserId === browserId ? { ...t, ...patch } : t)),
+    })),
 
   // ── Draggable pane sizes ──
   // adjust* apply an incremental delta (from the drag handle) to the current

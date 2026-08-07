@@ -263,7 +263,11 @@ const STATIC_COMMANDS: CommandDef[] = [
     icon: IconWorld,
     defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-browser"],
     perform: (s) => {
-      s.setBrowserPanelOpen(!s.browserPanelOpen);
+      // Toggle the embedded sidebar browser (mobile-first). Mirrors the rail
+      // icon: open it if another tab is active, or close it (fall back to
+      // files) if it's already showing. The PC-fullscreen overlay is reached
+      // from inside the sidebar via its own "展开为 PC 全屏" button.
+      s.setRightPanelTab(s.rightPanelTab === "browser" ? "files" : "browser");
     },
   },
 

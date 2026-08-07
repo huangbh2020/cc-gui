@@ -7,36 +7,44 @@ import {
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { FilesPanel } from "@renderer/components/ide/FilesPanel.js";
 import { GitPanel } from "@renderer/components/ide/GitPanel.js";
+import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
 
 /** Right panel: a vertical icon rail + a main panel area (IDE-style).
  *
  *  The narrow rail on the left is always visible and holds three icons:
- *    - Files  → shows FilesPanel in the main area
- *    - Git    → shows GitPanel in the main area
- *    - Browser → opens the full-workspace browser overlay (the overlay is
- *      rendered at the App root, not here; clicking just flips
- *      browserPanelOpen). The rail icon mirrors the old titlebar toggle.
+ *    - Files   → shows FilesPanel in the main area
+ *    - Git     → shows GitPanel in the main area
+ *    - Browser → toggles an embedded browser panel in the main area
+ *      (mobile-first sidebar mode). Clicking again closes it. The PC-fullscreen
+ *      overlay is a separate container rendered at the App root; while that
+ *      overlay is open the right panel isn't visible at all.
  *
  *  The active panel (files / git) is read from / written to the session store
- *  (persisted in the settings table), so it survives restarts. The browser
- *  icon is highlighted while its overlay is open and shows a badge with the
- *  open-tab count. */
+ *  (persisted in the settings table), so it survives restarts. The browser tab
+ *  is session-only (hydrate ignores a persisted "browser" value so the browser
+ *  never auto-opens at boot). The browser icon shows a badge with the open-tab
+ *  count. */
 export function RightPanel() {
   const tab = useSessionStore((s) => s.rightPanelTab);
   const setTab = useSessionStore((s) => s.setRightPanelTab);
-  const browserPanelOpen = useSessionStore((s) => s.browserPanelOpen);
-  const setBrowserPanelOpen = useSessionStore((s) => s.setBrowserPanelOpen);
   const browserTabCount = useSessionStore((s) => s.browserTabCount);
+
+  /** Toggle the embedded sidebar browser: open it if another tab is active,
+   *  or close it (fall back to files) if it's already showing. */
+  const toggleBrowser = () => {
+    setTab(tab === "browser" ? "files" : "browser");
+  };
 
   return (
     <div className="flex h-full">
       {/* Main panel area — must NOT scroll itself (children own height /
           overflow). Renders the panel matching the active tab. The browser
-          overlay is rendered elsewhere (App root) and covers the whole
-          workspace, so nothing is rendered for it here. */}
+          sidebar (mobile-first) renders inline here; the PC-fullscreen overlay
+          is rendered at the App root and covers the whole workspace. */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {tab === "files" && <FilesPanel />}
         {tab === "git" && <GitPanel />}
+        {tab === "browser" && <BrowserPanel mode="sidebar" />}
       </div>
 
       {/* Vertical icon rail — always visible. Each icon is a square button;
@@ -56,12 +64,12 @@ export function RightPanel() {
         >
           <IconGitBranch size={20} className="shrink-0" />
         </RailButton>
-        {/* Browser — opens the full-workspace overlay (not a panel swap). */}
+        {/* Browser — toggles the embedded sidebar (mobile-first). */}
         <div className="relative">
           <RailButton
-            active={browserPanelOpen}
-            onClick={() => setBrowserPanelOpen(!browserPanelOpen)}
-            title={browserPanelOpen ? "隐藏浏览器" : "打开浏览器"}
+            active={tab === "browser"}
+            onClick={toggleBrowser}
+            title={tab === "browser" ? "关闭侧边栏浏览器" : "打开浏览器"}
           >
             <IconWorld size={20} className="shrink-0" />
           </RailButton>

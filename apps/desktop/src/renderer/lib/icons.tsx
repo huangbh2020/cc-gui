@@ -47,6 +47,8 @@ export {
   IconArrowUp,
   IconArrowDown,
   IconArrowsExchange,
+  IconArrowsMaximize,
+  IconArrowsMinimize,
   IconMenu2,
   IconDots,
   IconDotsVertical,

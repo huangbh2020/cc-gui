@@ -69,7 +69,7 @@ class BrowserManagerImpl {
   /** Registered once; the picker-result listener keys off `event.sender`. */
   private pickerListenerInstalled = false;
 
-  create(projectPath: string): BrowserCreateResult {
+  create(projectPath: string, initialDevice?: BrowserDevicePreset): BrowserCreateResult {
     const win = getMainWindow();
     if (!win || win.isDestroyed()) {
       return { ok: false, error: "主窗口未就绪，无法创建浏览器" };
@@ -119,6 +119,19 @@ class BrowserManagerImpl {
 
     this.installPickerListener();
     this.attachNavigationEvents(live);
+
+    // Apply an optional initial device-emulation preset once the renderer is
+    // ready. Calling enableDeviceEmulation before the GPU/renderer process is
+    // initialized (i.e. synchronously right after create) crashes Chromium on
+    // Windows; dom-ready is the safe earliest point. Only applied if it differs
+    // from the default "desktop" (which is a no-op disable).
+    if (initialDevice && initialDevice !== "desktop") {
+      const applyOnce = () => {
+        this.setDevice(id, initialDevice);
+        live.view.webContents.removeListener("dom-ready", applyOnce);
+      };
+      live.view.webContents.on("dom-ready", applyOnce);
+    }
 
     // External links (target=_blank, window.open) go to the system browser,
     // never open a new Electron window inside the view.
