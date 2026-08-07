@@ -41,33 +41,52 @@ import {
 export function TurnFilesCard({
   files,
   isLatestTurn,
+  rewound,
 }: {
   files: TurnFileEntry[];
-  /** True only on the latest turn's card - gates the 撤销本轮 button.
-   *  Undefined/false on historical cards (read-only snapshots). */
+  /** True only on the latest turn's card - the "live" rewind (clears the
+   *  card on success). Older cards rewind individually via the historical
+   *  path (confirmed, marks the card in place). */
   isLatestTurn?: boolean;
+  /** True once this turn's files have been rewound. The card stays in the
+   *  stream but renders dimmed with a "已撤销" badge; the rewind button is
+   *  hidden. */
+  rewound?: boolean;
 }) {
   // Default expand state by lifecycle: the latest turn expands so the user
   // sees the fresh changes + rewind affordance; historical cards collapse to
   // a one-line summary (keeps the scroll-back history calm).
   const [open, setOpen] = useState(!!isLatestTurn);
-  // rewindTurn comes from the store - only invoked when isLatestTurn, so the
-  // historical cards never trigger it.
+  // rewindTurn comes from the store - invoked for both the latest turn
+  // (clears the card) and historical turns (marks the card in place).
   const rewindTurn = useSessionStore((s) => s.rewindTurn);
   // Local rewind-in-flight flag so the button is disabled while the
   // IPC call is in progress (main also clears the card on its
   // `turn.rewound` event, but that takes a tick after the IPC resolves).
   const [rewinding, setRewinding] = useState(false);
   // Toggle to "撤销成功" briefly after success, so the user gets
-  // confirmation before the card disappears (turn.rewound clears
-  // turnFiles, unmounting the card).
+  // confirmation before the card disappears (latest-turn) or flips to
+  // the 已撤销 state (historical).
   const [done, setDone] = useState(false);
 
   const handleRewind = async () => {
-    if (rewinding) return;
+    if (rewinding || rewound) return;
+    // Historical rewind can clobber later turns' edits to the same files —
+    // confirm before proceeding. Mirrors SDK checkpoint semantics where
+    // rolling back to an old checkpoint is the user's explicit choice.
+    if (!isLatestTurn) {
+      const ok = window.confirm(
+        "撤销历史轮次会把该轮修改的文件恢复到当时修改前的状态，\n可能影响后续轮次对同一文件的修改。\n确定继续吗？",
+      );
+      if (!ok) return;
+    }
     setRewinding(true);
     try {
-      await rewindTurn();
+      // targetFiles marks this as a historical rewind (the event handler
+      // matches the card by path-set and marks it `rewound` instead of
+      // clearing the live card). Omitted for the latest-turn rewind.
+      const targetFiles = isLatestTurn ? undefined : files.map((f) => f.filePath);
+      await rewindTurn(files, targetFiles);
       setDone(true);
     } finally {
       setRewinding(false);
@@ -85,7 +104,7 @@ export function TurnFilesCard({
   );
 
   return (
-    <div className="rounded-lg border border-edge bg-surface/60 shadow-sm text-xs text-content-muted">
+    <div className={cn("rounded-lg border border-edge bg-surface/60 shadow-sm text-xs text-content-muted", rewound && "opacity-60")}>
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface-hover/50"
@@ -104,6 +123,14 @@ export function TurnFilesCard({
           <span className="text-accent">+{totals.adds}</span>
           <span className="text-danger">-{totals.dels}</span>
         </span>
+        {/* "已撤销" badge once this turn's files have been rewound. The card
+            stays (conversation record preserved), so the badge makes the
+            rewound state legible at a glance. */}
+        {rewound && (
+          <span className="ml-2 rounded-md bg-surface-muted px-1.5 py-0.5 font-medium text-content-subtle">
+            已撤销
+          </span>
+        )}
         <span className="ml-auto shrink-0 text-content-subtle">
           {open ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
         </span>
@@ -113,17 +140,18 @@ export function TurnFilesCard({
           {files.map((f) => (
             <FileRow key={f.filePath} entry={f} />
           ))}
-          {/* Only the LATEST turn is rewindable (in-memory FileSnapshot is
-              cleared per turn). Historical cards render read-only - the
-              rewind button is hidden. The header chevron folds the card, so
-              no separate 收起 button is needed. */}
-          {isLatestTurn && (
+          {/* Every card is rewindable: the latest turn via the live snapshot,
+              historical turns via their persisted entries (DB-driven, works
+              even after session reopen). An already-rewound card shows no
+              button. Historical rewinds are confirmed in handleRewind since
+              they can clobber later turns' edits to the same files. */}
+          {!rewound && (
             <div className="flex items-center justify-end pt-1">
               <button
                 onClick={handleRewind}
                 disabled={rewinding || done}
                 className="rounded-md bg-surface-hover px-3 py-1 font-medium text-content transition-colors hover:bg-edge disabled:cursor-not-allowed disabled:text-content-subtle"
-                title="把本轮所有文件恢复为轮开始前的状态"
+                title={isLatestTurn ? "把本轮所有文件恢复为轮开始前的状态" : "把该历史轮次的文件改动恢复为当时修改前的状态(可能影响后续轮次)"}
               >
                 {done ? "已撤销 ✓" : rewinding ? "撤销中…" : "撤销本轮"}
               </button>

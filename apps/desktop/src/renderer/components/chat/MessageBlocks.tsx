@@ -543,12 +543,16 @@ const BlockView = memo(function BlockView({
     case "turn-files":
       // Inline "本轮修改" card that lives in the message stream as a per-turn
       // trailing block. Frozen at turn.done so each turn keeps its own card in
-      // history (new turns add new cards; old cards stay read-only). Only the
-      // LATEST turn's card (isLatestTurn) shows the 撤销本轮 button; older
-      // cards are display-only snapshots. TurnFilesCard pulls rewindTurn from
-      // the store itself and gates the button on isLatestTurn.
+      // history. Every card is rewindable: the latest via the live snapshot,
+      // historical ones via their persisted entries (works after session
+      // reopen too). A rewound card (block.rewound) renders dimmed with no
+      // button. TurnFilesCard pulls rewindTurn from the store itself.
       return (
-        <TurnFilesCard files={block.files} isLatestTurn={block.isLatestTurn} />
+        <TurnFilesCard
+          files={block.files}
+          isLatestTurn={block.isLatestTurn}
+          rewound={block.rewound}
+        />
       );
 
     case "compact-summary": {

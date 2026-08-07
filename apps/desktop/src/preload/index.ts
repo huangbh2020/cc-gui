@@ -183,6 +183,9 @@ const api = {
     /** Write utf-8 content to a file (creates parent dirs). Returns ok. */
     writeFile: ((input) =>
       ipcRenderer.invoke(IPC.FILE_WRITE, input)) as RpcMap["file.writeFile"],
+    /** Create a directory (recursive). Returns ok. */
+    mkdir: ((input) =>
+      ipcRenderer.invoke(IPC.FILE_MKDIR, input)) as RpcMap["file.mkdir"],
   },
 
   /** Git operations for the Git panel. All paths must resolve inside a known

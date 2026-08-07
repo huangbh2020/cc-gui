@@ -130,6 +130,17 @@ pnpm build
 - **canUseTool 审批回调由 `ClaudeAgentSdkProvider` 在 `query()` options 里注册**,不在 adapter 里处理
 - **文件写入守卫(严格项目内)**:所有 provider 统一拦截 `Write`/`Edit`/`MultiEdit`/`NotebookEdit` 的写入路径:① 把 WSL 式 `/mnt/<drive>/...` 路径修正为 Windows 原生路径(否则 Windows 上会解析成 `D:\mnt\...` 垃圾目录);② 目标路径解析后**超出项目工作目录一律拒绝**(提示模型改用相对路径),仅 `bypassPermissions`/`dontAsk` 例外。Claude:在 `ClaudeAgentSdkProvider` 的 `canUseTool` 里实现(工具集 `FILE_MUTATING_TOOLS` 定义在 `fileSnapshot.ts`),归一化路径经 `updatedInput` 回传 SDK;`SdkMessageAdapter` 的"撤销本轮"快照(`recordPre`)用同一助手,保证卡片与实际写入位置一致。Pi:SDK 无 canUseTool 拦截,改在 `PiAgentSdkProvider` 用 `createGuardedFileTools` 包装 SDK 的 write/edit 工具定义(`customTools` 同名覆盖内建工具,`execute` 拒绝时 throw → 模型收到 isError 工具结果)。win32 下 Claude 的 systemPrompt 还会附加"勿用 /mnt 路径"提示(Bash 重定向写文件不在守卫范围内,靠该提示缓解;Pi 无 system prompt 扩展点,仅靠守卫)
 
+### 「撤销本轮」文件回滚(rewind)
+- **不使用 SDK 内建 `enableFileCheckpointing`**:该机制要求 `permissionMode: "acceptEdits"`,会绕过上面的 `canUseTool` 守卫与工具审批 UI,直接废掉核心安全资产。改为自研「记录/恢复解耦」方案,保留路径守卫。
+- **记录**:`FileSnapshot`(`apps/desktop/src/main/lib/fileSnapshot.ts`)只负责捕获——`recordPre(cwd, path)` 在 `SdkMessageAdapter` 每个 `FILE_MUTATING_TOOLS` 的 `tool_use` 上读盘存 `before`(首调生效);`freeze()` 在回合结束读盘算 `adds/dels/before`,产出 `TurnFileEntry[]`。记录逻辑与 `canUseTool` 守卫**共用 `normalizeToolFilePath`**,路径口径一致。
+- **恢复(统一入口)**:模块级 `restoreFiles(cwd, entries)` 是恢复的唯一实现——遍历 entries,`modified` 写回 `before`、`created` unlink(ENOENT 容忍),每条过 `safeResolveOk` 拒绝逃逸 cwd 的路径。`FileSnapshot.restore()` 内部把内存 Map 转成 entries 后委托它。
+- **`RuntimeManager.rewindTurn(sessionId, files, targetFiles?)`** 接收显式 `TurnFileEntry[]`,与内存快照脱钩——所以**会话重开后、以及任意历史轮次**都能撤回(数据来自 DB 持久化的 `before` 字段,而非易失的内存 Map)。仅当传入路径集合 === 内存快照 keys(`hasPaths`)且无 `targetFiles` 时才 `clear()`(避免误清其他轮次的内存记录)。
+- **两种撤回形态走同一 `turn.rewound` 事件**:① 最新轮次(无 `targetFiles`):renderer 清 `turnFilesBySession` + 移除 live block(卡片消失);② 历史轮次(带 `targetFiles`):renderer 按**路径集合**匹配消息流中的 `turn-files` block,标记 `rewound: true`(卡片保留、降透明度 + 「已撤销」徽章,对齐 SDK「文件回滚不回滚对话」语义)。
+- **UI**:`TurnFilesCard` 每个**未撤销**的卡片都显示「撤销本轮」(历史卡片点击前 `confirm` 警告可能影响后续轮次);`rewound` block 的 `rewound` 字段在 `turn-files` case 上(block 联合类型新增,向后兼容)。`store.rewindTurn(files, targetFiles?)` 由调用方显式传 files + 可选 targetFiles,不乐观清状态(等 `turn.rewound` 事件)。
+- **契约**:`RewindTurnSchema` 含 `files`(内联 zod)+ 可选 `targetFiles`;`TurnRewoundEvent` 加可选 `targetFiles`。
+
+### 中间面板 Tab 模式(P3.5)
+
 ### 中间面板 Tab 模式(P3.5)
 - **显示模式偏好**持久化在 `settings` 表的 `ui.displayMode` key(`DISPLAY_MODE_SETTING_KEY`),`init()` 启动时 `setting.get` 拉取,`setDisplayMode()` 写回。
 - `openTabs: string[]` 是已开 tab 的 sessionId 有序列表;**不论 single / tabs 模式都写**,切模式不丢已开线程。

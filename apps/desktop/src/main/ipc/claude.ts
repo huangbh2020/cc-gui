@@ -211,13 +211,19 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     }
   });
 
-  // ── Rewind most recent turn: restore all files Edit/Write touched
-  //    to their pre-turn state. Returns the list of paths that were
-  //    actually restored so the renderer can show a "N 个文件已恢复"
-  //    breadcrumb. ──
+  // ── Rewind a turn: restore the given files to their pre-turn state.
+  //    The renderer passes the explicit entries (the card's own frozen
+  //    list), so this works for the latest turn, any historical turn,
+  //    and a session reopened after restart alike. Returns the list of
+  //    paths that were actually restored so the renderer can show a
+  //    "N 个文件已恢复" breadcrumb. ──
   ipcMain.handle(IPC.CLAUDE_REWIND_TURN, async (_evt, raw) => {
     const input = RewindTurnSchema.parse(raw);
-    const restored = await runtimeManager.rewindTurn(input.sessionId);
+    const restored = await runtimeManager.rewindTurn(
+      input.sessionId,
+      input.files,
+      input.targetFiles,
+    );
     return { restored };
   });
 

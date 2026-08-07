@@ -164,11 +164,17 @@ export type Block =
        *  so the card renders identically live and from-DB. */
       files: TurnFileEntry[];
       /** True ONLY on the LATEST turn's card — gates whether the 撤销本轮
-       *  button renders. The most recent completed turn's card keeps this
-       *  true (rewindable via the in-memory FileSnapshot); every older turn's
-       *  card is read-only (historical snapshot, no rewind). Demoted to false
-       *  the moment a new turn opens. */
+       *  button renders as the "live" rewind (clears the card on success).
+       *  Demoted to false the moment a new turn opens; older cards are
+       *  still rewindable individually (see `rewound`). */
       isLatestTurn?: boolean;
+      /** True once this turn's files have been rewound. The card stays in
+       *  the stream (the conversation record is preserved — mirroring SDK
+       *  checkpoint semantics where file rollback never rolls back the
+       *  conversation), but renders as a dimmed, non-interactive "已撤销"
+       *  state. Set by the `turn.rewound` handler when `targetFiles`
+       *  matches this card's paths. */
+      rewound?: boolean;
     }
   | {
       kind: "compact-summary";
@@ -926,8 +932,13 @@ export interface SessionState {
    *  paths; we leave the UI state update to the `turn.rewound` event
    *  that main emits after restore completes (single source of truth
    *  for "files are back"). The call is fire-and-await; failures log
-   *  to console and leave state untouched so the user can retry. */
-  rewindTurn: () => Promise<void>;
+   *  to console and leave state untouched so the user can retry.
+   *
+   *  `targetFiles` marks this as a HISTORICAL-turn rewind: it's forwarded
+   *  to main so the `turn.rewound` event carries it, letting the handler
+   *  mark the matching card in place rather than clearing the live card.
+   *  Omit it for the latest-turn rewind. */
+  rewindTurn: (files: TurnFileEntry[], targetFiles?: string[]) => Promise<void>;
   refreshClaudeHealth: () => Promise<void>;
 
   /** Enqueue a file path to be added to the active session's composer as a
@@ -3863,6 +3874,49 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return;
     }
     if (e.type === "turn.rewound") {
+      // Two rewind shapes arrive on this event:
+      //  - Historical rewind (e.targetFiles present): mark the matching
+      //    `turn-files` block `rewound: true` in place. The card stays
+      //    (conversation record preserved), turnFilesBySession is left
+      //    alone (it's the latest-turn bucket, unrelated to this card).
+      //  - Latest-turn rewind (no e.targetFiles): clear the live card and
+      //    turnFilesBySession (existing behavior).
+      if (e.targetFiles && e.targetFiles.length > 0) {
+        set((s) => {
+          const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+          // Match by path-set equality: a historical card whose files are
+          // exactly the targeted ones. Order-insensitive.
+          const targetSet = new Set(e.targetFiles!);
+          let changed = false;
+          const next = list.map((m) => {
+            let touched = false;
+            const blocks = m.blocks.map((b) => {
+              if (
+                b.kind === "turn-files" &&
+                !b.rewound &&
+                b.files.length === targetSet.size &&
+                b.files.every((f) => targetSet.has(f.filePath))
+              ) {
+                touched = true;
+                return { ...b, rewound: true };
+              }
+              return b;
+            });
+            if (!touched) return m;
+            changed = true;
+            return { ...m, blocks };
+          });
+          return changed
+            ? { messagesBySession: { ...s.messagesBySession, [sid]: next } }
+            : s;
+        });
+        // Persist so the rewound marker survives session reopen.
+        const rewoundSnapshot = get().messagesBySession[sid];
+        if (rewoundSnapshot) {
+          void api.session.saveMessages({ sessionId: sid, messages: toRecords(sid, rewoundSnapshot) });
+        }
+        return;
+      }
       // The user rewound the LATEST turn — clear its in-memory mirror AND
       // remove its live turn-files block from the stream (the card vanishes
       // with the rewind). Frozen historical cards on prior turns are
@@ -4849,15 +4903,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  rewindTurn: async () => {
+  rewindTurn: async (files, targetFiles) => {
     const sessionId = get().activeSessionId;
     if (!sessionId) return;
-    if ((get().turnFilesBySession[sessionId] ?? []).length === 0) {
+    if (files.length === 0) {
       // Nothing to rewind — defensive (UI shouldn't allow the click).
       return;
     }
     try {
-      await api.claude.rewindTurn({ sessionId });
+      await api.claude.rewindTurn({ sessionId, files, ...(targetFiles ? { targetFiles } : {}) });
       // Don't optimistically clear turnFiles — wait for the `turn.rewound`
       // event from main so the UI only updates when files are actually
       // back on disk. If the IPC call returns successfully but main fails

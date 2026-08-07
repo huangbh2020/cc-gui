@@ -7,7 +7,7 @@
  */
 import { sendToRenderer } from "@main/window.js";
 import { IPC } from "@contracts/ipc";
-import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord } from "@contracts/runtime";
+import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord, TurnFileEntry } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
 import type { ProviderContext, TurnHandle, StartTurnRequest, UserInputAnswers, PlanApprovalDecision } from "@contracts/provider";
 import { providerRegistry } from "@main/providers/registry.js";
@@ -15,6 +15,7 @@ import { SessionRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { ApprovalBridge } from "./ApprovalBridge.js";
 import { getFileSnapshot, dropFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
+import { restoreFiles } from "@main/lib/fileSnapshot.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { log } from "@main/lib/logger.js";
 
@@ -331,12 +332,22 @@ class RuntimeManager {
     this.sessions.delete(sessionId);
   }
 
-  /** Rewind the most recent turn for a session: restore all files the
-   *  Edit/Write tools touched in that turn to their pre-turn state,
-   *  then emit a `turn.rewound` event so the renderer can clear its
-   *  "本轮文件" card. Returns the list of paths actually restored
-   *  (failed paths are logged in main but not surfaced). */
-  async rewindTurn(sessionId: string): Promise<string[]> {
+  /** Rewind a turn for a session: restore the given `files` to their
+   *  pre-turn state, then emit a `turn.rewound` event so the renderer
+   *  can update its "本轮文件" card. Returns the list of paths actually
+   *  restored (failed paths are logged in main but not surfaced).
+   *
+   *  The caller passes the explicit entries to restore — this works for
+   *  the latest turn (entries from the live snapshot), ANY historical
+   *  turn (entries persisted on the message), and a session reopened
+   *  after restart (entries rehydrated from the DB). None of these
+   *  cases depend on the in-memory FileSnapshot being present.
+   *
+   *  `targetFiles` controls the event shape:
+   *   - omit (latest-turn rewind): renderer clears the live card.
+   *   - pass (historical rewind): renderer marks the matching card in
+   *     place instead of removing it. */
+  async rewindTurn(sessionId: string, files: TurnFileEntry[], targetFiles?: string[]): Promise<string[]> {
     const rt = this.sessions.get(sessionId);
     if (!rt) {
       log.warn(`rewindTurn: no runtime bound for session ${sessionId}`);
@@ -347,16 +358,22 @@ class RuntimeManager {
       log.warn(`rewindTurn: cwd not available for session ${sessionId} (no turn yet?)`);
       return [];
     }
+    const restored = await restoreFiles(cwd, files);
+    // After a successful restore, drop the in-memory snapshot ONLY when
+    // the rewind targeted exactly its contents (i.e. the latest live
+    // turn). For a historical rewind the live snapshot belongs to a
+    // different, later turn and must be left untouched (the next
+    // sendTurn clears it anyway). This prevents a historical rewind
+    // from accidentally disabling a subsequent latest-turn rewind.
     const snapshot = getFileSnapshot(sessionId);
-    const restored = await snapshot.restore(cwd);
-    // After a successful restore, drop the snapshot so the renderer
-    // can't double-undo and so the next turn starts clean.
-    if (restored.length > 0) {
+    if (restored.length > 0 && !targetFiles && snapshot.hasPaths(files.map((f) => f.filePath))) {
       snapshot.clear();
     }
     // Notify the renderer (and any other listeners) so the UI can
     // clear its "本轮文件" card and append a "N 个文件已恢复"
-    // breadcrumb to the message stream.
+    // breadcrumb to the message stream. `targetFiles` is forwarded so
+    // the renderer can distinguish a historical rewind (mark in place)
+    // from the latest-turn rewind (clear the live card).
     sendToRenderer(IPC.CLAUDE_EVENT, {
       channel: IPC.CLAUDE_EVENT,
       sessionId,
@@ -364,6 +381,7 @@ class RuntimeManager {
         type: "turn.rewound",
         sessionId,
         files: restored,
+        ...(targetFiles ? { targetFiles } : {}),
       } satisfies RuntimeEvent,
     });
     return restored;

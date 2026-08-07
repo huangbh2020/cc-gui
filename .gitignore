@@ -36,3 +36,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# ZCode session artifacts (local planning drafts, scratch)
+.zcode/

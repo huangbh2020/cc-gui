@@ -123,39 +123,30 @@ export class FileSnapshot {
   /** Restore all snapshotted files. Returns the paths that were
    *  successfully restored. Failures are logged and excluded from
    *  the return value so the renderer knows which ones actually
-   *  reverted. */
+   *  reverted.
+   *
+   *  Delegates to the module-level {@link restoreFiles} so the restore
+   *  logic has a single implementation shared with the DB-driven path
+   *  (used when a session is reopened and the in-memory snapshot is gone). */
   async restore(cwd: string): Promise<string[]> {
-    const restored: string[] = [];
     // Process created-files first (unlink) so a parent that was also
     // modified can be cleanly rewritten without the child blocking.
     const all = [...this.originals.values()];
     const created = all.filter((r) => !r.exists);
     const modified = all.filter((r) => r.exists);
-    for (const rec of [...created, ...modified]) {
-      if (!safeResolveOk(cwd, rec.absPath)) {
-        console.warn(`FileSnapshot: restore refused, escapes cwd: ${rec.absPath}`);
-        continue;
-      }
-      try {
-        if (rec.exists) {
-          // Ensure parent dir exists in case the user (or another
-          // tool) deleted it mid-turn.
-          await mkdir(dirname(rec.absPath), { recursive: true });
-          await writeFile(rec.absPath, rec.content, "utf-8");
-        } else {
-          try {
-            await unlink(rec.absPath);
-          } catch (err) {
-            // Already gone — nothing to do.
-            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-          }
-        }
-        restored.push(rec.absPath);
-      } catch (err) {
-        console.warn(`FileSnapshot: restore failed for ${rec.absPath} (${(err as Error).message})`);
-      }
-    }
-    return restored;
+    const ordered = [...created, ...modified].map((r) =>
+      // Reconstruct a TurnFileEntry from the in-memory record. `before`
+      // is only meaningful when the file existed; created files carry
+      // an empty string (restore unlinks rather than writes).
+      ({
+        filePath: r.absPath,
+        kind: r.exists ? ("modified" as const) : ("created" as const),
+        adds: 0,
+        dels: 0,
+        before: r.exists ? r.content : "",
+      }),
+    );
+    return restoreFiles(cwd, ordered);
   }
 
   /** Drop the restore records. Called by the runtime after a
@@ -166,6 +157,66 @@ export class FileSnapshot {
     this.originals.clear();
     this.frozen = false;
   }
+
+  /** Snapshot keys (cwd-resolved absolute paths) — used by the runtime
+   *  to decide whether a rewind's `files` argument matches the live
+   *  snapshot (so it can clear() safely) or came from elsewhere (e.g.
+   *  the DB, for a historical-turn rewind) and shouldn't touch the
+   *  live snapshot. */
+  hasPaths(paths: string[]): boolean {
+    if (paths.length !== this.originals.size) return false;
+    return paths.every((p) => this.originals.has(p));
+  }
+}
+
+/** Restore an arbitrary set of {@link TurnFileEntry} to their `before`
+ *  state. The single source of truth for the restore operation — used
+ *  both by {@link FileSnapshot.restore} (live latest-turn rewind) and
+ *  by `RuntimeManager.rewindTurn` when it receives explicit entries
+ *  (historical-turn rewind, or a session reopened after restart where
+ *  the in-memory snapshot is gone).
+ *
+ *  Path safety: every entry's `filePath` is re-checked against `cwd`
+ *  via {@link safeResolveOk} — a path that escapes cwd is refused and
+ *  excluded from the result. This keeps the restore guard identical to
+ *  the one that governed the original write.
+ *
+ *  Returns the paths actually restored (failures are logged and dropped,
+ *  so the renderer knows what really landed back on disk). */
+export async function restoreFiles(
+  cwd: string,
+  entries: TurnFileEntry[],
+): Promise<string[]> {
+  const restored: string[] = [];
+  // Process created-files first (unlink) so a parent that was also
+  // modified can be cleanly rewritten without the child blocking.
+  const created = entries.filter((e) => e.kind === "created");
+  const modified = entries.filter((e) => e.kind === "modified");
+  for (const entry of [...created, ...modified]) {
+    if (!safeResolveOk(cwd, entry.filePath)) {
+      console.warn(`restoreFiles: refused, escapes cwd: ${entry.filePath}`);
+      continue;
+    }
+    try {
+      if (entry.kind === "modified") {
+        // Ensure parent dir exists in case the user (or another tool)
+        // deleted it mid-turn.
+        await mkdir(dirname(entry.filePath), { recursive: true });
+        await writeFile(entry.filePath, entry.before, "utf-8");
+      } else {
+        try {
+          await unlink(entry.filePath);
+        } catch (err) {
+          // Already gone — nothing to do.
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        }
+      }
+      restored.push(entry.filePath);
+    } catch (err) {
+      console.warn(`restoreFiles: failed for ${entry.filePath} (${(err as Error).message})`);
+    }
+  }
+  return restored;
 }
 
 /* ──────────────────────────── path safety ──────────────────────────── */

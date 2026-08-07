@@ -493,12 +493,31 @@ export const RespondPlanApprovalSchema = z.object({
 });
 export type RespondPlanApprovalInput = z.infer<typeof RespondPlanApprovalSchema>;
 
-/* Rewind the most recent turn: restore all files Edit/Write touched to
- * their pre-turn state. Main process resolves paths against the
- * session's cwd and refuses any path that escapes it (path-traversal
- * guard). */
+/* Rewind a turn: restore the given files to their `before` state. The
+ * renderer passes the explicit TurnFileEntry[] (the card's own frozen
+ * list), so this works for BOTH the latest turn (entries from the live
+ * snapshot) and any historical turn (entries persisted on the message),
+ * AND for a session reopened after restart (entries rehydrated from the
+ * DB) — none of those cases depend on the in-memory FileSnapshot being
+ * present. Main resolves each path against the session's cwd and refuses
+ * any path that escapes it (path-traversal guard).
+ *
+ * `targetFiles` (optional): present only for a HISTORICAL-turn rewind.
+ * Main forwards it onto the `turn.rewound` event so the renderer can
+ * locate the exact card to mark `rewound: true` (vs. the latest-turn
+ * rewind, which clears the live card). */
 export const RewindTurnSchema = z.object({
   sessionId: z.string(),
+  files: z.array(
+    z.object({
+      filePath: z.string(),
+      kind: z.enum(["modified", "created"]),
+      adds: z.number(),
+      dels: z.number(),
+      before: z.string(),
+    }),
+  ),
+  targetFiles: z.array(z.string()).optional(),
 });
 export type RewindTurnInput = z.infer<typeof RewindTurnSchema>;
 
@@ -1925,10 +1944,11 @@ export interface RpcMap {
   "claude.respondQuestion": (input: RespondQuestionInput) => Promise<void>;
   /** Submit the user's approve/reject decision on a pending ExitPlanMode plan. */
   "claude.respondPlanApproval": (input: RespondPlanApprovalInput) => Promise<void>;
-  /** Rewind the most recent turn: restore all files that Edit/Write
-   *  touched in that turn to their pre-turn state. Returns the list of
-   *  paths that were actually restored (failed paths are silently
-   *  logged in main). */
+  /** Rewind a turn: restore the given files to their pre-turn state.
+   *  Works for the latest turn, any historical turn, or a session
+   *  reopened after restart (the renderer passes the explicit entries).
+   *  Returns the list of paths that were actually restored (failed
+   *  paths are silently logged in main). */
   "claude.rewindTurn": (input: RewindTurnInput) => Promise<{ restored: string[] }>;
   /** Update the active session's model / effort / permissionMode / customModelId in-place. */
   "session.updateSettings": (input: UpdateSessionSettingsInput) => Promise<void>;
