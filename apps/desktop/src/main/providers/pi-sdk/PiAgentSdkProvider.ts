@@ -30,6 +30,8 @@ import { PiMessageAdapter } from "./PiMessageAdapter.js";
 import { PiModelsStore } from "@main/lib/piModelsStore.js";
 import { loadPiSdk } from "./piSdkLoader.js";
 import { normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
+import { buildPiTokenSnapshot } from "./piTokenUsage.js";
+import { buildPiSkillLoader, rewriteSkillPrefix, createMntNormalizingReadTool } from "./piSkillBridge.js";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -225,23 +227,82 @@ export class PiAgentSdkProvider implements AgentProvider {
       }
     }
 
+    // Bridge Mcode's skill roots + `/name` trigger into Pi's skill model. Pi's
+    // DefaultResourceLoader otherwise scans only ~/.pi/agent/skills + <cwd>/.pi
+    // /skills (CONFIG_DIR_NAME=".pi"), which never overlap with Mcode's
+    // ~/.mcode/skills + <cwd>/.claude/skills — so skills silently no-op. The
+    // loader also narrows the discovered set to `req.skills` (Claude's allowlist
+    // analogue, since Pi has no `Options.skills` equivalent). See
+    // piSkillBridge.ts for the full rationale.
+    const skillLoader = await buildPiSkillLoader({
+      sdk,
+      cwd: req.cwd,
+      allowNames: req.skills && req.skills.length > 0 ? req.skills : undefined,
+    });
+
+    // customTools override built-ins by name in AgentSession's definition
+    // registry. Two same-name overrides are composed here:
+    //   - write/edit → strict in-project path guard (createGuardedFileTools,
+    //     mirrors the Claude canUseTool guard).
+    //   - read → WSL `/mnt/<drive>/...` → native Windows path normalization on
+    //     win32 (createMntNormalizingReadTool). Skills legitimately reference
+    //     files outside the project (under ~/.mcode/skills), and the model
+    //     rewrites the injected Windows paths to /mnt/c/... which the SDK's
+    //     read tool can't resolve. The guard is read-only so it carries no
+    //     in-project containment check — only the WSL translation.
+    const customTools = [
+      ...createGuardedFileTools(sdk, req.cwd, strict),
+      ...(process.platform === "win32" ? [createMntNormalizingReadTool(sdk, req.cwd)] : []),
+    ];
+
     const { session } = await sdk.createAgentSession({
       cwd: req.cwd,
       thinkingLevel: req.effort && req.effort !== "default" ? (req.effort as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") : undefined,
       tools,
-      // Guarded write/edit override the built-ins (same-name custom tools win
-      // in AgentSession's definition registry) — see createGuardedFileTools.
-      customTools: createGuardedFileTools(sdk, req.cwd, strict),
+      customTools,
       sessionManager,
       modelRuntime,
+      // Custom loader: SDK skips its own default construction AND does not call
+      // reload() on ours (we already reloaded in buildPiSkillLoader). The
+      // loader also carries the Windows path system-prompt hint (win32 only).
+      resourceLoader: skillLoader,
       ...(resolvedModel ? { model: resolvedModel } : {}),
     });
+
+    // Rewrite a leading `/name` (composer pill serialization) to Pi's
+    // `/skill:name` trigger for names the loader actually resolved, so Pi's
+    // `_expandSkillCommand` (which only recognizes the `/skill:` prefix)
+    // expands the skill body instead of shipping the literal `/name` to the
+    // LLM. Names are the allowlist-filtered set, matching what Pi's internal
+    // `find(s => s.name === skillName)` will search.
+    const knownSkillNames = new Set(skillLoader.getSkills().skills.map((s) => s.name));
+    const promptText = rewriteSkillPrefix(req.prompt, knownSkillNames);
 
     // Register the pi session id with the host so it can be persisted and
     // resumed next turn.
     ctx.onProviderSessionId?.(session.sessionFile ?? session.sessionId);
 
-    const adapter = new PiMessageAdapter(ctx, req.sessionId);
+    // Snapshot provider for the turn-end token-usage emit. Reads the SDK's
+    // already-normalized context-usage + cumulative session stats and maps them
+    // onto our provider-neutral ContextSnapshot. The adapter calls this at
+    // agent_end (BEFORE turn.done) so the runtime appends a usage-history
+    // record. `session.model` carries the resolved model id (provider/model);
+    // getSessionStats / getContextUsage never throw on a healthy session, but
+    // the adapter still guards against a thrown read.
+    const modelId = session.model?.id ?? req.model;
+    const provideTokenSnapshot = () => {
+      let ctxUsage, stats;
+      try {
+        ctxUsage = session.getContextUsage();
+        stats = session.getSessionStats();
+      } catch {
+        // Session torn down / mid-dispose — nothing to report this turn.
+        return undefined;
+      }
+      return buildPiTokenSnapshot(ctxUsage, stats, modelId);
+    };
+
+    const adapter = new PiMessageAdapter(ctx, req.sessionId, provideTokenSnapshot);
     const unsubscribe = session.subscribe((event) => {
       adapter.dispatch(event);
     });
@@ -251,7 +312,9 @@ export class PiAgentSdkProvider implements AgentProvider {
       try {
         // session.prompt resolves when the agent finishes processing the
         // prompt (including retries). Streaming events arrive via subscribe.
-        await session.prompt(req.prompt);
+        // `promptText` carries the `/skill:name`-rewritten leading token so Pi
+        // expands an embedded skill pill (see rewriteSkillPrefix above).
+        await session.prompt(promptText);
       } catch (err) {
         // A user-initiated abort makes prompt() reject.
         if (ac.signal.aborted) {
