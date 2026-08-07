@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
-import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { EMPTY_TURN_FILES, useSessionStore } from "@renderer/stores/sessionStore.js";
+import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { FileTree } from "./FileTree.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
@@ -36,6 +37,36 @@ export function FilesPanel() {
   // current expansion while re-fetching every level (DirNode children start
   // null on a fresh mount and re-load).
   const [refreshNonce, setRefreshNonce] = useState(0);
+
+  // Auto-refresh the tree when the agent finishes a turn that touched files.
+  // The turn's Write/Edit may have CREATED files on disk that aren't in the
+  // tree's cached listing yet (root entries are fetched on mount, dir children
+  // only on first expand), so a remount re-scans every level. The `turn.files`
+  // event fires once per turn and only when files.length > 0, so this bumps
+  // the nonce at most once per turn — no refresh storm mid-stream.
+  //
+  // We track the last observed (sessionId, files) pair: a first observation
+  // (mount, or a session switch) only seeds the tracker, and a refresh fires
+  // only when the SAME active session's turnFiles reference changes — a fresh
+  // turn.files payload, or the rewind that clears it. This avoids both a
+  // spurious re-scan when switching sessions of the same project (a different
+  // project already remounts via the projectPath key) and a missed refresh on
+  // the first turn.files of a session that was empty when we started watching.
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const turnFiles = useSessionStore((s) =>
+    activeSessionId ? (s.turnFilesBySession[activeSessionId] ?? EMPTY_TURN_FILES) : EMPTY_TURN_FILES,
+  );
+  const prevObserved = useRef<{ sessionId: string | null; files: TurnFileEntry[] | null | undefined }>({
+    sessionId: null,
+    files: undefined,
+  });
+  useEffect(() => {
+    const prev = prevObserved.current;
+    prevObserved.current = { sessionId: activeSessionId, files: turnFiles };
+    if (prev.files === undefined) return; // first observation -> seed only
+    if (prev.sessionId !== activeSessionId) return; // session switch -> seed only
+    if (turnFiles !== prev.files) setRefreshNonce((n) => n + 1);
+  }, [activeSessionId, turnFiles]);
 
   const activeProject = useMemo(() => {
     if (!activeProjectId) return null;

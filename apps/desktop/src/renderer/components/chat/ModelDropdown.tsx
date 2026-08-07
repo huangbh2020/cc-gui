@@ -67,18 +67,28 @@ export function ModelDropdown() {
   // "管理模型" lands on the settings section for the active provider.
   const manageTarget: string | null = isPi ? "pi-models" : isClaude ? "custom-models" : null;
 
-  // Chip label: a bound custom config wins; otherwise a built-in alias or the
-  // raw model string.
-  const activeCustom = customModels.find((m) => m.id === customModelId);
+  // Chip label: resolve the current `model` against the ACTIVE provider's
+  // model surface only. Model ids are per-provider (claude uses role/alias
+  // keys like "sonnet"; pi uses "provider/modelId" strings), so a leftover
+  // value from another provider must never leak into the label.
+  //   - custom config  → only when this provider supports custom endpoints
+  //   - pi model       → resolved from the dynamic piAvailableModels list
+  //   - built-in alias → from the provider's capabilities.builtinModels
+  //   - fallback       → "默认" instead of the raw id (which would be a
+  //                      confusing internal string for the user)
+  const activeCustom = supportsCustomEndpoint
+    ? customModels.find((m) => m.id === customModelId)
+    : undefined;
   const activeRoleBinding =
     activeCustom && (CUSTOM_MODEL_ROLES as string[]).includes(model)
       ? activeCustom.roles[model as CustomModelRoleKey]
       : undefined;
   const builtin = builtinModels.find((b) => b.id === model);
+  const piModel = isPi ? piAvailableModels.find((b) => b.id === model) : undefined;
   const chipLabel = activeCustom
     ? (activeRoleBinding?.displayName?.trim() ||
-      (activeRoleBinding ? CUSTOM_MODEL_ROLE_LABELS[model as CustomModelRoleKey] : model))
-    : builtin?.label ?? model;
+      (activeRoleBinding ? CUSTOM_MODEL_ROLE_LABELS[model as CustomModelRoleKey] : "默认"))
+    : piModel?.label ?? builtin?.label ?? "默认";
 
   const pickCustomRole = (cfgId: string, roleKey: CustomModelRoleKey) => {
     setCustomModel(cfgId, roleKey);

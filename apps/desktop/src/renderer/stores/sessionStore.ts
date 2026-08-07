@@ -4456,7 +4456,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setProvider: (id) => {
     // Always update the "next session" slot — new threads inherit this.
-    set({ providerId: id });
+    // When switching to a *different* provider, also reset the model
+    // selection: model ids live in per-provider namespaces (claude uses
+    // role/alias keys like "sonnet"; pi uses "provider/modelId" strings),
+    // so a leftover value would either render as a raw id in the chip or
+    // point at a model the new provider can't resolve. "default" lets each
+    // provider pick its own sensible default. customModelId is a claude-only
+    // concept (gateway configs), so it must be cleared on any switch.
+    const prevProviderId = get().providerId;
+    const providerChanged = prevProviderId !== id;
+    set(
+      providerChanged
+        ? { providerId: id, model: "default", customModelId: null }
+        : { providerId: id },
+    );
 
     // If a blank (message-less) session is currently active, also sync the
     // change onto its session row so the provider is fixed correctly before
@@ -4493,11 +4506,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { sessionsByProject: nextByProject, archivedSessionsByProject: nextArchived, sessions: nextSessions };
     });
 
-    // Persist the provider change to the session row. Fire-and-forget, like
-    // the other updateSettings callers (model / effort / permissionMode).
-    void api.session.updateSettings({ sessionId: sid, providerId: id }).catch((err) => {
-      console.error("updateSettings(providerId) failed:", err);
-    });
+    // Persist the provider change to the session row, along with the model
+    // reset when the provider actually changed (so the row stays consistent
+    // with the in-memory "default" + cleared customModelId above). Fire-and-
+    // forget, like the other updateSettings callers.
+    void api.session
+      .updateSettings(
+        providerChanged
+          ? { sessionId: sid, providerId: id, model: "default", customModelId: null }
+          : { sessionId: sid, providerId: id },
+      )
+      .catch((err) => {
+        console.error("updateSettings(providerId) failed:", err);
+      });
   },
 
   reloadProviders: async () => {

@@ -50,6 +50,101 @@ function looksLikeAzure(baseUrl: string): boolean {
   return /azure\.com/i.test(baseUrl);
 }
 
+/** Pull a readable cause out of a Node/undici fetch failure.
+ *
+ * `fetch()` rejects with a `TypeError` whose `.message` is always the opaque
+ * string `"fetch failed"` — useless for diagnosis. The real reason lives on
+ * `.cause` as `{ code, message }` (e.g. `ECONNREFUSED`, `UND_ERR_CONNECT_TIMEOUT`,
+ * `ECONNRESET`). This unwraps it so logs and the error sent back to the user
+ * name the actual failure instead of "fetch failed".
+ *
+ * Also collapses AbortController aborts (client disconnect or our timeout) into
+ * a clear "aborted" string rather than surfacing undici's "aborted" / "The user
+ * aborted a request" verbatim. */
+function describeFetchError(err: unknown): string {
+  const e = err as {
+    name?: string;
+    message?: string;
+    cause?: { code?: string; name?: string; message?: string };
+  };
+  // AbortError surfaces directly (not nested under .cause) when the signal fires.
+  if (e?.name === "AbortError" || /abort/i.test(e?.message ?? "")) {
+    return "aborted (client disconnect or request timeout)";
+  }
+  const cause = e?.cause;
+  const code = cause?.code || cause?.name;
+  if (code) return `${code}: ${cause?.message ?? e?.message ?? "unknown"}`;
+  return e?.message || String(err);
+}
+
+/** Transport-layer error codes worth a single retry. These are transient by
+ *  nature — the connection died mid-flight or a public-IP route flapped — so one
+ *  short retry can self-heal without masking a real outage. HTTP status errors
+ *  (4xx/5xx) are NOT retried: they carry endpoint semantics (auth, model, quota)
+ *  and live on a different code path. */
+const RETRYABLE_FETCH_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EAI_AGAIN",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CLOSED",
+]);
+
+function isRetryableFetchError(err: unknown): boolean {
+  const code = (err as { cause?: { code?: string; name?: string } })?.cause?.code;
+  if (code && RETRYABLE_FETCH_CODES.has(code)) return true;
+  // Fall back to a string match on the readable cause — covers variants that
+  // only populate .name or surface the code in the message.
+  return /ECONNRESET|ECONNREFUSED|EAI_AGAIN|ETIMEDOUT|CONNECT_TIMEOUT|SOCKET|UND_ERR_CLOSED/i.test(
+    describeFetchError(err),
+  );
+}
+
+/** Fetch the upstream with one bounded retry on transient transport failures.
+ *
+ * Waits {@link backoffMs} before the second attempt; honors `signal` so a client
+ * disconnect or timeout aborts immediately rather than sleeping pointlessly.
+ * Returns the first successful Response, or throws the last error. */
+async function fetchUpstreamWithRetry(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal,
+  attempts = 2,
+  backoffMs = 500,
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (signal.aborted) throw new Error("aborted before fetch");
+    try {
+      return await fetch(url, { ...init, signal });
+    } catch (err) {
+      lastErr = err;
+      const cause = describeFetchError(err);
+      if (attempt < attempts && isRetryableFetchError(err)) {
+        log.warn(`bridge: upstream fetch attempt ${attempt}/${attempts} failed (${cause}); retrying in ${backoffMs}ms`);
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, backoffMs);
+          // If the client disconnects mid-backoff, stop waiting immediately.
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(t);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 /** Read and JSON-parse an incoming request body, with a size guard. */
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -77,12 +172,20 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-/** Build the upstream request headers (auth differs between OpenAI & Azure). */
-function upstreamHeaders(upstream: UpstreamConfig, jsonBody: string): Record<string, string> {
+/** Build the upstream request headers (auth differs between OpenAI & Azure).
+ *
+ * NOTE: we deliberately do NOT set `Content-Length`. When the body passed to
+ * `fetch()` is a string (or Buffer/TypedArray), undici computes it itself.
+ * Setting it manually triggers `UND_ERR_INVALID_ARG: invalid content-length
+ * header` on the undici 6.x bundled with Electron 33 (Node 20) — undici
+ * validates a user-supplied Content-Length against its own derivation and
+ * rejects the mismatch. Omitting it lets undici own the value, which is both
+ * correct and what every other caller does. The `jsonBody` param is kept only
+ * so the signature stays stable (the probe path reuses this shape). */
+function upstreamHeaders(upstream: UpstreamConfig, _jsonBody: string): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
-    "Content-Length": Buffer.byteLength(jsonBody).toString(),
   };
   if (looksLikeAzure(upstream.baseUrl)) {
     // Azure OpenAI: `api-key` header, and api-version comes as a query param
@@ -185,16 +288,22 @@ async function handleMessages(
 
   let upstreamRes: Response;
   try {
-    upstreamRes = await fetch(upstreamUrl, {
-      method: "POST",
-      headers: upstreamHeaders(upstream, jsonBody),
-      body: jsonBody,
-      signal: ac.signal,
-    });
+    upstreamRes = await fetchUpstreamWithRetry(
+      upstreamUrl,
+      {
+        method: "POST",
+        headers: upstreamHeaders(upstream, jsonBody),
+        body: jsonBody,
+      },
+      ac.signal,
+    );
   } catch (err) {
-    const msg = (err as Error).message || String(err);
-    log.error(`bridge: upstream fetch failed: ${msg}`);
-    sendError(res, 502, `upstream unreachable: ${msg}`);
+    // Use describeFetchError so the real cause (ECONNREFUSED / connect timeout
+    // / etc.) surfaces in both the log and the message the user sees — the raw
+    // `err.message` is always the opaque "fetch failed".
+    const cause = describeFetchError(err);
+    log.error(`bridge: upstream fetch failed: ${cause}`);
+    sendError(res, 502, `upstream unreachable: ${cause}`);
     return;
   }
 

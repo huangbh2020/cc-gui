@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useDeferredValue, type ReactNode, type ComponentType } from "react";
+import { memo, useState, useMemo, useEffect, useRef, useDeferredValue, type ReactNode, type ComponentType } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconChevronDown,
@@ -354,13 +354,28 @@ export function TurnPanel({
   projectPath?: string | null;
 }) {
   const completed = turnMeta?.endedAt !== undefined;
-  // The panel defaults OPEN while the turn is still running (so the user can
-  // watch the model work) and collapses only once the turn ends (turn.done).
-  // Initial state follows `completed` so a freshly mounted running turn opens
-  // and a historical (ended) turn starts collapsed. LegendList recycles/
-  // remounts items during streaming - re-mounting a running turn re-seeds
-  // open=true, keeping the process visible throughout.
-  const [open, setOpen] = useState(!completed);
+  // Defaults OPEN while the turn is still running AND the model hasn't moved
+  // into its final reply yet (turnActive) — so the user can watch the model
+  // work. The moment the final reply starts streaming (or the turn ends,
+  // which also flips turnActive to false) the panel auto-collapses so the
+  // user's focus moves to the reply text below; historical (ended) turns
+  // start collapsed. LegendList recycles/remounts items during streaming, so
+  // seeding from BOTH flags (not just `completed`) means a remount mid-reply
+  // lands collapsed instead of re-expanding the already-finished process
+  // surface.
+  const [open, setOpen] = useState(!completed && turnActive);
+
+  // Auto-collapse the runtime turnActive true→false edge: a remount isn't
+  // guaranteed at the reply boundary (the panel often stays mounted across
+  // the flip), so watch the prop directly. Collapse happens once, when the
+  // model stops doing process work; a user manually re-expanding a finished
+  // panel afterwards is never force-collapsed by this effect (no further
+  // true→false edge occurs).
+  const prevTurnActive = useRef(turnActive);
+  useEffect(() => {
+    if (prevTurnActive.current && !turnActive) setOpen(false);
+    prevTurnActive.current = turnActive;
+  }, [turnActive]);
 
   const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.kind === "tool_use");
 

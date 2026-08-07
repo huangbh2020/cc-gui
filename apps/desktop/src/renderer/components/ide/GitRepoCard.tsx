@@ -6,7 +6,8 @@ import { cn } from "@renderer/lib/cn.js";
 import { joinPath, basename } from "@renderer/lib/path.js";
 import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
 import type { GitRepo, GitStatusResult, GitFileStatus, GitBranchInfo, GitBranchListResult } from "@contracts/ipc";
-import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { EMPTY_TURN_FILES, useSessionStore } from "@renderer/stores/sessionStore.js";
+import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
 import { Button, Dialog } from "@renderer/components/ui/index.js";
 import {
@@ -117,6 +118,33 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       setLoading(false);
     }
   }, [repo.path]);
+
+  // Auto-refresh when the agent finishes a turn that touched files. The
+  // model's Write/Edit may have created/modified files on disk, so the
+  // working-tree status — and the "更改 (N)" / "已暂存 (N)" tallies — go
+  // stale. `turn.files` fires once per turn and only when files.length > 0,
+  // so this re-runs `git status` at most once per turn (no refresh storm).
+  //
+  // We track the last observed (sessionId, files) pair: a first observation
+  // (mount, or a session switch) only seeds the tracker, and a refresh fires
+  // only when the SAME active session's turnFiles reference changes — a fresh
+  // turn.files payload, or the rewind that clears it. Session switches never
+  // trigger a refresh (the card stays mounted across same-project sessions).
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const turnFiles = useSessionStore((s) =>
+    activeSessionId ? (s.turnFilesBySession[activeSessionId] ?? EMPTY_TURN_FILES) : EMPTY_TURN_FILES,
+  );
+  const prevObserved = useRef<{ sessionId: string | null; files: TurnFileEntry[] | null | undefined }>({
+    sessionId: null,
+    files: undefined,
+  });
+  useEffect(() => {
+    const prev = prevObserved.current;
+    prevObserved.current = { sessionId: activeSessionId, files: turnFiles };
+    if (prev.files === undefined) return; // first observation -> seed only
+    if (prev.sessionId !== activeSessionId) return; // session switch -> seed only
+    if (turnFiles !== prev.files) void refresh();
+  }, [activeSessionId, turnFiles, refresh]);
 
   /** Prepend a log entry (newest first) and cap to MAX_LOG_ENTRIES. */
   const prependLog = useCallback(
