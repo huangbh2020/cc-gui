@@ -41,6 +41,12 @@ export type {
   SelectSeparatorProps,
 } from "./select.js";
 
+export { Card } from "./card.js";
+export type { CardProps } from "./card.js";
+
+export { Switch } from "./switch.js";
+export type { SwitchProps } from "./switch.js";
+
 export { Tooltip } from "./tooltip.js";
 export type {
   TooltipRootProps,

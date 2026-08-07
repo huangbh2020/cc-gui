@@ -4,10 +4,10 @@ import { useTheme } from "@renderer/lib/theme.js";
 import { api } from "@renderer/lib/api.js";
 import { hexToTriplet, tripletToHex } from "@renderer/lib/colorUtils.js";
 import { useSessionStore, CHAT_FONT_SIZE_MIN, CHAT_FONT_SIZE_MAX, RIGHT_PANEL_FONT_SIZE_MIN, RIGHT_PANEL_FONT_SIZE_MAX } from "@renderer/stores/sessionStore.js";
-import { Button, Select } from "@renderer/components/ui/index.js";
+import { Button, Card, Select } from "@renderer/components/ui/index.js";
 import { IconRefresh } from "@renderer/lib/icons.js";
 import type { ThemeName } from "@contracts/theme";
-import { DISPLAY_MODE_SETTING_KEY, type DisplayMode } from "@contracts/ipc";
+import { PanelHeader } from "./PanelHeader.js";
 import { SettingRow } from "./SettingRow.js";
 import { FontSizeStepper } from "./FontSizeStepper.js";
 
@@ -17,12 +17,13 @@ import { FontSizeStepper } from "./FontSizeStepper.js";
  * Consolidates what used to be four separate stacked panels (ThemePanel,
  * DisplayModePanel, ChatAppearancePanel, AccentPanel) into a single compact
  * view: left column = feature description, right column = a small control
- * (dropdown / color swatch / slider). Each setting's persistence path is
- * unchanged from before — only the presentation is reworked.
+ * (dropdown / color swatch / slider).
  *
- * Persistence summary (all unchanged):
+ * Note: the display-mode row used to live here but has moved to the "常规"
+ * (General) panel — it's a layout/interaction preference, not visual styling.
+ *
+ * Persistence summary:
  *  - theme           → api.theme.set → nativeTheme.themeSource on main
- *  - displayMode     → setting.set(DISPLAY_MODE_SETTING_KEY, …)
  *  - chatFontSize    → setting.set(ui.chatFontSize, …)
  *  - userMessageColor→ setting.set(ui.userMessageColor, …)   "R G B" | null
  *  - accentColor     → setting.set(ui.accentColor, …)        "R G B" | null
@@ -70,17 +71,8 @@ const THEME_OPTIONS: { value: ThemeName; label: string }[] = [
   { value: "system", label: "跟随系统" },
 ];
 
-const DISPLAY_MODE_OPTIONS: { value: DisplayMode; label: string }[] = [
-  { value: "single", label: "单会话模式" },
-  { value: "tabs", label: "Tab 标签模式" },
-];
-
 export function AppearancePanel() {
   const { theme, effective } = useTheme();
-
-  // ── Display mode ──
-  const displayMode = useSessionStore((s) => s.displayMode);
-  const setDisplayMode = useSessionStore((s) => s.setDisplayMode);
 
   // ── Chat font size ──
   const chatFontSize = useSessionStore((s) => s.chatFontSize);
@@ -120,17 +112,16 @@ export function AppearancePanel() {
   const effectiveLabel = effective === "dark" ? "深色" : "浅色";
 
   return (
-    <section className="space-y-3">
-      <div>
-        <h2 className="font-semibold text-content">外观</h2>
-        <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
-          调整界面主题、聊天样式与全局强调色,所有改动实时生效。
-        </p>
-      </div>
+    <section className="space-y-4">
+      <PanelHeader
+        title="外观"
+        desc="调整界面主题、聊天样式与全局强调色,所有改动实时生效。"
+      />
 
-      {/* Rows share a `divide-y` so each SettingRow is separated by a hairline
-          without each row having to know about borders. */}
-      <div className="divide-y divide-edge">
+      {/* Single category → rows go straight into one card. Rows share a
+          `divide-y` so each SettingRow is separated by a hairline without each
+          row having to know about borders. */}
+      <Card className="divide-y divide-edge">
         {/* ── Theme ── */}
         <SettingRow
           title="界面主题"
@@ -160,40 +151,6 @@ export function AppearancePanel() {
                 <Select.Popup>
                   <Select.List>
                     {THEME_OPTIONS.map((o) => (
-                      <Select.Item key={o.value} value={o.value}>
-                        <Select.ItemText>{o.label}</Select.ItemText>
-                      </Select.Item>
-                    ))}
-                  </Select.List>
-                </Select.Popup>
-              </Select.Positioner>
-            </Select.Portal>
-          </Select.Root>
-        </SettingRow>
-
-        {/* ── Display mode ── */}
-        <SettingRow
-          title="中间面板显示模式"
-          desc="点击左侧线程时,中间聊天区的呈现方式。"
-          htmlFor="setting-displaymode"
-        >
-          <Select.Root
-            value={displayMode}
-            onValueChange={(v) => void setDisplayMode(v as DisplayMode)}
-          >
-            <Select.Trigger id="setting-displaymode" className="min-w-[10rem]">
-              <Select.Value>
-                {(val: DisplayMode) =>
-                  DISPLAY_MODE_OPTIONS.find((o) => o.value === val)?.label ??
-                  "单会话模式"
-                }
-              </Select.Value>
-            </Select.Trigger>
-            <Select.Portal>
-              <Select.Positioner>
-                <Select.Popup>
-                  <Select.List>
-                    {DISPLAY_MODE_OPTIONS.map((o) => (
                       <Select.Item key={o.value} value={o.value}>
                         <Select.ItemText>{o.label}</Select.ItemText>
                       </Select.Item>
@@ -373,10 +330,10 @@ export function AppearancePanel() {
             恢复默认
           </Button>
         </SettingRow>
-      </div>
 
-      {/* Tiny footer note — the divide-y wrapper above intentionally doesn't
-          include this so the last accent row is the final separated row. */}
+      {/* Tiny footer note — the card above intentionally ends after the last
+          accent row. */}
+      </Card>
       <p className="pt-1 text-[0.7143em] text-content-subtle">
         提示:主题切换整窗即时生效;颜色透明度按各场景预设固定,无需手动调节。
       </p>

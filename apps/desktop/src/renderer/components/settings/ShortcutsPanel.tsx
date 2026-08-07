@@ -13,7 +13,6 @@
  * store, which writes the whole override map to `ui.shortcuts` as JSON.
  */
 import { useMemo } from "react";
-import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
   collectCommands,
@@ -23,6 +22,8 @@ import {
 } from "@renderer/lib/commands.js";
 import { DEFAULT_SHORTCUTS } from "@renderer/lib/shortcuts.js";
 import { Button } from "@renderer/components/ui/index.js";
+import { PanelHeader } from "./PanelHeader.js";
+import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
 import { ShortcutRecorder } from "./ShortcutRecorder.js";
 import { IconRefresh } from "@renderer/lib/icons.js";
@@ -100,63 +101,55 @@ export function ShortcutsPanel() {
   };
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="font-semibold text-content">快捷键</h2>
-          <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
+    <section className="space-y-4">
+      <PanelHeader
+        title="快捷键"
+        desc={
+          <>
             点击右侧「修改」并按下新的组合键即可重新绑定。 Esc 取消录制。
             带 <kbd className="rounded border border-edge px-1">⌘</kbd>/
             <kbd className="rounded border border-edge px-1">Ctrl</kbd> 的组合在输入框内依然生效。
-          </p>
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={resetAllShortcuts}
-          title="清除所有自定义绑定,恢复默认快捷键"
-          className="gap-1 shrink-0"
-        >
-          <IconRefresh size={12} />
-          恢复全部默认
-        </Button>
-      </div>
+          </>
+        }
+        action={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={resetAllShortcuts}
+            title="清除所有自定义绑定,恢复默认快捷键"
+            className="gap-1 shrink-0"
+          >
+            <IconRefresh size={12} />
+            恢复全部默认
+          </Button>
+        }
+      />
 
       {grouped.map(({ group, items }) => (
-        <div key={group} className="space-y-1">
-          <div
-            className={cn(
-              "px-1 pt-2 pb-1 text-[0.7143em] font-semibold uppercase tracking-wide",
-              "text-content-subtle",
-            )}
-          >
-            {groupLabel[group]}
-          </div>
-          <div className="divide-y divide-edge rounded-lg border border-edge">
-            {items.map((cmd) => {
-              const Icon = cmd.icon;
-              return (
-                <SettingRow
-                  key={cmd.id}
-                  title={
-                    <span className="flex items-center gap-2">
-                      {Icon && (
-                        <Icon
-                          size={14}
-                          className="shrink-0 text-content-muted"
-                        />
-                      )}
-                      {cmd.label}
-                    </span>
-                  }
-                  htmlFor={undefined}
-                >
-                  <ShortcutRecorder commandId={cmd.id} />
-                </SettingRow>
-              );
-            })}
-          </div>
-        </div>
+        <SettingsSection key={group} title={groupLabel[group]}>
+          {items.map((cmd) => {
+            const Icon = cmd.icon;
+            return (
+              <SettingRow
+                key={cmd.id}
+                title={
+                  <span className="flex items-center gap-2">
+                    {Icon && (
+                      <Icon
+                        size={14}
+                        className="shrink-0 text-content-muted"
+                      />
+                    )}
+                    {cmd.label}
+                  </span>
+                }
+                htmlFor={undefined}
+              >
+                <ShortcutRecorder commandId={cmd.id} />
+              </SettingRow>
+            );
+          })}
+        </SettingsSection>
       ))}
 
       <p className="pt-1 text-[0.7143em] text-content-subtle">

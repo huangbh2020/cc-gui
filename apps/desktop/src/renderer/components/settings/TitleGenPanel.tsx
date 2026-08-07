@@ -1,7 +1,9 @@
 import { useMemo } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
+import { Switch } from "@renderer/components/ui/index.js";
 import { SettingRow } from "./SettingRow.js";
+import { SettingsSection } from "./SettingsSection.js";
 import { CUSTOM_MODEL_ROLES, CUSTOM_MODEL_ROLE_LABELS } from "@contracts/customModel";
 
 /**
@@ -18,6 +20,9 @@ import { CUSTOM_MODEL_ROLES, CUSTOM_MODEL_ROLE_LABELS } from "@contracts/customM
  *
  * The model value is stored as `"configId:roleKey"` in the settings table,
  * same shape as the commit-gen / conflict-resolve model selectors.
+ *
+ * Renders as its own SettingsSection (card) so it slots into GeneralPanel as
+ * a sibling section.
  */
 export function TitleGenPanel() {
   const titleGenEnabled = useSessionStore((s) => s.titleGenEnabled);
@@ -46,23 +51,20 @@ export function TitleGenPanel() {
   }, [customModels]);
 
   return (
-    <div className="divide-y divide-edge">
-      <div className="pb-3">
-        <h2 className="font-semibold text-content">线程名称生成</h2>
-        <p className="mt-0.5 text-[0.7857em] text-content-subtle">
-          开启后,在用户发送第一条消息时后台自动调用模型生成简短标题,并覆盖默认标题。生成失败时保留默认占位标题。
-        </p>
-      </div>
-
+    <SettingsSection
+      title="线程名称生成"
+      desc="开启后,在用户发送第一条消息时后台自动调用模型生成简短标题,并覆盖默认标题。生成失败时保留默认占位标题。"
+    >
       {/* Auto-generate toggle */}
       <SettingRow
         title="自动生成"
         desc="开启后,新会话的首条消息会触发后台标题生成。关闭则沿用首条消息前 40 字符作为标题。"
         htmlFor="setting-titlegen-enabled"
       >
-        <Toggle
+        <Switch
+          id="setting-titlegen-enabled"
           checked={titleGenEnabled}
-          onChange={setTitleGenEnabled}
+          onCheckedChange={setTitleGenEnabled}
           label={titleGenEnabled ? "已开启" : "已关闭"}
         />
       </SettingRow>
@@ -96,40 +98,6 @@ export function TitleGenPanel() {
           </p>
         )}
       </SettingRow>
-    </div>
-  );
-}
-
-/** Compact inline toggle switch. Styled to match the existing accent token.
- *  Mirrors the Toggle in CustomModelsPanel for visual consistency. */
-function Toggle({
-  checked,
-  onChange,
-  label,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      id="setting-titlegen-enabled"
-      aria-checked={checked}
-      title={label}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        "relative h-4 w-7 shrink-0 rounded-full transition-colors",
-        checked ? "bg-accent" : "bg-surface-hover",
-      )}
-    >
-      <span
-        className={cn(
-          "absolute top-0.5 h-3 w-3 rounded-full bg-surface shadow transition-transform",
-          checked ? "left-3.5" : "left-0.5",
-        )}
-      />
-    </button>
+    </SettingsSection>
   );
 }

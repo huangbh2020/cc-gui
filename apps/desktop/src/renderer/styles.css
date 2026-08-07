@@ -350,6 +350,39 @@ body,
   }
 }
 
+/* ───────────── Chat message-stream density ─────────────
+ * The message stream's vertical rhythm is user-configurable (Settings →
+ * 常规 → 数据流显示风格). Three density presets, each setting three vars:
+ *   --chat-row-gap-assistant : top margin of each assistant MessageRow
+ *   --chat-row-gap-user      : top margin of each user MessageRow (kept larger
+ *                              than assistant so a new user prompt still reads
+ *                              as a distinct input even in compact mode)
+ *   --chat-block-gap         : gap between blocks inside one message
+ *                              (MessageBlocks `space-y-[...]`)
+ *
+ * The active preset is selected by the `data-chat-density` attribute on <html>,
+ * written by lib/appearance.ts from the persisted `ui.chatDensity` setting.
+ * The :root block below is the "comfortable" default (= the old hardcoded
+ * `mt-3` / `mt-5` / `space-y-2`), so the uncustomized state and any consumer
+ * outside [data-chat-density] resolve unchanged. The explicit selectors cover
+ * all three modes for clarity. */
+:root,
+[data-chat-density="comfortable"] {
+  --chat-row-gap-assistant: 0.75rem; /* 12px (was mt-3) */
+  --chat-row-gap-user: 1.25rem;      /* 20px (was mt-5) */
+  --chat-block-gap: 0.5rem;          /* 8px  (was space-y-2) */
+}
+[data-chat-density="compact"] {
+  --chat-row-gap-assistant: 0.375rem; /* 6px */
+  --chat-row-gap-user: 0.625rem;      /* 10px */
+  --chat-block-gap: 0.25rem;          /* 4px */
+}
+[data-chat-density="cozy"] {
+  --chat-row-gap-assistant: 1.125rem; /* 18px */
+  --chat-row-gap-user: 1.75rem;       /* 28px */
+  --chat-block-gap: 0.75rem;          /* 12px */
+}
+
 /* ───────────── Narrow-composer spacing ─────────────
  * When the chat pane is narrow (side panels open / small window), the
  * composer's bottom action row can overflow its card because the chip cluster

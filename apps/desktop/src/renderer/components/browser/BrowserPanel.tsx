@@ -352,6 +352,17 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
   }, []);
   const handleClearPicked = useCallback(() => setPickedItems([]), []);
 
+  /** Overlay → main panel: close the fullscreen overlay and put the browser
+   *  back in the right sidebar — the same restoration the "切换到侧边栏"
+   *  toolbar button performs. Flows that exit the overlay while the user still
+   *  wants to browse (e.g. 添加) must go through this so the right panel isn't
+   *  left closed behind the overlay. */
+  const handleReturnToSidebar = useCallback(() => {
+    setOpen(false);
+    setRightOpen(true);
+    setRightPanelTab("browser");
+  }, [setOpen, setRightOpen, setRightPanelTab]);
+
   /** Flush all staged elements to the composer (overlay mode only) and return
    *  to the main workspace. This is the commit action for the staging bar:
    *  elements picked in the browser are only added to the input box when the
@@ -360,15 +371,17 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
     // Read from the ref to avoid stale-closure issues if multiple adds race.
     const items = pickedItemsRef.current;
     if (items.length === 0) {
-      setOpen(false);
+      handleReturnToSidebar();
       return;
     }
     for (const el of items) {
       enqueueChatElement(el);
     }
     setPickedItems([]);
-    setOpen(false);
-  }, [enqueueChatElement, setOpen]);
+    // Commit + return: like "切换到侧边栏", restore the browser into the right
+    // sidebar so returning to the main panel doesn't leave the sidebar closed.
+    handleReturnToSidebar();
+  }, [enqueueChatElement, handleReturnToSidebar]);
 
   /** Normalize a typed string into a URL (add https:// if it lacks a scheme). */
   const normalizeUrl = (input: string): string => {
@@ -505,13 +518,11 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
       setRightPanelTab("files");
       setOpen(true);
     } else {
-      // Overlay → sidebar: close the overlay + switch the right panel to the
-      // browser tab (and make sure the right panel is visible).
-      setOpen(false);
-      setRightOpen(true);
-      setRightPanelTab("browser");
+      // Overlay → sidebar: restore the browser into the right sidebar (this
+      // also closes the overlay and reopens the right panel).
+      handleReturnToSidebar();
     }
-  }, [mode, setRightPanelTab, setOpen, setRightOpen]);
+  }, [mode, handleReturnToSidebar, setRightPanelTab, setOpen]);
 
   /** "关闭浏览器" button: open a confirmation dialog before tearing down all
    *  tabs. We hide the active view first so the OS-level WebContentsView can't

@@ -29,6 +29,8 @@ import type { AgentProvider, StartTurnRequest, ProviderContext, TurnHandle, Prov
 import { PiMessageAdapter } from "./PiMessageAdapter.js";
 import { PiModelsStore } from "@main/lib/piModelsStore.js";
 import { loadPiSdk } from "./piSdkLoader.js";
+import { normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 /**
  * Map the contract's open-string permissionMode to a Pi tools allowlist.
@@ -46,6 +48,80 @@ function toolsForPermissionMode(mode: string | undefined): string[] | undefined 
     default:
       return undefined; // Pi's default set (read, bash, edit, write)
   }
+}
+
+/** Pi's write/edit tools carry their target path in the `path` field (unlike
+ *  Claude's `file_path`). Both schemas are `{ path, ... }`. */
+type PathToolParams = { path?: unknown };
+
+/**
+ * Guard a file-tool path for the Pi provider. The Pi SDK has no canUseTool
+ * interception — tools execute directly — so the strict in-project policy is
+ * enforced by wrapping the write/edit tool definitions themselves (see
+ * {@link createGuardedFileTools}). Mirrors the Claude provider's canUseTool
+ * guard: WSL-style `/mnt/<drive>/...` paths are normalized to native Windows
+ * paths (otherwise they'd resolve to a garbage `D:\mnt\...` folder), and
+ * writes resolving outside the project working directory are denied except in
+ * bypassPermissions/dontAsk, where the user explicitly opted out of all checks.
+ */
+function guardToolPath(
+  cwd: string,
+  rawPath: string,
+  strict: boolean,
+): { denied: true; message: string } | { denied: false; path: string } {
+  const norm = normalizeToolFilePath(cwd, rawPath);
+  if (!norm) return { denied: false, path: rawPath };
+  if (!norm.insideProject && strict) {
+    return {
+      denied: true,
+      message: `拒绝:目标路径在项目工作目录之外(${norm.absPath})。只允许在项目目录内写入文件,请改用相对路径。`,
+    };
+  }
+  // Rewrite to the normalized absolute path so the write lands where the user
+  // expects — an in-project `/mnt/d/...` path would otherwise resolve to a
+  // garbage `D:\mnt\...` folder on Windows.
+  return { denied: false, path: norm.absPath };
+}
+
+type AnyToolDef = ToolDefinition<any, any, any>;
+
+/**
+ * Wrap the SDK's write/edit tools with the path guard. AgentSession merges
+ * `customTools` into its definition registry with a same-name override
+ * (`definitionRegistry.set`), so passing these replaces the unguarded
+ * built-ins. Denials throw from `execute`, which the agent loop converts into
+ * an `isError: true` tool result — the model sees the message and retries with
+ * an in-project path. Tools in plan mode are filtered out by the `tools`
+ * allowlist (read-only), so the guard is moot there.
+ *
+ * Built from `sdk.createWriteToolDefinition` / `sdk.createEditToolDefinition`
+ * so we keep the SDK lazy-loaded (module-level imports would pull it into the
+ * main-process startup path).
+ */
+function createGuardedFileTools(
+  sdk: typeof import("@earendil-works/pi-coding-agent"),
+  cwd: string,
+  strict: boolean,
+): AnyToolDef[] {
+  const baseWrite = sdk.createWriteToolDefinition(cwd) as AnyToolDef;
+  const baseEdit = sdk.createEditToolDefinition(cwd) as AnyToolDef;
+  const wrap = (def: AnyToolDef): AnyToolDef => ({
+    ...def,
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const raw = (params as PathToolParams | undefined)?.path;
+      if (typeof raw === "string" && raw.length > 0) {
+        const checked = guardToolPath(cwd, raw, strict);
+        if (checked.denied) {
+          throw new Error(checked.message);
+        }
+        if (checked.path !== raw) {
+          params = { ...(params as object), path: checked.path };
+        }
+      }
+      return def.execute(toolCallId, params, signal, onUpdate, ctx);
+    },
+  });
+  return [wrap(baseWrite), wrap(baseEdit)];
 }
 
 export class PiAgentSdkProvider implements AgentProvider {
@@ -98,6 +174,11 @@ export class PiAgentSdkProvider implements AgentProvider {
 
     // Map permission mode → tools allowlist (see toolsForPermissionMode).
     const tools = toolsForPermissionMode(req.permissionMode);
+    // Strict in-project write policy (same as the Claude provider's canUseTool
+    // guard): deny writes outside the project working directory, except in
+    // bypassPermissions/dontAsk where the user opted out of all checks. WSL
+    // paths are normalized in every mode. See createGuardedFileTools.
+    const strict = !(req.permissionMode === "bypassPermissions" || req.permissionMode === "dontAsk");
 
     // Build a ModelRuntime that injects all configured API keys. Pi's
     // setRuntimeApiKey stores the key at the top of the auth priority chain
@@ -148,6 +229,9 @@ export class PiAgentSdkProvider implements AgentProvider {
       cwd: req.cwd,
       thinkingLevel: req.effort && req.effort !== "default" ? (req.effort as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") : undefined,
       tools,
+      // Guarded write/edit override the built-ins (same-name custom tools win
+      // in AgentSession's definition registry) — see createGuardedFileTools.
+      customTools: createGuardedFileTools(sdk, req.cwd, strict),
       sessionManager,
       modelRuntime,
       ...(resolvedModel ? { model: resolvedModel } : {}),

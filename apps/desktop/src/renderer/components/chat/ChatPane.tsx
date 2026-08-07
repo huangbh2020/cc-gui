@@ -1839,7 +1839,18 @@ const MessageRow = memo(function MessageRow({
   }
 
   return (
-    <div className={cn("group", isUser ? "mt-5 flex justify-end" : "mt-3")}>
+    <div
+      className={cn(
+        "group",
+        // Vertical rhythm is driven by the chat-density CSS vars (see
+        // styles.css). User rows get a larger gap than assistant rows so a
+        // new user prompt still reads as a distinct input even in compact
+        // mode. mt-[...] preserves the old margin-top semantics.
+        isUser
+          ? "mt-[var(--chat-row-gap-user)] flex justify-end"
+          : "mt-[var(--chat-row-gap-assistant)]",
+      )}
+    >
       <div className={isUser ? "max-w-[85%] min-w-0" : "w-full min-w-0"}>
         {/* Per-turn stat row - only on the first assistant message of a
             turn (the one carrying turnMeta), and not suppressed by a parent

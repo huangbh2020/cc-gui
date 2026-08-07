@@ -5,7 +5,8 @@ import { cn } from "@renderer/lib/cn.js";
  * One setting = one row. Left side carries a title (+ optional description),
  * right side carries the control(s). The parent container draws the row
  * separators (`divide-y divide-edge`) so this component stays a pure layout
- * shell — no borders of its own.
+ * shell — no borders of its own. Rows carry their own horizontal inset
+ * (`px-4`) so content never touches the edges of the containing card.
  *
  * `htmlFor` (optional) makes the title label click-through to the control,
  * useful for native inputs like range/color. `controlAlign` lets the caller
@@ -39,7 +40,7 @@ export function SettingRow({
 
   if (layout === "vertical") {
     return (
-      <div className={cn("flex flex-col gap-2 py-3", className)}>
+      <div className={cn("flex flex-col gap-2 px-4 py-3", className)}>
         <div>
           <TitleTag
             {...(isLabel ? { htmlFor } : {})}
@@ -62,7 +63,7 @@ export function SettingRow({
   return (
     <div
       className={cn(
-        "flex flex-wrap items-start justify-between gap-x-6 gap-y-2 py-3",
+        "flex flex-wrap items-start justify-between gap-x-6 gap-y-2 px-4 py-3",
         className,
       )}
     >

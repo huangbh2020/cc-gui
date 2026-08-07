@@ -18,7 +18,8 @@ import { useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
-import { Button } from "@renderer/components/ui/index.js";
+import { Button, Card, Switch } from "@renderer/components/ui/index.js";
+import { PanelHeader } from "./PanelHeader.js";
 import type { LspLanguageId, LspLanguageState } from "@contracts/ipc";
 import {
   IconLanguage,
@@ -92,20 +93,16 @@ export function LspLanguagesPanel() {
   }, [reloadLspLanguages]);
 
   return (
-    <section className="mx-auto max-w-3xl">
-      <header className="mb-4">
-        <h2 className="flex items-center gap-2 text-base font-semibold text-content">
-          <IconLanguage size={18} className="text-accent" />
-          语言服务器
-        </h2>
-        <p className="mt-1 text-[0.85em] text-content-muted">
-          为编辑器启用跳转定义、查找引用、悬停信息。点击"安装"会通过本机的包管理器(npm / pip / go / brew)全局安装对应 server。安装后打开开关即启用。
-        </p>
-      </header>
+    <section className="mx-auto max-w-3xl space-y-4">
+      <PanelHeader
+        title="语言服务器"
+        desc='为编辑器启用跳转定义、查找引用、悬停信息。点击"安装"会通过本机的包管理器(npm / pip / go / brew)全局安装对应 server。安装后打开开关即启用。'
+        icon={IconLanguage}
+      />
 
-      <div className="divide-y divide-edge rounded-lg border border-edge bg-surface">
+      <Card className="divide-y divide-edge">
         {lspLanguages.length === 0 ? (
-          <div className="flex items-center justify-center gap-2 py-8 text-[0.85em] text-content-subtle">
+          <div className="flex items-center justify-center gap-2 px-4 py-8 text-[0.85em] text-content-subtle">
             <IconLoader2 size={14} className="animate-spin" />
             加载语言服务器状态…
           </div>
@@ -114,7 +111,7 @@ export function LspLanguagesPanel() {
             <LanguageCard key={lang.language} state={lang} onReload={reloadLspLanguages} />
           ))
         )}
-      </div>
+      </Card>
     </section>
   );
 }
@@ -253,8 +250,7 @@ function LanguageCard({
           </div>
           <div className="mt-0.5 text-[0.7857em] text-content-subtle">{meta.hint}</div>
         </div>
-        <Toggle checked={state.enabled} onChange={doToggle} label={state.enabled ? "已启用" : "已停用"} />
-      </div>
+        <Switch checked={state.enabled} onCheckedChange={doToggle} label={state.enabled ? "已启用" : "已停用"} />      </div>
 
       {/* Resolved path */}
       {state.serverPath && (
@@ -489,37 +485,6 @@ function StatusBadge({ state }: { state: LspLanguageState }) {
       <IconX size={9} />
       未安装
     </span>
-  );
-}
-
-function Toggle({
-  checked,
-  onChange,
-  label,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      title={label}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        "relative h-4 w-7 shrink-0 rounded-full transition-colors",
-        checked ? "bg-accent" : "bg-surface-hover",
-      )}
-    >
-      <span
-        className={cn(
-          "absolute top-0.5 h-3 w-3 rounded-full bg-surface shadow transition-transform",
-          checked ? "left-3.5" : "left-0.5",
-        )}
-      />
-    </button>
   );
 }
 

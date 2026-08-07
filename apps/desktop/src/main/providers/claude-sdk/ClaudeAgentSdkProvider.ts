@@ -19,6 +19,11 @@ import type { AskUserQuestionItem, PermissionMode } from "@contracts/runtime";
 import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
 import { buildCustomEnv, MCODE_CONFIG_DIR } from "./customEnv.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
+import {
+  FILE_MUTATING_TOOLS,
+  getToolFilePath,
+  normalizeToolFilePath,
+} from "@main/lib/fileSnapshot.js";
 import { resolveSdkBinaryPath } from "./sdkBinaryPath.js";
 
 // Lazy-load the Agent SDK so the (large) module and its bundled claude binary
@@ -316,6 +321,42 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         };
       }
 
+      // --- File-write path guard (strict in-project policy) ---
+      // Claude sometimes emits WSL-style `/mnt/<drive>/...` paths even on
+      // native Windows (a training-data artifact). On Windows those resolve
+      // to a garbage root-relative folder (e.g. `D:\mnt\d\...`), and nothing
+      // used to stop the write — acceptEdits auto-approved them silently, so
+      // files landed outside the project. Here we (1) normalize such paths
+      // to native Windows paths and (2) deny writes that resolve outside the
+      // project working directory in EVERY permission mode except
+      // bypassPermissions/dontAsk (the user explicitly opted out of all
+      // checks there). The normalized path rides back to the SDK via
+      // `updatedInput` so the actual write lands at the corrected location.
+      // The strict deny runs BEFORE the always-allowed gate below — the
+      // project boundary wins over a per-tool grant.
+      let effectiveInput: Record<string, unknown> | undefined;
+      if (FILE_MUTATING_TOOLS.has(toolName)) {
+        const raw = getToolFilePath(toolName, input);
+        if (raw) {
+          const norm = normalizeToolFilePath(req.cwd, raw);
+          if (norm) {
+            const pathKey = toolName === "NotebookEdit" ? "notebook_path" : "file_path";
+            effectiveInput = { ...input, [pathKey]: norm.absPath };
+            const mode = ctx.getPermissionMode?.();
+            const bypass = mode === "bypassPermissions" || mode === "dontAsk";
+            if (!norm.insideProject && !bypass) {
+              ctx.log.info(
+                `denied out-of-project ${toolName}: ${norm.absPath} (cwd=${req.cwd})`,
+              );
+              return {
+                behavior: "deny",
+                message: `拒绝:目标路径在项目工作目录之外(${norm.absPath})。只允许在项目目录内写入文件,请改用相对路径。`,
+              };
+            }
+          }
+        }
+      }
+
       // Standard tool approval. Before prompting the user, check two
       // host-side gates so the change takes effect immediately:
       //  (1) "always allow" — the user previously granted this tool with
@@ -324,25 +365,37 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       //      tool; acceptEdits auto-allows file-editing tools. The SDK's own
       //      permissionMode option is fixed at query() start, but our host
       //      gate reads the LIVE value so a mid-turn flip applies to the
-      //      next tool right away.
+      //      next tool right away. Out-of-project writes never reach these
+      //      gates — they were denied above.
       if (ctx.isToolAlwaysAllowed?.(toolName)) {
-        return { behavior: "allow" };
+        return effectiveInput
+          ? { behavior: "allow", updatedInput: effectiveInput }
+          : { behavior: "allow" };
       }
       const mode = ctx.getPermissionMode?.();
       if (shouldAutoApprove(mode, toolName)) {
-        return { behavior: "allow" };
+        return effectiveInput
+          ? { behavior: "allow", updatedInput: effectiveInput }
+          : { behavior: "allow" };
       }
 
       if (!requestApproval) {
-        return { behavior: "allow" };
+        return effectiveInput
+          ? { behavior: "allow", updatedInput: effectiveInput }
+          : { behavior: "allow" };
       }
       const r = await requestApproval({
         requestId: randomUUID(),
         toolName,
-        input,
+        input: effectiveInput ?? input,
       });
       return r.allow
-        ? { behavior: "allow" as const, updatedInput: r.updatedInput as Record<string, unknown> | undefined }
+        ? {
+            behavior: "allow" as const,
+            updatedInput: (r.updatedInput ?? effectiveInput) as
+              | Record<string, unknown>
+              | undefined,
+          }
         : { behavior: "deny" as const, message: r.reason ?? "Denied by user" };
     };
     options.canUseTool = canUseTool;
@@ -412,14 +465,28 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     options.onUserDialog = onUserDialog;
     options.supportedDialogKinds = Array.from(EXIT_PLAN_DIALOG_KINDS);
 
-    // --- systemPrompt for AskUserQuestion fallback ---
-    // When native AskUserQuestion tool is unavailable, inject the sentinel
-    // convention so the model can surface questions in text.
+    // --- systemPrompt appends ---
+    // (1) Windows path hint: Claude's training data is saturated with
+    //     WSL-style `/mnt/<drive>/...` paths; on native Windows those resolve
+    //     to a garbage root-relative folder. The canUseTool guard normalizes
+    //     the file tools anyway, but this hint cuts how often the model emits
+    //     such paths in the first place — including inside Bash commands
+    //     (e.g. `cat > /mnt/d/...`), which the guard can't intercept.
+    // (2) AskUserQuestion sentinel fallback when the native tool is missing.
+    const appends: string[] = [];
+    if (process.platform === "win32") {
+      appends.push(
+        "You are running on Windows. Use native Windows paths (e.g. D:\\...) or, preferably, paths relative to the project working directory. NEVER use WSL-style paths like /mnt/d/... — they do not exist on this machine.",
+      );
+    }
     if (!this.capabilities.supportsAskUserQuestion) {
+      appends.push(ASK_SYSTEM_PROMPT);
+    }
+    if (appends.length > 0) {
       options.systemPrompt = {
         type: "preset",
         preset: "claude_code",
-        append: ASK_SYSTEM_PROMPT,
+        append: appends.join(" "),
       };
     }
 

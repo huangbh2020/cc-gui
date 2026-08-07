@@ -1,13 +1,14 @@
 import { useEffect } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import type { ChatDensity } from "@contracts/ipc";
 
 /**
  * Runtime application of user-configurable appearance settings.
  *
- * The settings (font size, user-message bg color, global accent color) live
- * in the session store (hydrated from the `settings` SQLite table). This
- * module mirrors them onto <html> as CSS custom properties so they cascade
- * into the rendering without per-component plumbing:
+ * The settings (font size, user-message bg color, global accent color, chat
+ * density) live in the session store (hydrated from the `settings` SQLite
+ * table). This module mirrors them onto <html> so they cascade into the
+ * rendering without per-component plumbing:
  *
  *   --chat-font-size : consumed by `[font-size:var(--chat-font-size)]`
  *                       classes in ChatPane + Markdown.
@@ -17,11 +18,18 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
  *                       color token — the global emphasis color (buttons,
  *                       links, selected states, focus rings, prompt-card
  *                       accents). Composes `/10`, `/15`, `/60` etc. alpha.
+ *   data-chat-density: a `<html>` attribute ("compact"|"comfortable"|"cozy")
+ *                       consumed by styles.css attribute selectors to set the
+ *                       three density vars (--chat-row-gap-assistant /
+ *                       --chat-row-gap-user / --chat-block-gap) that drive
+ *                       message-stream vertical rhythm.
  *
- * Static fallbacks for all three vars live in styles.css (:root + .dark);
+ * Static fallbacks for the color/font vars live in styles.css (:root + .dark);
  * when the user has NOT customized a value we REMOVE the inline property so
  * the stylesheet default re-asserts (and correctly differs between light/
- * dark — e.g. --accent is emerald-600 in light, emerald-500 in dark).
+ * dark — e.g. --accent is emerald-600 in light, emerald-500 in dark). The
+ * density fallback ("comfortable") is handled in styles.css via the same
+ * attribute selector so an unset value still resolves.
  *
  * This is the project's first runtime CSS-variable write; lib/theme.ts's
  * `applyThemeClass` is the closest precedent (DOM mutation on <html>).
@@ -30,6 +38,15 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 /** Write the chat font size as `--chat-font-size` on <html>. */
 export function applyChatFontSize(px: number): void {
   document.documentElement.style.setProperty("--chat-font-size", `${px}px`);
+}
+
+/** Set the message-stream density by writing `data-chat-density` on <html>.
+ *  styles.css holds the three per-density variable maps
+ *  (--chat-row-gap-assistant / --chat-row-gap-user / --chat-block-gap); this
+ *  attribute is the switch. The "comfortable" default is mirrored in
+ *  styles.css as the :root fallback so an unset attribute still resolves. */
+export function applyChatDensity(mode: ChatDensity): void {
+  document.documentElement.setAttribute("data-chat-density", mode);
 }
 
 /** Write the global side-panel + settings base font size as
@@ -66,15 +83,16 @@ export function applyAccentColor(rgbTriplet: string | null): void {
 }
 
 /**
- * Keep the three appearance CSS vars in sync with the session store. Mount
- * once at the app root (alongside useTheme). Re-runs whenever the store
- * values change (user dragged the slider / picked a color in Settings),
- * re-applying all three vars idempotently.
+ * Keep the appearance CSS vars in sync with the session store. Mount once at
+ * the app root (alongside useTheme). Re-runs whenever a store value changes
+ * (user dragged the slider / picked a color / switched density in Settings),
+ * re-applying each var idempotently.
  */
 export function useChatAppearance(): void {
   const chatFontSize = useSessionStore((s) => s.chatFontSize);
   const userMessageColor = useSessionStore((s) => s.userMessageColor);
   const accentColor = useSessionStore((s) => s.accentColor);
+  const chatDensity = useSessionStore((s) => s.chatDensity);
 
   useEffect(() => {
     applyChatFontSize(chatFontSize);
@@ -87,6 +105,10 @@ export function useChatAppearance(): void {
   useEffect(() => {
     applyAccentColor(accentColor);
   }, [accentColor]);
+
+  useEffect(() => {
+    applyChatDensity(chatDensity);
+  }, [chatDensity]);
 }
 
 /**

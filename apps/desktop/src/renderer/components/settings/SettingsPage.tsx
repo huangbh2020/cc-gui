@@ -1,15 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ThreePaneLayout } from "@renderer/components/layout/ThreePaneLayout.js";
+import {
+  IconSettings,
+  IconPalette,
+  IconKeyboard,
+  IconRobot,
+  IconSparkles,
+  IconBell,
+  IconBrandGit,
+  IconTerminal2,
+  IconCode,
+  IconInfoCircle,
+  type TablerIconProps,
+} from "@renderer/lib/icons.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { SkillsPanel } from "./SkillsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
 import { ShortcutsPanel } from "./ShortcutsPanel.js";
+import { GeneralPanel } from "./GeneralPanel.js";
 import { GitPanel } from "./GitPanel.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { LspLanguagesPanel } from "./LspLanguagesPanel.js";
-import { TitleGenPanel } from "./TitleGenPanel.js";
 import { NotificationsPanel } from "./NotificationsPanel.js";
 import { AboutPanel } from "./AboutPanel.js";
 
@@ -21,43 +34,44 @@ import { AboutPanel } from "./AboutPanel.js";
  * workspace - the only difference is the right sidebar is collapsed and the
  * left sidebar hosts the settings navigation instead of the project tree.
  *
- * Available sections (grouped: 个性化 -> 核心 AI 配置 -> IDE 能力 -> 关于):
+ * Available sections (grouped: 常规 -> 个性化 -> 核心 AI 配置 -> IDE 能力 -> 关于):
+ *  - 常规    (GeneralPanel - currently wraps TitleGenPanel for thread titles)
  *  - 外观    (AppearancePanel - flat one-row-per-feature list)
  *  - 快捷键  (ShortcutsPanel)
  *  - 模型配置 (CustomModelsPanel - two-column: provider list + config form)
  *  - Skills  (SkillsPanel - two-column: skill list + raw SKILL.md editor)
- *  - 线程名称 (TitleGenPanel)
  *  - 消息通知 (NotificationsPanel - toggle per notification category)
  *  - Git     (GitPanel)
  *  - 终端    (TerminalPanel - shell override + per-project commands)
  *  - 语言服务器 (LspLanguagesPanel)
  *  - 关于    (AboutPanel - version / license / repo links)
  *
- * (“通用” section temporarily hidden - not yet implemented.)
+ * The thread-title generator used to be its own nav item ("线程名称"); it has
+ * been folded into the "常规" section. The section is the first nav entry.
  *
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "custom-models" | "skills" | "appearance" | "shortcuts" | "notifications" | "git" | "terminal" | "lsp-languages" | "title-gen" | "about";
+type SectionId = "general" | "custom-models" | "skills" | "appearance" | "shortcuts" | "notifications" | "git" | "terminal" | "lsp-languages" | "about";
 
 interface NavItem {
   id: SectionId;
   label: string;
+  icon: ComponentType<TablerIconProps>;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  // { id: "general", label: "通用" }, // 暂时屏蔽:通用设置尚未实现,日后恢复
-  // 分组顺序:个性化 -> 核心 AI 配置 -> IDE 能力 -> 关于
-  { id: "appearance", label: "外观" },
-  { id: "shortcuts", label: "快捷键" },
-  { id: "custom-models", label: "模型配置" },
-  { id: "skills", label: "Skills" },
-  { id: "title-gen", label: "线程名称" },
-  { id: "notifications", label: "消息通知" },
-  { id: "git", label: "Git" },
-  { id: "terminal", label: "终端" },
-  { id: "lsp-languages", label: "语言服务器" },
-  { id: "about", label: "关于" },
+  // 分组顺序:常规 -> 个性化 -> 核心 AI 配置 -> IDE 能力 -> 关于
+  { id: "general", label: "常规", icon: IconSettings },
+  { id: "appearance", label: "外观", icon: IconPalette },
+  { id: "shortcuts", label: "快捷键", icon: IconKeyboard },
+  { id: "custom-models", label: "模型配置", icon: IconRobot },
+  { id: "skills", label: "Skills", icon: IconSparkles },
+  { id: "notifications", label: "消息通知", icon: IconBell },
+  { id: "git", label: "Git", icon: IconBrandGit },
+  { id: "terminal", label: "终端", icon: IconTerminal2 },
+  { id: "lsp-languages", label: "语言服务器", icon: IconCode },
+  { id: "about", label: "关于", icon: IconInfoCircle },
 ];
 
 export function SettingsPage() {
@@ -95,12 +109,13 @@ export function SettingsPage() {
         >
           {NAV_ITEMS.map((item) => {
             const isActive = item.id === active;
+            const Icon = item.icon;
             return (
               <button
                 key={item.id}
                 onClick={() => setActive(item.id)}
                 className={cn(
-                  "relative block w-full rounded px-3 py-2 text-left transition-colors",
+                  "relative flex w-full items-center gap-2 rounded px-3 py-2 text-left transition-colors",
                   isActive
                     ? "bg-surface-hover font-medium text-content"
                     : "text-content-muted hover:bg-surface-hover hover:text-content",
@@ -109,6 +124,13 @@ export function SettingsPage() {
                 {isActive && (
                   <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
                 )}
+                <Icon
+                  size={16}
+                  className={cn(
+                    "shrink-0",
+                    isActive ? "text-accent" : "text-content-subtle",
+                  )}
+                />
                 {item.label}
               </button>
             );
@@ -130,11 +152,11 @@ export function SettingsPage() {
           className="min-h-0 h-full overflow-y-auto px-6 py-5"
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
+          {active === "general" && <GeneralPanel />}
           {active === "appearance" && <AppearancePanel />}
           {active === "shortcuts" && <ShortcutsPanel />}
           {active === "custom-models" && <CustomModelsPanel />}
           {active === "skills" && <SkillsPanel />}
-          {active === "title-gen" && <TitleGenPanel />}
           {active === "notifications" && <NotificationsPanel />}
           {active === "git" && <GitPanel />}
           {active === "terminal" && <TerminalPanel />}

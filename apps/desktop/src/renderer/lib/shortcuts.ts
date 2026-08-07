@@ -40,7 +40,7 @@ export const DEFAULT_SHORTCUTS: ShortcutBindings = {
   "view.display-mode.toggle": { key: "t", cmd: true, shift: true, alt: false },
   "appearance.theme.toggle": { key: "l", cmd: true, shift: true, alt: false },
   "tab.close": { key: "w", cmd: true, shift: false, alt: false },
-  "chat.focus-input": { key: "i", cmd: true, shift: true, alt: false },
+  "chat.focus-input": { key: "n", cmd: true, shift: true, alt: false },
 };
 
 /**

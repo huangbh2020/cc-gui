@@ -3,6 +3,8 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { Button, Dialog, Input, Select } from "@renderer/components/ui/index.js";
+import { PanelHeader } from "./PanelHeader.js";
+import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
 import { TERMINAL_SHELL_SETTING_KEY } from "@contracts/ipc";
 import type { CustomCommand } from "@contracts/ipc";
@@ -16,7 +18,7 @@ import {
 /**
  * Terminal settings - shell override + per-project quick-commands.
  *
- * Two sections:
+ * Two card sections:
  *  - **终端 Shell**: a single text field bound directly to the
  *    `terminal.shell` setting key. The main-process terminal create handler
  *    reads this on every `terminal.create` (no store field / no new IPC).
@@ -30,10 +32,14 @@ import {
  */
 export function TerminalPanel() {
   return (
-    <div className="divide-y divide-edge">
+    <section className="space-y-4">
+      <PanelHeader
+        title="终端"
+        desc="配置终端使用的 Shell 与按项目保存的常用快捷命令。"
+      />
       <ShellSection />
       <CommandsSection />
-    </div>
+    </section>
   );
 }
 
@@ -67,14 +73,10 @@ function ShellSection() {
   };
 
   return (
-    <>
-      <div className="pb-3">
-        <h2 className="font-semibold text-content">终端 Shell</h2>
-        <p className="mt-0.5 text-[0.7857em] text-content-subtle">
-          指定终端使用的 Shell 可执行文件。留空则使用系统默认(Windows:pwsh →
-          powershell → bash → cmd;macOS/Linux:$SHELL → bash → zsh → sh)。仅对新建终端生效。
-        </p>
-      </div>
+    <SettingsSection
+      title="终端 Shell"
+      desc="指定终端使用的 Shell 可执行文件。留空则使用系统默认(Windows:pwsh → powershell → bash → cmd;macOS/Linux:$SHELL → bash → zsh → sh)。仅对新建终端生效。"
+    >
       <SettingRow
         layout="vertical"
         title="Shell 路径"
@@ -107,7 +109,7 @@ function ShellSection() {
           <p className="mt-1 text-[0.7857em] text-accent">已保存。新建终端将使用此 Shell。</p>
         )}
       </SettingRow>
-    </>
+    </SettingsSection>
   );
 }
 
@@ -171,16 +173,12 @@ function CommandsSection() {
   };
 
   return (
-    <>
-      <div className="pb-3 pt-4">
-        <h2 className="font-semibold text-content">自定义命令</h2>
-        <p className="mt-0.5 text-[0.7857em] text-content-subtle">
-          按项目保存常用终端命令,在终端工具栏的书签菜单中一键运行。命令按项目独立保存,互不影响。
-        </p>
-      </div>
-
+    <SettingsSection
+      title="自定义命令"
+      desc="按项目保存常用终端命令,在终端工具栏的书签菜单中一键运行。命令按项目独立保存,互不影响。"
+    >
       {candidateProjects.length === 0 ? (
-        <p className="py-4 text-[0.8571em] text-content-subtle">请先在项目列表中添加一个项目。</p>
+        <p className="px-4 py-4 text-[0.8571em] text-content-subtle">请先在项目列表中添加一个项目。</p>
       ) : (
         <>
           <SettingRow
@@ -215,7 +213,7 @@ function CommandsSection() {
             </Select.Root>
           </SettingRow>
 
-          <div className="py-3">
+          <div className="px-4 py-3">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-[0.8571em] font-medium text-content">
                 命令列表
@@ -351,6 +349,6 @@ function CommandsSection() {
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
-    </>
+    </SettingsSection>
   );
 }

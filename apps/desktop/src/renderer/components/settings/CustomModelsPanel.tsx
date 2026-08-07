@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
-import { Button, ConfirmDialog, Input, Select, Tooltip } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, Input, Select, Switch, Tooltip } from "@renderer/components/ui/index.js";
 import {
   IconPlus,
   IconTrash,
@@ -27,6 +27,7 @@ import type {
   CustomModelRoleKey,
 } from "@contracts/customModel";
 import type { EndpointPresetPublic } from "@contracts/endpointPreset";
+import { PanelHeader } from "./PanelHeader.js";
 import {
   PI_KNOWN_APIS,
   PI_THINKING_KEYS,
@@ -70,37 +71,6 @@ function Field({ label, children, hint }: { label: string; children: React.React
       {children}
       {hint && <span className="mt-0.5 block text-[0.6428em] leading-relaxed text-content-subtle">{hint}</span>}
     </label>
-  );
-}
-
-/** Compact inline toggle switch (role="switch). */
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
-  return (
-    <Tooltip.Root>
-      <Tooltip.Trigger
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        onClick={() => onChange(!checked)}
-        className={cn(
-          "relative h-4 w-7 shrink-0 rounded-full transition-colors outline-none",
-          checked ? "bg-accent" : "bg-surface-hover",
-        )}
-      >
-        <span
-          className={cn(
-            "absolute top-0.5 h-3 w-3 rounded-full bg-surface shadow transition-transform",
-            checked ? "left-3.5" : "left-0.5",
-          )}
-        />
-      </Tooltip.Trigger>
-      <Tooltip.Portal>
-        <Tooltip.Positioner side="top">
-          <Tooltip.Popup>{label}</Tooltip.Popup>
-        </Tooltip.Positioner>
-      </Tooltip.Portal>
-    </Tooltip.Root>
   );
 }
 
@@ -648,12 +618,11 @@ export function CustomModelsPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mb-3">
-        <h2 className="font-semibold text-content">模型配置</h2>
-        <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
-          统一管理 Claude(Anthropic 兼容端点)与 Pi Provider。Token / API Key 经系统钥匙串加密存储,点击右侧眼睛图标可临时查看明文。
-        </p>
-      </div>
+      <PanelHeader
+        className="mb-3"
+        title="模型配置"
+        desc="统一管理 Claude(Anthropic 兼容端点)与 Pi Provider。Token / API Key 经系统钥匙串加密存储,点击右侧眼睛图标可临时查看明文。"
+      />
 
       <div className="grid min-h-0 flex-1 grid-cols-[210px_1fr] gap-4">
         {/* ───────── Left: unified provider list ───────── */}
@@ -978,7 +947,7 @@ function ClaudeProviderForm({
                 <Input value={binding.displayName ?? ""} onChange={(e) => updateRole(role, { displayName: e.target.value || undefined })} placeholder="可选" />
                 <Input value={binding.requestModel ?? ""} onChange={(e) => updateRole(role, { requestModel: e.target.value || undefined })} placeholder={roleHint(role)} />
                 <div className="flex justify-center">
-                  <Toggle checked={Boolean(binding.supports1m)} onChange={(v) => updateRole(role, { supports1m: v || undefined })} label="声明 1M 上下文" />
+                  <Switch checked={Boolean(binding.supports1m)} onCheckedChange={(v) => updateRole(role, { supports1m: v || undefined })} label="声明 1M 上下文" />
                 </div>
               </div>
             );
@@ -1115,7 +1084,7 @@ function PiProviderForm({
       </Field>
 
       <div className="flex items-center gap-2">
-        <Toggle checked={form.authHeader} onChange={(v) => update("authHeader", v)} label="自动添加 Authorization: Bearer 请求头" />
+        <Switch checked={form.authHeader} onCheckedChange={(v) => update("authHeader", v)} label="自动添加 Authorization: Bearer 请求头" />
         <span className="text-[0.7857em] text-content-muted">自动添加 Bearer 请求头</span>
       </div>
 
@@ -1139,7 +1108,7 @@ function PiProviderForm({
                 <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder="模型 id,如 deepseek-v4-pro" />
                 <Input value={m.maxTokens} onChange={(e) => updateModel(idx, { maxTokens: e.target.value })} placeholder="最大输出" title="最大输出 token" />
                 <label className="flex items-center gap-1 justify-self-center" title="启用 1M 上下文(关闭=200k)">
-                  <Toggle checked={m.enable1m} onChange={(v) => updateModel(idx, { enable1m: v })} label="启用 1M 上下文(关闭=200k)" />
+                  <Switch checked={m.enable1m} onCheckedChange={(v) => updateModel(idx, { enable1m: v })} label="启用 1M 上下文(关闭=200k)" />
                   <span className="text-[0.6428em] text-content-muted">1M</span>
                 </label>
                 <span className="flex items-center gap-0.5">
@@ -1155,7 +1124,7 @@ function PiProviderForm({
                 <div className="mt-2 space-y-2 border-t border-edge/60 pt-1.5">
                   <div className="flex items-center gap-3">
                     <label className="flex items-center gap-1.5">
-                      <Toggle checked={m.reasoning} onChange={(v) => updateModel(idx, { reasoning: v })} label="支持推理" />
+                      <Switch checked={m.reasoning} onCheckedChange={(v) => updateModel(idx, { reasoning: v })} label="支持推理" />
                       <span className="text-[0.7143em] text-content-muted">推理</span>
                     </label>
                     <Field label="显示名(可选)">

@@ -59,6 +59,25 @@ export const DisplayModeSchema = z.enum(["single", "tabs"]);
 export type DisplayMode = z.infer<typeof DisplayModeSchema>;
 
 /**
+ * Setting key under which the chat message-stream density is persisted.
+ *  - "compact"    : tighter vertical rhythm — denser, more messages per fold.
+ *  - "comfortable" (default): the historical look (assistant `mt-3` / user
+ *    `mt-5`, block gap `space-y-2`).
+ *  - "cozy"       : more breathing room between rows and blocks.
+ *
+ * Drives two CSS custom properties written on <html> by lib/appearance.ts:
+ *   --chat-row-gap-assistant / --chat-row-gap-user (top margin of each row)
+ *   --chat-block-gap (gap between blocks inside a single message)
+ * with static fallbacks in styles.css so the uncustomized state matches the
+ * old hardcoded values. Mirrors the displayMode pipeline.
+ */
+export const UI_CHAT_DENSITY_SETTING_KEY = "ui.chatDensity";
+
+/** zod schema + TS union for the chat density preference. */
+export const ChatDensitySchema = z.enum(["compact", "comfortable", "cozy"]);
+export type ChatDensity = z.infer<typeof ChatDensitySchema>;
+
+/**
  * Setting key under which the user's preferred left-bar project view is
  * persisted. `"flat"` (default) renders projects as a flat list; `"grouped"`
  * clusters them under collapsible headers keyed by `Project.group`. Mirrors

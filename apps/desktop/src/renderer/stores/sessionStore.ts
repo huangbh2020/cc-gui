@@ -41,8 +41,10 @@ import {
   UI_PROJECT_VIEW_SETTING_KEY,
   UI_PROJECT_GROUPS_SETTING_KEY,
   UI_SHORTCUTS_SETTING_KEY,
+  UI_CHAT_DENSITY_SETTING_KEY,
   ShortcutBindingsSchema,
   type DisplayMode,
+  type ChatDensity,
   type ProjectView,
   type ProjectGroupsMeta,
   type ProjectGroupMeta,
@@ -316,6 +318,10 @@ export interface SessionState {
   openTabs: string[];
   /** How the center pane renders. Persisted in the `settings` table. */
   displayMode: DisplayMode;
+  /** Chat message-stream vertical density. Persisted in the `settings` table
+   *  under `ui.chatDensity`; applied to <html> as the --chat-row-gap-* /
+   *  --chat-block-gap CSS vars by lib/appearance.ts. */
+  chatDensity: ChatDensity;
   /** How the left bar renders projects. `"flat"` (default) is a plain list;
    *  `"grouped"` clusters them under collapsible headers keyed by
    *  `Project.group`. Persisted in the `settings` table. */
@@ -814,6 +820,9 @@ export interface SessionState {
   /** Update the center-pane display mode. Persists to the `settings`
    *  table so the choice survives restart. */
   setDisplayMode: (mode: DisplayMode) => Promise<void>;
+  /** Update the chat message-stream density. Persists to the `settings`
+   *  table so the choice survives restart. */
+  setChatDensity: (mode: ChatDensity) => Promise<void>;
   /** Toggle the left-bar project view between flat and grouped. Persists
    *  to the `settings` table so the choice survives restart. */
   setProjectView: (mode: ProjectView) => Promise<void>;
@@ -2111,6 +2120,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // Persisted in `settings` table; init() overwrites from the DB.
   displayMode: "single",
   // Persisted in `settings` table; init() overwrites from the DB. Default
+  // "comfortable" so existing users see no change until they opt in.
+  chatDensity: "comfortable",
+  // Persisted in `settings` table; init() overwrites from the DB. Default
   // "flat" so existing users see no change until they opt into grouping.
   projectView: "flat",
   // Per-group metadata (color + order). Empty until init() hydrates from the
@@ -2243,6 +2255,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       console.error("setting.get(displayMode) failed:", err);
+    }
+
+    // chatDensity controls message-stream vertical rhythm (row + block gaps).
+    // Applied to <html> as CSS vars by useChatAppearance; read here so the
+    // first paint already reflects the saved preference.
+    try {
+      const { value } = await api.setting.get({ key: UI_CHAT_DENSITY_SETTING_KEY });
+      if (value === "compact" || value === "comfortable" || value === "cozy") {
+        set({ chatDensity: value });
+      }
+    } catch (err) {
+      console.error("setting.get(chatDensity) failed:", err);
     }
 
     // projectView determines whether the left bar renders projects as a flat
@@ -4253,6 +4277,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: DISPLAY_MODE_SETTING_KEY, value: mode });
     } catch (err) {
       console.error("setting.set(displayMode) failed:", err);
+    }
+  },
+
+  /** Update the chat density. Same immediate-flip + fire-and-forget-persist
+   *  pattern as setDisplayMode; the CSS vars are re-applied reactively by
+   *  useChatAppearance subscribing to `chatDensity`. */
+  setChatDensity: async (mode) => {
+    set({ chatDensity: mode });
+    try {
+      await api.setting.set({ key: UI_CHAT_DENSITY_SETTING_KEY, value: mode });
+    } catch (err) {
+      console.error("setting.set(chatDensity) failed:", err);
     }
   },
 

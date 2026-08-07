@@ -114,7 +114,7 @@ const MessageBlocks = memo(function MessageBlocks({
   if (blocks.length === 0) return null;
   const segments = groupBlocks(blocks);
   return (
-    <div className="space-y-2">
+    <div className="space-y-[var(--chat-block-gap)]">
       {segments.map((seg, i) =>
         seg.kind === "single" ? (
           <BlockView key={i} block={seg.block} defaultOpen={seg.defaultOpen} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} projectPath={projectPath} />

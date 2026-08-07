@@ -45,6 +45,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { Button, ConfirmDialog, Dialog } from "@renderer/components/ui/index.js";
+import { PanelHeader } from "./PanelHeader.js";
 import {
   IconPlus,
   IconTrash,
@@ -299,14 +300,17 @@ export function SkillsPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mb-3">
-        <h2 className="font-semibold text-content">Skills</h2>
-        <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
-          管理 Claude 技能(SKILL.md)。项目 skill 存放在所选项目的 <code className="rounded bg-surface-muted px-0.5">.claude/skills</code>,
-          仅该项目可用。全局 skill 通过「导入」功能从 Claude Code / Codex / Zcode 导入到 <code className="rounded bg-surface-muted px-0.5">~/.mcode/skills</code>,
-          所有项目可用。在输入框输入 <code className="rounded bg-surface-muted px-0.5">/</code> 即可调用。
-        </p>
-      </div>
+      <PanelHeader
+        className="mb-3"
+        title="Skills"
+        desc={
+          <>
+            管理 Claude 技能(SKILL.md)。项目 skill 存放在所选项目的 <code className="rounded bg-surface-muted px-0.5">.claude/skills</code>,
+            仅该项目可用。全局 skill 通过「导入」功能从 Claude Code / Codex / Zcode 导入到 <code className="rounded bg-surface-muted px-0.5">~/.mcode/skills</code>,
+            所有项目可用。在输入框输入 <code className="rounded bg-surface-muted px-0.5">/</code> 即可调用。
+          </>
+        }
+      />
 
       {/* ───────── Project selector ───────── */}
       {/* Makes the project binding explicit: project-scoped skills always

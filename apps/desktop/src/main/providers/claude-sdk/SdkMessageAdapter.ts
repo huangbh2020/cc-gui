@@ -27,7 +27,7 @@ import type {
   SubagentSnapshot,
 } from "@contracts/runtime";
 import type { ProviderContext } from "@contracts/provider";
-import { FileSnapshot } from "@main/lib/fileSnapshot.js";
+import { FileSnapshot, FILE_MUTATING_TOOLS, getToolFilePath, normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
 import type {
   SDKMessage,
   SDKSystemMessage,
@@ -794,16 +794,19 @@ export class SdkMessageAdapter {
           requiresApproval: false,
         } satisfies ToolUseEvent);
 
-        // Snapshot the pre-turn content for Edit/Write so the user can
-        // "撤销本轮" later. Fire-and-forget — we never want a snapshot
-        // failure to derail the event stream. The first call per
-        // (cwd+path) does the actual read; later calls are no-ops.
-        if (b.name === "Edit" || b.name === "Write") {
-          const fp = readStr(
-            (b.input as Record<string, unknown> | undefined)?.file_path,
-          );
+        // Snapshot the pre-turn content for every file-mutating tool so the
+        // user can "撤销本轮" later. Fire-and-forget — we never want a
+        // snapshot failure to derail the event stream. The first call per
+        // (cwd+path) does the actual read; later calls are no-ops. The path
+        // is normalized the same way the provider's canUseTool guard does —
+        // the raw tool_use input may carry a WSL-style `/mnt/...` path the
+        // CLI rewrote before executing, and only the normalized path matches
+        // where the file actually landed.
+        if (FILE_MUTATING_TOOLS.has(b.name)) {
+          const fp = getToolFilePath(b.name, b.input);
           if (fp) {
-            void this.snapshots.recordPre(this.cwd, fp);
+            const norm = normalizeToolFilePath(this.cwd, fp);
+            void this.snapshots.recordPre(this.cwd, norm?.absPath ?? fp);
           }
         }
 

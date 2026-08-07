@@ -2,6 +2,8 @@ import { useMemo } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import { Select } from "@renderer/components/ui/index.js";
+import { PanelHeader } from "./PanelHeader.js";
+import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
 import { CUSTOM_MODEL_ROLES, CUSTOM_MODEL_ROLE_LABELS } from "@contracts/customModel";
 import type { CustomModelRoleKey } from "@contracts/customModel";
@@ -62,134 +64,136 @@ export function GitPanel() {
   }, [customModels]);
 
   return (
-    <div className="divide-y divide-edge">
-      <div className="pb-3">
-        <h2 className="font-semibold text-content">Git 差异打开方式</h2>
-        <p className="mt-0.5 text-[0.7857em] text-content-subtle">
-          点击 Git 面板中的修改文件时,差异查看器的打开位置。弹框模式支持同时打开多个标签。
-        </p>
-      </div>
-      <SettingRow
-        title="打开方式"
-        desc="中间区域编辑器:在中间面板查看差异(现有行为)。弹框编辑器:以独立浮窗打开,可同时查看多个文件差异。"
-        htmlFor="setting-gitdiff-openmode"
+    <section className="space-y-4">
+      <PanelHeader
+        title="Git"
+        desc="配置差异查看方式,以及 AI 辅助的提交信息生成与合并冲突解决。"
+      />
+
+      {/* ── Git 差异打开方式 ── */}
+      <SettingsSection
+        title="差异打开方式"
+        desc="点击 Git 面板中的修改文件时,差异查看器的打开位置。弹框模式支持同时打开多个标签。"
       >
-        <Select.Root
-          value={gitDiffOpenMode}
-          onValueChange={(v) => void setGitDiffOpenMode(v as GitDiffOpenMode)}
+        <SettingRow
+          title="打开方式"
+          desc="中间区域编辑器:在中间面板查看差异(现有行为)。弹框编辑器:以独立浮窗打开,可同时查看多个文件差异。"
+          htmlFor="setting-gitdiff-openmode"
         >
-          <Select.Trigger id="setting-gitdiff-openmode" className="min-w-[12rem]">
-            <Select.Value>
-              {(val: GitDiffOpenMode) =>
-                GIT_DIFF_OPEN_MODE_OPTIONS.find((o) => o.value === val)?.label ??
-                "中间区域编辑器"
-              }
-            </Select.Value>
-          </Select.Trigger>
-          <Select.Portal>
-            <Select.Positioner>
-              <Select.Popup>
-                <Select.List>
-                  {GIT_DIFF_OPEN_MODE_OPTIONS.map((o) => (
-                    <Select.Item key={o.value} value={o.value}>
-                      <Select.ItemText>{o.label}</Select.ItemText>
-                    </Select.Item>
-                  ))}
-                </Select.List>
-              </Select.Popup>
-            </Select.Positioner>
-          </Select.Portal>
-        </Select.Root>
-      </SettingRow>
+          <Select.Root
+            value={gitDiffOpenMode}
+            onValueChange={(v) => void setGitDiffOpenMode(v as GitDiffOpenMode)}
+          >
+            <Select.Trigger id="setting-gitdiff-openmode" className="min-w-[12rem]">
+              <Select.Value>
+                {(val: GitDiffOpenMode) =>
+                  GIT_DIFF_OPEN_MODE_OPTIONS.find((o) => o.value === val)?.label ??
+                  "中间区域编辑器"
+                }
+              </Select.Value>
+            </Select.Trigger>
+            <Select.Portal>
+              <Select.Positioner>
+                <Select.Popup>
+                  <Select.List>
+                    {GIT_DIFF_OPEN_MODE_OPTIONS.map((o) => (
+                      <Select.Item key={o.value} value={o.value}>
+                        <Select.ItemText>{o.label}</Select.ItemText>
+                      </Select.Item>
+                    ))}
+                  </Select.List>
+                </Select.Popup>
+              </Select.Positioner>
+            </Select.Portal>
+          </Select.Root>
+        </SettingRow>
+      </SettingsSection>
 
-      <div className="pb-3 pt-4">
-        <h2 className="font-semibold text-content">Git 提交记录生成</h2>
-        <p className="mt-0.5 text-[0.7857em] text-content-subtle">
-          配置用于自动生成提交信息的模型和提示词。在 Git 面板的提交框点击生成图标即可使用。
-        </p>
-      </div>
-
-      {/* Model selector — specific supplier + role binding */}
-      <SettingRow
-        title="生成模型"
-        desc="选择用于生成提交信息的具体模型。需要先在「模型配置」中添加并绑定角色。"
+      {/* ── Git 提交记录生成 ── */}
+      <SettingsSection
+        title="提交记录生成"
+        desc="配置用于自动生成提交信息的模型和提示词。在 Git 面板的提交框点击生成图标即可使用。"
       >
-        {modelOptions.length > 0 ? (
-          <select
-            value={commitGenModel ?? ""}
-            onChange={(e) => setCommitGenModel(e.target.value || null)}
+        {/* Model selector — specific supplier + role binding */}
+        <SettingRow
+          title="生成模型"
+          desc="选择用于生成提交信息的具体模型。需要先在「模型配置」中添加并绑定角色。"
+        >
+          {modelOptions.length > 0 ? (
+            <select
+              value={commitGenModel ?? ""}
+              onChange={(e) => setCommitGenModel(e.target.value || null)}
+              className={cn(
+                "min-w-[220px] rounded-md border border-edge-input bg-surface px-2 py-1.5 text-[0.8571em] text-content outline-none",
+                "focus:border-accent",
+              )}
+            >
+              <option value="">未选择</option>
+              {modelOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <p className="text-[0.7857em] text-content-subtle">
+              暂无可用模型,请先在「模型配置」中添加。
+            </p>
+          )}
+        </SettingRow>
+
+        {/* Prompt template — format/language preference only */}
+        <SettingRow
+          layout="vertical"
+          title="格式与语言偏好"
+          desc="仅控制提交信息的语言、措辞风格与规范格式(如 Conventional Commits、中英文、是否加 emoji)。核心生成行为(基于已暂存 diff 输出干净的提交信息)已内置固定,无法被覆盖。留空使用默认偏好。"
+        >
+          <textarea
+            value={commitGenPrompt}
+            onChange={(e) => setCommitGenPrompt(e.target.value)}
+            placeholder="例如:使用英文、遵循 Conventional Commits 规范、在类型前加 emoji…"
+            rows={5}
             className={cn(
-              "min-w-[220px] rounded-md border border-edge-input bg-surface px-2 py-1.5 text-[0.8571em] text-content outline-none",
+              "w-full resize-y rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-[0.8571em] leading-relaxed text-content outline-none",
               "focus:border-accent",
             )}
-          >
-            <option value="">未选择</option>
-            {modelOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <p className="text-[0.7857em] text-content-subtle">
-            暂无可用模型,请先在「模型配置」中添加。
-          </p>
-        )}
-      </SettingRow>
-
-      {/* Prompt template — format/language preference only */}
-      <SettingRow
-        layout="vertical"
-        title="格式与语言偏好"
-        desc="仅控制提交信息的语言、措辞风格与规范格式(如 Conventional Commits、中英文、是否加 emoji)。核心生成行为(基于已暂存 diff 输出干净的提交信息)已内置固定,无法被覆盖。留空使用默认偏好。"
-      >
-        <textarea
-          value={commitGenPrompt}
-          onChange={(e) => setCommitGenPrompt(e.target.value)}
-          placeholder="例如:使用英文、遵循 Conventional Commits 规范、在类型前加 emoji…"
-          rows={5}
-          className={cn(
-            "w-full resize-y rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-[0.8571em] leading-relaxed text-content outline-none",
-            "focus:border-accent",
-          )}
-        />
-      </SettingRow>
+          />
+        </SettingRow>
+      </SettingsSection>
 
       {/* ── Git 冲突解决 ── */}
-      <div className="pb-3 pt-2">
-        <h2 className="text-sm font-semibold text-content">Git 冲突解决</h2>
-        <p className="mt-0.5 text-[11px] text-content-subtle">
-          当 git pull 产生合并冲突时,可一键让 AI 读取冲突标记并解决冲突。AI 会写回文件并暂存,保留 merge 状态供你检查后手动提交。
-        </p>
-      </div>
-
-      {/* Conflict-resolution model selector */}
-      <SettingRow
-        title="解决冲突模型"
-        desc="选择用于解决合并冲突的具体模型。需要先在「模型配置」中添加并绑定角色。未选择则使用内置 Claude 模型。"
+      <SettingsSection
+        title="冲突解决"
+        desc="当 git pull 产生合并冲突时,可一键让 AI 读取冲突标记并解决冲突。AI 会写回文件并暂存,保留 merge 状态供你检查后手动提交。"
       >
-        {modelOptions.length > 0 ? (
-          <select
-            value={conflictResolveModel ?? ""}
-            onChange={(e) => setConflictResolveModel(e.target.value || null)}
-            className={cn(
-              "min-w-[220px] rounded-md border border-edge-input bg-surface px-2 py-1.5 text-xs text-content outline-none",
-              "focus:border-accent",
-            )}
-          >
-            <option value="">内置模型</option>
-            {modelOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <p className="text-[11px] text-content-subtle">
-            暂无可用模型,将使用内置模型。可在「模型配置」中添加。
-          </p>
-        )}
-      </SettingRow>
-    </div>
+        {/* Conflict-resolution model selector */}
+        <SettingRow
+          title="解决冲突模型"
+          desc="选择用于解决合并冲突的具体模型。需要先在「模型配置」中添加并绑定角色。未选择则使用内置 Claude 模型。"
+        >
+          {modelOptions.length > 0 ? (
+            <select
+              value={conflictResolveModel ?? ""}
+              onChange={(e) => setConflictResolveModel(e.target.value || null)}
+              className={cn(
+                "min-w-[220px] rounded-md border border-edge-input bg-surface px-2 py-1.5 text-xs text-content outline-none",
+                "focus:border-accent",
+              )}
+            >
+              <option value="">内置模型</option>
+              {modelOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <p className="text-xs text-content-subtle">
+              暂无可用模型,将使用内置模型。可在「模型配置」中添加。
+            </p>
+          )}
+        </SettingRow>
+      </SettingsSection>
+    </section>
   );
 }
