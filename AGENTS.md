@@ -66,8 +66,14 @@ apps/desktop/src/
       claude-sdk/
         ClaudeAgentSdkProvider.ts  # AgentProvider 实现(query() 包装 + canUseTool 桥)
         SdkMessageAdapter.ts       # ★ SDKMessage → RuntimeEvent 归一化(改前读 SDK 文档)
+      pi-sdk/
+        PiAgentSdkProvider.ts      # AgentProvider 实现(createAgentSession 包装 + 内联 Extension 注入)
+        mcodeExtension.ts          # ★ 内联 Pi Extension:tool_call 权限/路径守卫 + AskUserQuestion 工具 + system prompt
+        PiMessageAdapter.ts        # Pi SDK 事件 → RuntimeEvent 归一化
     ipc/{claude,projects}.ts   # IPC handler
-    lib/logger.ts              # 文件+stderr 日志(userData/logs/main.log)
+    lib/
+      logger.ts                # 文件+stderr 日志(userData/logs/main.log)
+      askQuestion.ts           # ★ 共享:parseQuestions / formatAnswersForModel / ASK_SYSTEM_PROMPT(Claude + Pi 共用)
     store/{db,repositories}.ts # SQLite 持久化(sql.js)
   preload/index.ts             # contextBridge 白名单 API
   renderer/                    # 前端(React)
@@ -128,7 +134,8 @@ pnpm build
 - stream_event 的 text/thinking 增量**只在 delta 渲染**;assistant 完整消息只补全 tool_use,不重发 text(避免重复)
 - turn 结束判定:收到 `result` 消息时,**仅当没有运行中的子代理、也没有后台任务**才立即发 `turn.done`(CLI v2.1.198+ 子代理默认后台运行,主 agent 回合结束会先发一条中间 `result`,此时 turn 并未真正结束,后续会恢复继续流式);否则推迟到 `flushFinal()` 在 generator 真正结束时补发(reason 取最后一条 result)。`emitTurnDone` 去重,每 turn 恰好发一次。后台任务跟踪同时消费 SDK 的 `background_tasks_changed` 水平信号,避免漏掉 task_started 边沿事件
 - **canUseTool 审批回调由 `ClaudeAgentSdkProvider` 在 `query()` options 里注册**,不在 adapter 里处理
-- **文件写入守卫(严格项目内)**:所有 provider 统一拦截 `Write`/`Edit`/`MultiEdit`/`NotebookEdit` 的写入路径:① 把 WSL 式 `/mnt/<drive>/...` 路径修正为 Windows 原生路径(否则 Windows 上会解析成 `D:\mnt\...` 垃圾目录);② 目标路径解析后**超出项目工作目录一律拒绝**(提示模型改用相对路径),仅 `bypassPermissions`/`dontAsk` 例外。Claude:在 `ClaudeAgentSdkProvider` 的 `canUseTool` 里实现(工具集 `FILE_MUTATING_TOOLS` 定义在 `fileSnapshot.ts`),归一化路径经 `updatedInput` 回传 SDK;`SdkMessageAdapter` 的"撤销本轮"快照(`recordPre`)用同一助手,保证卡片与实际写入位置一致。Pi:SDK 无 canUseTool 拦截,改在 `PiAgentSdkProvider` 用 `createGuardedFileTools` 包装 SDK 的 write/edit 工具定义(`customTools` 同名覆盖内建工具,`execute` 拒绝时 throw → 模型收到 isError 工具结果)。win32 下 Claude 的 systemPrompt 还会附加"勿用 /mnt 路径"提示(Bash 重定向写文件不在守卫范围内,靠该提示缓解;Pi 无 system prompt 扩展点,仅靠守卫)
+- **文件写入守卫(严格项目内)**:所有 provider 统一拦截 `Write`/`Edit`/`MultiEdit`/`NotebookEdit` 的写入路径:① 把 WSL 式 `/mnt/<drive>/...` 路径修正为 Windows 原生路径(否则 Windows 上会解析成 `D:\mnt\...` 垃圾目录);② 把 `~`/`~/...` 展开为 `homedir()`(`bashWriteGuard.ts` 的 `expandTilde`,所有路径检查共用;`node:path.resolve` 不认 `~`,不展开会被误判为项目内的字面 `~` 目录);③ 目标路径解析后**超出项目工作目录一律拒绝**(提示模型改用相对路径),仅 `bypassPermissions`/`dontAsk` 例外。Claude:在 `ClaudeAgentSdkProvider` 的 `canUseTool` 里实现(工具集 `FILE_MUTATING_TOOLS` 定义在 `fileSnapshot.ts`),归一化路径经 `updatedInput` 回传 SDK;`SdkMessageAdapter` 的"撤销本轮"快照(`recordPre`)用同一助手,保证卡片与实际写入位置一致。Pi:用**内联 Extension**(`mcodeExtension.ts` 的 `createMcodeExtension`,经 `DefaultResourceLoader({ extensionFactories })` 注入)的 `tool_call` 事件 handler 实现——SDK 的 `agent-loop.js` 在 `beforeToolCall` 里 `await emitToolCall(event)`,handler 返回 `{ block: true, reason }` 时执行体把它转成 `createErrorToolResult(reason)` + `isError: true`(模型可见,等同 Claude 的 `behavior: "deny"`)。路径归一化靠原地修改 `event.input`(`event.input` 与最终执行参数 `validatedArgs`/`prepared.args` 是同一引用,等同 Claude 的 `updatedInput`)。同一个 `tool_call` handler 还负责权限审批(读 `ctx.getPermissionMode()` + `ctx.isToolAlwaysAllowed()` + `ctx.requestApproval()` IPC 桥)。bash 守卫读 `params.command`,经 `bashWriteGuard.ts` 的 `guardBashCommand` 提取写重定向目标 `>`/`>>`/`>&`/`tee`/`dd of=`/`sed -i` 后逐一过 `expandTilde` + 路径检查;含 `$`/反引号的目标无法静态展开直接放行,`cp`/`mv`/heredoc/管道目标不覆盖——**非沙箱**,目的是堵住"模型无意识在项目外建脚本文件"的常见模式。win32 下 Claude 的 systemPrompt 附加"勿用 /mnt 路径"提示(Bash 重定向写文件不在 canUseTool 守卫范围内,靠该提示缓解);Pi 的 `before_agent_start` 事件 handler 注入 AskUserQuestion 使用说明 + 同一提示文本
+- **Pi Extension 架构**(`mcodeExtension.ts`):Pi SDK 无 `canUseTool` 回调、无 system prompt 扩展点、无原生 AskUserQuestion 工具——这三者全部由一个内联 Extension 补齐,经 `buildPiSkillLoader` 的 `extensionFactories` 参数注入(`DefaultResourceLoader` 在 `getExtensions()` 阶段执行 factory,先于 `_refreshToolRegistry`,所以 `pi.registerTool`/`pi.on` 在首个 turn 前就绑定;reload 时 `loadExtensionFactories` 也会重跑)。三块逻辑:① `tool_call` handler = 权限审批 + 路径/bash 守卫(覆盖**所有**工具,比旧的 customTools 同名覆盖更全);② `registerTool("AskUserQuestion")` = 原生工具,`execute` 桥接 `ctx.requestUserInput`(取代 sentinel 文本扫描);③ `before_agent_start` handler = 追加 system prompt。`capabilities.supportsApproval`/`supportsAskUserQuestion` 现为 `true`,`permissionModes` 暴露 Claude 的 6 档。win32 的 read `/mnt` 归一化仍用 `createMntNormalizingReadTool` customTools(只读、无安全风险,不进 `tool_call` 守卫)。AskUserQuestion 工具在 plan 模式也需可用,所以 plan 的 `tools` 白名单显式包含它。共享的 `parseQuestions` / `formatAnswersForModel` / `ASK_SYSTEM_PROMPT` 在 `lib/askQuestion.ts`,Claude 和 Pi provider 共用
 
 ### 「撤销本轮」文件回滚(rewind)
 - **不使用 SDK 内建 `enableFileCheckpointing`**:该机制要求 `permissionMode: "acceptEdits"`,会绕过上面的 `canUseTool` 守卫与工具审批 UI,直接废掉核心安全资产。改为自研「记录/恢复解耦」方案,保留路径守卫。

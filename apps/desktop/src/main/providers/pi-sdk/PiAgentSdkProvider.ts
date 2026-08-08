@@ -9,8 +9,17 @@
  *     model streams via events.
  *   - Thinking levels: off/minimal/low/medium/high/xhigh (+ our "default"
  *     sentinel) — wider than Claude's 6.
- *   - No permission modes: Pi has a tools allowlist instead. We pass the
- *     permissionMode through to a tools whitelist mapping (see below).
+ *   - Approval: Pi has no `canUseTool` callback. Instead we inject an inline
+ *     Extension (`mcodeExtension.ts`) whose `tool_call` handler is the Pi
+ *     equivalent — it can block a tool with `{ block: true, reason }` (the
+ *     agent loop converts a block into an `isError` tool result the model
+ *     reacts to). The same handler enforces the strict in-project path/command
+ *     guard and routes to the host's IPC approval bridge.
+ *   - AskUserQuestion: no native tool. The extension registers one via
+ *     `pi.registerTool`; its `execute` bridges to `ctx.requestUserInput`.
+ *   - System prompt: the extension's `before_agent_start` handler appends the
+ *     AskUserQuestion usage hint (loader `appendSystemPrompt` carries the
+ *     static Windows path hint separately).
  *   - Model selection: provider/id strings via ModelRuntime; we build our
  *     own ModelRuntime each turn and inject configured API keys via
  *     `modelRuntime.setRuntimeApiKey(provider, key)` (top of the auth
@@ -18,8 +27,6 @@
  *   - Session resume: SessionManager JSONL files. We stash the pi session
  *     file path in the GUI session's `claudeSessionId` field (already the
  *     generic "provider session id" slot).
- *   - No canUseTool approval interception: tools execute directly. This is
- *     reflected in capabilities.supportsApproval=false.
  *
  * Lazy-loads the SDK module so the (large) package and its transitive deps
  * stay out of the main-process startup path — same pattern as
@@ -29,115 +36,38 @@ import type { AgentProvider, StartTurnRequest, ProviderContext, TurnHandle, Prov
 import { PiMessageAdapter } from "./PiMessageAdapter.js";
 import { PiModelsStore } from "@main/lib/piModelsStore.js";
 import { loadPiSdk } from "./piSdkLoader.js";
-import { normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
 import { buildPiTokenSnapshot } from "./piTokenUsage.js";
 import { buildPiSkillLoader, rewriteSkillPrefix, createMntNormalizingReadTool } from "./piSkillBridge.js";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createMcodeExtension } from "./mcodeExtension.js";
 
-/**
- * Map the contract's open-string permissionMode to a Pi tools allowlist.
- * Pi has no built-in permission modes, but its tools allowlist is the closest
- * analogue:
- *   - "plan" / "default" → read-only tools (no edit/write)
- *   - "bypassPermissions" / "acceptEdits" → full tools
- *   - any unrecognized value → default (read + bash + edit + write)
- * Returns undefined when the mode has no tools restriction (use Pi defaults).
- */
-function toolsForPermissionMode(mode: string | undefined): string[] | undefined {
-  switch (mode) {
-    case "plan":
-      return ["read", "grep", "find", "ls"];
-    default:
-      return undefined; // Pi's default set (read, bash, edit, write)
-  }
-}
-
-/** Pi's write/edit tools carry their target path in the `path` field (unlike
- *  Claude's `file_path`). Both schemas are `{ path, ... }`. */
-type PathToolParams = { path?: unknown };
-
-/**
- * Guard a file-tool path for the Pi provider. The Pi SDK has no canUseTool
- * interception — tools execute directly — so the strict in-project policy is
- * enforced by wrapping the write/edit tool definitions themselves (see
- * {@link createGuardedFileTools}). Mirrors the Claude provider's canUseTool
- * guard: WSL-style `/mnt/<drive>/...` paths are normalized to native Windows
- * paths (otherwise they'd resolve to a garbage `D:\mnt\...` folder), and
- * writes resolving outside the project working directory are denied except in
- * bypassPermissions/dontAsk, where the user explicitly opted out of all checks.
- */
-function guardToolPath(
-  cwd: string,
-  rawPath: string,
-  strict: boolean,
-): { denied: true; message: string } | { denied: false; path: string } {
-  const norm = normalizeToolFilePath(cwd, rawPath);
-  if (!norm) return { denied: false, path: rawPath };
-  if (!norm.insideProject && strict) {
-    return {
-      denied: true,
-      message: `拒绝:目标路径在项目工作目录之外(${norm.absPath})。只允许在项目目录内写入文件,请改用相对路径。`,
-    };
-  }
-  // Rewrite to the normalized absolute path so the write lands where the user
-  // expects — an in-project `/mnt/d/...` path would otherwise resolve to a
-  // garbage `D:\mnt\...` folder on Windows.
-  return { denied: false, path: norm.absPath };
-}
-
-type AnyToolDef = ToolDefinition<any, any, any>;
-
-/**
- * Wrap the SDK's write/edit tools with the path guard. AgentSession merges
- * `customTools` into its definition registry with a same-name override
- * (`definitionRegistry.set`), so passing these replaces the unguarded
- * built-ins. Denials throw from `execute`, which the agent loop converts into
- * an `isError: true` tool result — the model sees the message and retries with
- * an in-project path. Tools in plan mode are filtered out by the `tools`
- * allowlist (read-only), so the guard is moot there.
- *
- * Built from `sdk.createWriteToolDefinition` / `sdk.createEditToolDefinition`
- * so we keep the SDK lazy-loaded (module-level imports would pull it into the
- * main-process startup path).
- */
-function createGuardedFileTools(
-  sdk: typeof import("@earendil-works/pi-coding-agent"),
-  cwd: string,
-  strict: boolean,
-): AnyToolDef[] {
-  const baseWrite = sdk.createWriteToolDefinition(cwd) as AnyToolDef;
-  const baseEdit = sdk.createEditToolDefinition(cwd) as AnyToolDef;
-  const wrap = (def: AnyToolDef): AnyToolDef => ({
-    ...def,
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const raw = (params as PathToolParams | undefined)?.path;
-      if (typeof raw === "string" && raw.length > 0) {
-        const checked = guardToolPath(cwd, raw, strict);
-        if (checked.denied) {
-          throw new Error(checked.message);
-        }
-        if (checked.path !== raw) {
-          params = { ...(params as object), path: checked.path };
-        }
-      }
-      return def.execute(toolCallId, params, signal, onUpdate, ctx);
-    },
-  });
-  return [wrap(baseWrite), wrap(baseEdit)];
-}
+/** Pi's permission modes, shown in the composer dropdown. Pi has no native
+ *  permission system — the inline extension's `tool_call` handler interprets
+ *  these at runtime (see `shouldAutoApproveForPi` in mcodeExtension.ts). The
+ *  semantics match Claude's (the same 4 user-facing modes, same icons/colors),
+ *  so users get a consistent experience across providers. `dontAsk`/`auto` are
+ *  intentionally not surfaced (same as Claude) but still work if set. */
+const PI_PERMISSION_MODES = [
+  { value: "default", label: "Default", icon: "shield", hint: "标准行为,工具按规则触发审批" },
+  { value: "acceptEdits", label: "Edit Auto", icon: "shieldCheck", color: "text-warning", hint: "工作目录内的文件编辑自动放行" },
+  { value: "plan", label: "Plan", icon: "shieldHalf", color: "text-info", hint: "只读探索,所有写操作都需审批" },
+  { value: "bypassPermissions", label: "Bypass", icon: "shieldLock", color: "text-danger", hint: "跳过所有权限检查(慎用)" },
+];
 
 export class PiAgentSdkProvider implements AgentProvider {
   readonly id = "pi-sdk";
   readonly displayName = "Pi";
   readonly capabilities: ProviderCapabilities = {
-    supportsApproval: false, // Pi tools execute directly; no canUseTool interception
+    // The inline extension's `tool_call` handler is the Pi equivalent of
+    // canUseTool: it can block tools and routes to the host's IPC approval
+    // bridge. See mcodeExtension.ts.
+    supportsApproval: true,
     supportsResume: true, // SessionManager.continueRecent / open
     supportsStreaming: true, // subscribe() event stream
     supportsMcp: false, // Pi uses extensions, not MCP servers
-    // TODO(AskUserQuestion): no native AskUserQuestion tool. A sentinel-text
-    // fallback is feasible (see PiMessageAdapter text_delta branch) but not
-    // yet implemented — until then the question panel won't appear for pi.
-    supportsAskUserQuestion: false,
+    // The inline extension registers a native AskUserQuestion tool via
+    // pi.registerTool; its execute bridges to ctx.requestUserInput. See
+    // mcodeExtension.ts.
+    supportsAskUserQuestion: true,
     // Declarative descriptors — the renderer's dynamic dropdowns read these.
     thinkingLevels: [
       { value: "default", label: "Auto", hint: "让 Pi 自选" },
@@ -149,7 +79,9 @@ export class PiAgentSdkProvider implements AgentProvider {
       { value: "xhigh", label: "XHigh", hint: "深度思考" },
       { value: "max", label: "Max", hint: "最充分,最慢" },
     ],
-    permissionModes: [], // Pi has no permission modes (tools allowlist only)
+    // Pi has no native permission modes — these are interpreted at runtime by
+    // the extension's tool_call handler (shouldAutoApproveForPi).
+    permissionModes: PI_PERMISSION_MODES,
     builtinModels: [], // MVP: models come from ~/.pi/agent/models.json discovery
     supportsCustomEndpoint: false, // Pi manages its own models.json
   };
@@ -174,12 +106,24 @@ export class PiAgentSdkProvider implements AgentProvider {
       sessionManager = sdk.SessionManager.create(req.cwd);
     }
 
-    // Map permission mode → tools allowlist (see toolsForPermissionMode).
-    const tools = toolsForPermissionMode(req.permissionMode);
+    // Permission mode → tools allowlist. Pi has no native permission modes;
+    // the inline extension's `tool_call` handler interprets the mode at
+    // runtime (auto-approve / path-guard / approval-prompt). But the tools
+    // allowlist still gates which tools the model is *offered*: in plan mode
+    // we restrict to read-only tools so the model can't even attempt a write
+    // (defense-in-depth — the path guard would block it anyway).
+    //   - plan              → read-only tools + AskUserQuestion
+    //   - other modes       → undefined = Pi's default set (read/bash/edit/write)
+    //                         + all extension-registered tools (AskUserQuestion)
+    const tools =
+      req.permissionMode === "plan"
+        ? ["read", "grep", "find", "ls", "AskUserQuestion"]
+        : undefined;
     // Strict in-project write policy (same as the Claude provider's canUseTool
     // guard): deny writes outside the project working directory, except in
     // bypassPermissions/dontAsk where the user opted out of all checks. WSL
-    // paths are normalized in every mode. See createGuardedFileTools.
+    // paths are normalized in every mode. Enforced by the extension's
+    // tool_call handler (see mcodeExtension.ts).
     const strict = !(req.permissionMode === "bypassPermissions" || req.permissionMode === "dontAsk");
 
     // Build a ModelRuntime that injects all configured API keys. Pi's
@@ -227,7 +171,16 @@ export class PiAgentSdkProvider implements AgentProvider {
       }
     }
 
-    // Bridge Mcode's skill roots + `/name` trigger into Pi's skill model. Pi's
+    // Build the inline Mcode extension — bridges host approval,
+    // AskUserQuestion, system-prompt injection, and the strict in-project
+    // path/command guard into the Pi agent via the SDK's extension API. See
+    // mcodeExtension.ts for why an extension (vs the old customTools wrapping)
+    // is the right vehicle: the `tool_call` event covers ALL tools, and
+    // `block:true`+`reason` is the Pi equivalent of Claude's canUseTool deny.
+    const mcodeExtension = createMcodeExtension({ ctx, cwd: req.cwd, strict });
+
+    // Bridge Mcode's skill roots + `/name` trigger into Pi's skill model, and
+    // inject the inline extension via the loader's `extensionFactories`. Pi's
     // DefaultResourceLoader otherwise scans only ~/.pi/agent/skills + <cwd>/.pi
     // /skills (CONFIG_DIR_NAME=".pi"), which never overlap with Mcode's
     // ~/.mcode/skills + <cwd>/.claude/skills — so skills silently no-op. The
@@ -238,22 +191,19 @@ export class PiAgentSdkProvider implements AgentProvider {
       sdk,
       cwd: req.cwd,
       allowNames: req.skills && req.skills.length > 0 ? req.skills : undefined,
+      extensionFactories: [mcodeExtension],
     });
 
     // customTools override built-ins by name in AgentSession's definition
-    // registry. Two same-name overrides are composed here:
-    //   - write/edit → strict in-project path guard (createGuardedFileTools,
-    //     mirrors the Claude canUseTool guard).
-    //   - read → WSL `/mnt/<drive>/...` → native Windows path normalization on
-    //     win32 (createMntNormalizingReadTool). Skills legitimately reference
-    //     files outside the project (under ~/.mcode/skills), and the model
-    //     rewrites the injected Windows paths to /mnt/c/... which the SDK's
-    //     read tool can't resolve. The guard is read-only so it carries no
-    //     in-project containment check — only the WSL translation.
-    const customTools = [
-      ...createGuardedFileTools(sdk, req.cwd, strict),
-      ...(process.platform === "win32" ? [createMntNormalizingReadTool(sdk, req.cwd)] : []),
-    ];
+    // registry. Only the win32 read override remains — skills legitimately
+    // reference files outside the project (under ~/.mcode/skills), and the
+    // model rewrites the injected Windows paths to /mnt/c/... which the SDK's
+    // read tool can't resolve. The override is read-only so it carries no
+    // in-project containment check — only the WSL translation.
+    // The write/edit/bash guards moved to the extension's tool_call handler.
+    const customTools = process.platform === "win32"
+      ? [createMntNormalizingReadTool(sdk, req.cwd)]
+      : [];
 
     const { session } = await sdk.createAgentSession({
       cwd: req.cwd,

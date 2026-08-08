@@ -66,6 +66,12 @@ export interface BuildPiSkillLoaderOptions {
    *  Claude's `Options.skills` allowlist). Empty/undefined → all discovered
    *  skills (mirrors Claude's `"all"` sentinel). */
   allowNames?: string[];
+  /** Inline extensions to inject via the loader's `extensionFactories` option.
+   *  The loader runs each factory during `getExtensions()` (before
+   *  `_refreshToolRegistry`), so `pi.registerTool` / `pi.on` are wired before
+   *  the first turn. Mcode passes its host-bridging extension (approval,
+   *  AskUserQuestion, system-prompt injection) here. */
+  extensionFactories?: import("@earendil-works/pi-coding-agent").InlineExtension[];
 }
 
 /**
@@ -86,7 +92,7 @@ export interface BuildPiSkillLoaderOptions {
 export async function buildPiSkillLoader(
   opts: BuildPiSkillLoaderOptions,
 ): Promise<PiResourceLoader> {
-  const { sdk, cwd, allowNames } = opts;
+  const { sdk, cwd, allowNames, extensionFactories } = opts;
   const allow = allowNames && allowNames.length > 0 ? new Set(allowNames) : undefined;
 
   const loader = new sdk.DefaultResourceLoader({
@@ -94,6 +100,11 @@ export async function buildPiSkillLoader(
     // `getAgentDir()` honors `PI_CODING_AGENT_DIR` and the package's
     // `piConfig.configDir`; hand-building `~/.pi/agent` would miss both.
     agentDir: sdk.getAgentDir(),
+    // Inline extensions — the loader calls each factory during
+    // `getExtensions()`, before `_refreshToolRegistry`, so `pi.registerTool`
+    // / `pi.on` are live before the first agent turn. Mcode's extension
+    // bridges host approval, AskUserQuestion, and system-prompt injection.
+    extensionFactories: extensionFactories ?? [],
     // Pull in Mcode's two roots alongside Pi's defaults. We deliberately leave
     // `noSkills` unset so Pi's own `~/.pi/agent/skills` + `<cwd>/.pi/skills`
     // keep working — existing Pi users aren't disrupted.

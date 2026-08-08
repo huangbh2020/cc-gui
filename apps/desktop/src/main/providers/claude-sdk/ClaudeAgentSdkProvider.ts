@@ -18,6 +18,7 @@ import type {
 import type { AskUserQuestionItem, PermissionMode } from "@contracts/runtime";
 import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
 import { buildCustomEnv, MCODE_CONFIG_DIR } from "./customEnv.js";
+import { ASK_SYSTEM_PROMPT } from "@main/lib/askQuestion.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import {
   FILE_MUTATING_TOOLS,
@@ -58,15 +59,8 @@ function shouldAutoApprove(mode: PermissionMode | undefined, toolName: string): 
 }
 
 /** System prompt injected when the environment lacks native AskUserQuestion tool.
- * The model emits questions as sentinel-delimited JSON intercepted by SentinelScanner
- * inside SdkMessageAdapter. */
-const ASK_SYSTEM_PROMPT = [
-  `When you need to ask the user a question or need them to choose between options, you MUST emit it in this EXACT format and nothing else on those lines:`,
-  `<<<ASK_USER_QUESTION>>>`,
-  `a single line of JSON with this shape: {"questions":[{"header":"short label","question":"the full question","multiSelect":false,"options":[{"label":"A","description":"why A"},{"label":"B","description":"why B"}]}]}`,
-  `<<<END_ASK_USER_QUESTION>>>`,
-  `Rules: emit ONLY the JSON between the sentinels (no markdown fences, no extra text on those lines). Use multiSelect:true when multiple choices are allowed. After emitting, STOP and wait for the user's answer — do not answer your own question.`,
-].join(" ");
+ * Now imported from the shared @main/lib/askQuestion module (single source of
+ * truth, shared with the Pi provider's before_agent_start extension). */
 
 export class ClaudeAgentSdkProvider implements AgentProvider {
   readonly id = "claude-sdk";

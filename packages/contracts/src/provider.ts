@@ -39,7 +39,9 @@ export interface ProviderCapabilities {
    *  never hardcodes provider-specific values. */
   thinkingLevels?: ThinkingLevelOption[];
   /** Permission modes this provider supports. Empty/undefined = hide the
-   *  permission chip. Claude declares 4 user-facing modes; Pi declares none. */
+   *  permission chip. Claude and Pi both declare the same 4 user-facing modes
+   *  (default/acceptEdits/plan/bypassPermissions); Pi interprets them at
+   *  runtime via its inline extension's tool_call handler. */
   permissionModes?: PermissionModeOption[];
   /** Built-in model aliases (non-custom-endpoint). Empty/undefined = the
    *  provider only works via custom endpoint configs or dynamic model list. */

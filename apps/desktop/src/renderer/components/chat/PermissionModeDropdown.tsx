@@ -15,9 +15,11 @@ import type { PermissionModeOption } from "@contracts/provider";
  * Permission-mode picker for the composer toolbar.
  *
  * The mode list is NOT hardcoded here — it comes from the active provider's
- * `capabilities.permissionModes` declaration. Claude declares 4 user-facing
- * modes (default / acceptEdits / plan / bypassPermissions); Pi declares none
- * (it uses a tools allowlist instead) so the chip hides for pi sessions.
+ * `capabilities.permissionModes` declaration. Both Claude and Pi declare the
+ * same 4 user-facing modes (default / acceptEdits / plan / bypassPermissions)
+ * with matching icons/colors; Pi interprets them at runtime via its inline
+ * extension's tool_call handler (see mcodeExtension.ts). Providers that
+ * declare no modes (empty/undefined) hide the chip entirely.
  *
  * Icon names in the declaration ("shield", "shieldCheck", ...) are resolved
  * here so the renderer's icon map stays the single source of truth — the

@@ -20,7 +20,6 @@ import type {
   ErrorEvent,
   TodoUpdateEvent,
   AskUserQuestionEvent,
-  AskUserQuestionItem,
   ModeChangeEvent,
   PlanUpdateEvent,
   SubagentUpdateEvent,
@@ -216,42 +215,13 @@ class SentinelScanner {
   }
 }
 
-/** Parse questions from tool input or sentinel JSON. (Ported from ClaudeRuntime).
- * Exported so ClaudeAgentSdkProvider can reuse it in canUseTool to interpret
- * AskUserQuestion tool input. */
-export function parseQuestions(input: unknown): AskUserQuestionItem[] {
-  if (!input || typeof input !== "object") return [];
-  const raw = (input as { questions?: unknown }).questions;
-  let arr: unknown[] | null = null;
-  if (Array.isArray(raw)) {
-    arr = raw;
-  } else if (raw && typeof raw === "object" && "item" in raw) {
-    const inner = (raw as Record<string, unknown>).item;
-    arr = Array.isArray(inner) ? inner : null;
-  }
-  if (!arr) return [];
-  const out: AskUserQuestionItem[] = [];
-  for (const item of arr) {
-    if (!item || typeof item !== "object") continue;
-    const obj = item as Record<string, unknown>;
-    const question = readStr(obj.question);
-    const header = readStr(obj.header) || question.slice(0, 24);
-    const multiSelect = obj.multiSelect === true || obj.multiSelect === "true";
-    const rawOpts = obj.options;
-    let optsArr: unknown[] | null = null;
-    if (Array.isArray(rawOpts)) {
-      optsArr = rawOpts;
-    } else if (rawOpts && typeof rawOpts === "object" && "item" in rawOpts) {
-      optsArr = (rawOpts as Record<string, unknown>).item as unknown[];
-    }
-    const options = (optsArr ?? [])
-      .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
-      .map((o) => ({ label: readStr(o.label), description: readStr(o.description) || undefined }))
-      .filter((o) => o.label);
-    if (question) out.push({ header, question, multiSelect, options });
-  }
-  return out;
-}
+// Re-exported from the shared @main/lib/askQuestion module so both the Claude
+// and Pi providers use one implementation. The sentinel scanner below and
+// ClaudeAgentSdkProvider's canUseTool import it from here for backward compat.
+// Imported as a value (not just re-exported) because the sentinel scanner
+// below calls parseQuestions locally.
+import { parseQuestions } from "@main/lib/askQuestion.js";
+export { parseQuestions } from "@main/lib/askQuestion.js";
 
 /* ─── adapter state ────────────────────────────────────────────────── */
 

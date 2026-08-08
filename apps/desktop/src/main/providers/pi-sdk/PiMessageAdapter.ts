@@ -162,18 +162,13 @@ export class PiMessageAdapter {
     if (!sub) return;
     if (sub.type === "text_delta") {
       const messageId = this.ensureMessageId(sub.contentIndex);
-      // TODO(AskUserQuestion): pi has no native AskUserQuestion tool and no
-      // canUseTool interception, so the question panel never appears for pi
-      // sessions today. Claude solves this with a sentinel-text-scan fallback
-      // (SdkMessageAdapter scans text_delta for <<<ASK_USER_QUESTION>>> JSON
-      // and emits `question.ask` with a `sentinel_`-prefixed requestId). The
-      // same approach is viable here — pi's text_delta stream is just plain
-      // text — but it's not yet wired up: (1) PiAgentSdkProvider would need
-      // to inject the sentinel system prompt, (2) this branch would scan the
-      // delta and emit question.ask, (3) capabilities.supportsAskUserQuestion
-      // would flip to true. The answer-return IPC already handles the
-      // `sentinel_` prefix (composeSentinelAnswerPrompt → new turn), and
-      // runtimeManager.sendTurn is provider-neutral, so that path reuses as-is.
+      // AskUserQuestion is now handled by the inline extension's native tool
+      // (registered via pi.registerTool in mcodeExtension.ts) — the tool's
+      // execute bridges to ctx.requestUserInput, so the question panel opens
+      // deterministically. The model may still occasionally emit the
+      // sentinel <<<ASK_USER_QUESTION>>> JSON form (the system prompt teaches
+      // it as a fallback); a sentinel-text scan could be added here later as
+      // a backstop, but the native tool is the primary path.
       this.emit({
         type: "text.delta",
         sessionId: this.sessionId,
