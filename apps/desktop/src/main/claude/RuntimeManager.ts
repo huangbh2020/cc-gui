@@ -11,7 +11,7 @@ import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord, Tu
 import type { Session } from "@contracts/session";
 import type { ProviderContext, TurnHandle, StartTurnRequest, UserInputAnswers, PlanApprovalDecision } from "@contracts/provider";
 import { providerRegistry } from "@main/providers/registry.js";
-import { SessionRepo } from "@main/store/repositories.js";
+import { SessionRepo, ProjectRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { ApprovalBridge } from "./ApprovalBridge.js";
 import { getFileSnapshot, dropFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
@@ -349,13 +349,22 @@ class RuntimeManager {
    *     place instead of removing it. */
   async rewindTurn(sessionId: string, files: TurnFileEntry[], targetFiles?: string[]): Promise<string[]> {
     const rt = this.sessions.get(sessionId);
-    if (!rt) {
-      log.warn(`rewindTurn: no runtime bound for session ${sessionId}`);
-      return [];
-    }
-    const cwd = rt.lastCwd;
+    // Resolve the cwd: prefer the live runtime's lastCwd (set on the first
+    // sendTurn). When that's missing - the common case for the "会话重开后
+    // 仍可撤回" feature, where the user reopens a session and immediately
+    // clicks 撤销本轮 WITHOUT sending a new turn first - fall back to the
+    // session row's project path. This is what makes the DB-driven rewind
+    // path actually work: restoreFiles only needs cwd + entries, never the
+    // in-memory FileSnapshot.
+    const cwd =
+      rt?.lastCwd ??
+      (() => {
+        const session = SessionRepo.get(sessionId);
+        const project = session ? ProjectRepo.get(session.projectId) : undefined;
+        return project?.path ?? null;
+      })();
     if (!cwd) {
-      log.warn(`rewindTurn: cwd not available for session ${sessionId} (no turn yet?)`);
+      log.warn(`rewindTurn: cwd not available for session ${sessionId} (no runtime, no project?)`);
       return [];
     }
     const restored = await restoreFiles(cwd, files);
@@ -365,8 +374,10 @@ class RuntimeManager {
     // different, later turn and must be left untouched (the next
     // sendTurn clears it anyway). This prevents a historical rewind
     // from accidentally disabling a subsequent latest-turn rewind.
+    // When `rt` is absent (reopened session), there's no live snapshot
+    // to clear anyway - getFileSnapshot returns an empty one.
     const snapshot = getFileSnapshot(sessionId);
-    if (restored.length > 0 && !targetFiles && snapshot.hasPaths(files.map((f) => f.filePath))) {
+    if (rt && restored.length > 0 && !targetFiles && snapshot.hasPaths(files.map((f) => f.filePath))) {
       snapshot.clear();
     }
     // Notify the renderer (and any other listeners) so the UI can
